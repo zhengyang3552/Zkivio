@@ -16,6 +16,8 @@ on:
   push:
     branches: [App]
     # 只有会改变 APK 的提交才重新打包（与 package-linux.yml 同一套白名单思路）。
+    # 额外带上本文件自身：安卓端还在搭建期，改流水线必须能立刻自测；
+    # 稳定后可以像 package-linux.yml 那样把它去掉，只留 workflow_dispatch。
     paths:
       - 'src/**'
       - 'src-tauri/**'
@@ -33,6 +35,7 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - 'ci/**'
+      - '.github/workflows/package-android.yml'
   workflow_dispatch:
     inputs:
       build_mode:
@@ -74,16 +77,38 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      # 直接走 sdkmanager 装 NDK / platform / build-tools：不依赖第三方 NDK
-      # action 的具体版本号，装什么由这里说了算。
-      - name: Install Android NDK and platform tools
+      # 不用 android-actions/setup-android：它默认执行 `sdkmanager 'tools'`，而
+      # `tools` 包早已从 Google 的 SDK 仓库下架（"Failed to find package 'tools'"），
+      # 整步直接失败。这里自己装 cmdline-tools，装哪些包完全由本文件决定。
+      - name: Set up Android SDK (cmdline-tools)
         run: |
-          sdkmanager --install "ndk;${NDK_VERSION}" "platforms;android-34" "build-tools;34.0.0"
+          set -euo pipefail
+          SDK="$HOME/android-sdk"
+          mkdir -p "$SDK/cmdline-tools"
+          curl -fsSL --retry 3 -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdline-tools.zip -d "$SDK/cmdline-tools"
+          mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+
+      # platform 34/35 都装上：Tauri 模板的 compileSdk 随 CLI 版本变化，多装一个
+      # 不影响，缺了却要在 Gradle 阶段才报错。NDK 版本以 tauri.properties /
+      # templates 的 ndkVersion 为准，不一致时 AGP 会自行下载（licenses 已接受）。
+      - name: Install Android NDK and platform packages
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "platforms;android-35" \
+            "build-tools;34.0.0" \
+            "build-tools;35.0.0" \
+            "ndk;${NDK_VERSION}"
           echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
