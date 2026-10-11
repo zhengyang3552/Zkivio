@@ -1,34 +1,36 @@
-//! Android 自带的 rootfs 工作区。
+//! Android 的 rootfs 工作区：按需下载、可卸载。
 //!
-//! 桌面端的工作区是「用户挑一个目录」（项目根，或没有项目时的每会话 scratch 目录）；
-//! Android 上没有可挑的目录，能写的地方只有应用私有目录。所以这里自带一套 rootfs：
+//! 桌面端的工作区是「用户挑一个目录」；Android 上没有可挑的目录，能写的地方只有
+//! 应用私有目录，所以工作区是一套自带的 Linux rootfs：
 //!
 //! ```text
-//! {app_data}/rootfs/            ← Alpine minirootfs 解包后的 Linux 根（工作区就是这个）
-//! {app_data}/rootfs-runtime/    ← proot + loader + libtalloc/libandroid-shmem + 临时目录
+//! {app_data}/rootfs/            ← 工作区本体（Alpine），用户点了下载才有内容
+//! {app_data}/rootfs-runtime/    ← proot + loader + libtalloc/libandroid-shmem + 缓存
 //! ```
+//!
+//! **工作区按需下载**：Alpine rootfs 约 4MB，不放进 APK。用户在「工作区」页面点
+//! 下载才拉，拉完校验 SHA-256 再解包；同一个按钮在就绪后变成「卸载（格式化）」，
+//! 会把工作区连同里面 agent 写过的文件一起清掉。proot 及其动态库（约 300KB）
+//! 仍然随包编译进去 —— 它们是运行时，不是工作区，缺了连回退路径都跑不起来。
 //!
 //! 两条路径互相配合：
 //!
 //! - **文件工具**直接按 host 路径读写 `{app_data}/rootfs/...`，不经过 proot。
-//!   这是能真正写下去的一条路（应用私有目录，读写权限齐全）。
-//! - **执行命令**（agent 的 shell 工具、Dock 里的 git、终端）走 `proot_command()`，
-//!   进去以后 `/` 就是这套 rootfs —— 于是 `/bin/sh`、`apk`、`git` 这些才存在，
-//!   agent 看到的目录布局和它读写文件的路径是同一套。
+//!   这是应用私有目录，读写权限齐全；没下载时它就是个空目录，照样能写。
+//! - **执行命令**（agent 的 shell 工具，以后 Dock 里的 git / 终端）走
+//!   `proot_command()`，进去以后 `/` 就是这套 rootfs。没下载时回退宿主 sh。
 //!
-//! 素材（`proot` / `libtalloc.so.2` / `alpine-minirootfs-*.tar.gz`）由 CI 在构建前
-//! 放到 `src-tauri/android-assets/`，用 `include_bytes!` 打进 so。**不入库**：
-//! 仓库里不放二进制，也不会因为 ABI/版本变化留下陈旧副本。本地构建请先跑
-//! `scripts/fetch-android-rootfs.sh`。
+//! 下载源与校验值固定在这里（官方 CDN + 清华镜像，两者 sha256 已核对一致）：
+//! 校验不通过就换下一个源，全部失败则状态置为 failed，绝不解包来历不明的字节。
 
 use std::fs;
-use std::io::Cursor;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use flate2::read::GzDecoder;
-use tauri::{AppHandle, Manager};
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// proot 本体（aarch64）。Termux 的构建：动态链接 `libtalloc` / `libandroid-shmem`，
 /// 并且需要一个独立的 loader 进程做 ptrace 注入（见 PROOT_LOADER）。
@@ -39,15 +41,28 @@ const PROOT_LOADER: &[u8] = include_bytes!("../android-assets/proot-loader");
 /// proot 的运行时依赖（Termux 里是 libtalloc / libandroid-shmem 两个包）。
 const PROOT_LIBTALLOC: &[u8] = include_bytes!("../android-assets/libtalloc.so.2");
 const PROOT_LIBANDROID_SHMEM: &[u8] = include_bytes!("../android-assets/libandroid-shmem.so");
-/// Alpine minirootfs：约 4MB 的 gz，解包后 ~10MB，自带 busybox / apk。
-const ROOTFS_TARBALL: &[u8] = include_bytes!("../android-assets/alpine-minirootfs.tar.gz");
+
+/// 工作区版本：改这里就要同步改下面的文件名、大小与 sha256。
+pub const ROOTFS_VERSION: &str = "3.24.2";
+const ROOTFS_SIZE: u64 = 4_028_030;
+const ROOTFS_SHA256: &str = "9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773";
+const ROOTFS_FILE: &str = "alpine-minirootfs-3.24.2-aarch64.tar.gz";
+/// 官方源在前，镜像在后：国内网络下官方 CDN 常慢或不通，失败即换。
+const ROOTFS_SOURCES: &[&str] = &[
+    "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+    "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+];
 
 const ROOT_DIR: &str = "rootfs";
 const RUNTIME_DIR: &str = "rootfs-runtime";
 /// 就绪标记放在 runtime 目录，不要放进 rootfs 里 —— 那会出现在 agent 看到的 `/`。
 const READY_MARKER: &str = "rootfs-ready";
+const DOWNLOAD_CACHE: &str = "rootfs-download.tar.gz";
 
-/// rootfs 工作区用到的路径。构造本身不做 IO。
+/// 前端订阅的进度事件名。
+pub const PROGRESS_EVENT: &str = "android-rootfs-progress";
+
+/// rootfs 用到的路径。构造本身不做 IO。
 #[derive(Clone, Debug)]
 pub struct RootfsLayout {
     pub root: PathBuf,
@@ -56,6 +71,7 @@ pub struct RootfsLayout {
     pub loader: PathBuf,
     pub lib_dir: PathBuf,
     pub tmp: PathBuf,
+    pub download: PathBuf,
 }
 
 impl RootfsLayout {
@@ -64,9 +80,47 @@ impl RootfsLayout {
     }
 }
 
-/// 全局缓存：`build_shell_command()` 拿不到 `AppHandle`，但它的调用点遍布
-/// 命令工具与后台任务，所以路径在 setup 时缓存一次（纯路径计算，无 IO）。
+/// 全局缓存：`build_shell_command()` 拿不到 `AppHandle`，它的调用点遍布命令工具与
+/// 后台任务，所以路径在 setup 时缓存一次（纯路径计算，无 IO）。
 static LAYOUT: OnceLock<RootfsLayout> = OnceLock::new();
+/// 下载 / 解包状态。锁只在读写这几个字段时短暂持有，不跨 await。
+static STATE: OnceLock<Mutex<RootfsState>> = OnceLock::new();
+
+/// 工作区状态快照（直接给前端用）。
+#[derive(Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootfsState {
+    /// `absent` | `downloading` | `extracting` | `ready` | `failed`
+    pub status: String,
+    pub received: u64,
+    pub total: u64,
+    pub message: Option<String>,
+    pub root: String,
+    pub version: String,
+}
+
+fn state_cell() -> &'static Mutex<RootfsState> {
+    STATE.get_or_init(|| Mutex::new(RootfsState::default()))
+}
+
+fn snapshot() -> RootfsState {
+    state_cell().lock().unwrap().clone()
+}
+
+fn update(app: &AppHandle, edit: impl FnOnce(&mut RootfsState)) {
+    {
+        let mut state = state_cell().lock().unwrap();
+        edit(&mut state);
+    }
+    let _ = app.emit(PROGRESS_EVENT, snapshot());
+}
+
+fn busy() -> bool {
+    matches!(
+        state_cell().lock().unwrap().status.as_str(),
+        "downloading" | "extracting"
+    )
+}
 
 pub fn layout(app: &AppHandle) -> Result<RootfsLayout, String> {
     let base = app
@@ -82,17 +136,35 @@ pub fn layout(app: &AppHandle) -> Result<RootfsLayout, String> {
         loader: runtime.join("libexec").join("proot").join("loader"),
         lib_dir: runtime.join("lib"),
         tmp: runtime.join("proot-tmp"),
+        download: runtime.join(DOWNLOAD_CACHE),
         runtime,
     })
 }
 
-/// setup 时调用：缓存路径并起后台解包。解包本身不在这里做，避免拖住启动。
+/// setup 时调用：缓存路径 + 落地 proot 运行时（约 300KB 的写盘，不碰工作区）。
 pub fn init(app: &AppHandle) {
-    match layout(app) {
-        Ok(layout) => {
-            let _ = LAYOUT.set(layout);
+    let layout = match layout(app) {
+        Ok(layout) => layout,
+        Err(err) => {
+            eprintln!("[rootfs] 无法解析数据目录: {err}");
+            return;
         }
-        Err(err) => eprintln!("[rootfs] 无法解析数据目录: {err}"),
+    };
+    let _ = LAYOUT.set(layout.clone());
+    // 工作区目录先建出来：没下载时它就是个空目录，agent 照样有 cwd 可写。
+    let _ = fs::create_dir_all(&layout.root);
+    {
+        let mut state = state_cell().lock().unwrap();
+        state.root = layout.root.to_string_lossy().to_string();
+        state.version = ROOTFS_VERSION.to_string();
+        state.status = if is_installed(&layout) {
+            "ready".to_string()
+        } else {
+            "absent".to_string()
+        };
+    }
+    if let Err(err) = prepare_runtime(&layout) {
+        eprintln!("[rootfs] 运行时落地失败: {err}");
     }
 }
 
@@ -100,45 +172,21 @@ pub fn cached_layout() -> Option<&'static RootfsLayout> {
     LAYOUT.get()
 }
 
-/// 后台准备（首次约几秒：解包 + 落地 proot）。重复调用是幂等的。
-pub fn spawn_prepare(app: AppHandle) {
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(err) = ensure(&app) {
-            eprintln!("[rootfs] 准备失败: {err}");
-        }
-    });
+/// 工作区已就绪（用户下载过且解包完整）。
+pub fn is_installed(layout: &RootfsLayout) -> bool {
+    layout.marker().is_file() && layout.root.join("bin/sh").exists()
 }
 
-/// 工作区根（host 路径）。Android 上不考虑项目根 —— 没有目录选择器可用，
-/// 工作区固定就是这套 rootfs，与「工作区改为 rootfs」这个决定一致。
+/// 工作区根（host 路径）。**不会触发下载**：没下载时返回空目录。Android 上不考虑
+/// 项目根 —— 没有目录选择器可用，「工作区 = rootfs 根」是定下来的唯一形态。
 pub fn workspace_root(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(ensure(app)?.root)
-}
-
-pub fn is_ready(layout: &RootfsLayout) -> bool {
-    layout.marker().is_file() && layout.root.join("bin/sh").exists() && layout.proot.is_file()
-}
-
-/// 幂等准备：`is_ready` 成立时只做一次 stat。
-pub fn ensure(app: &AppHandle) -> Result<RootfsLayout, String> {
-    if let Some(layout) = LAYOUT.get() {
-        if is_ready(layout) {
-            return Ok(layout.clone());
-        }
-        prepare(layout)?;
-        return Ok(layout.clone());
-    }
     let layout = layout(app)?;
-    if is_ready(&layout) {
-        let _ = LAYOUT.set(layout.clone());
-        return Ok(layout);
-    }
-    prepare(&layout)?;
-    let _ = LAYOUT.set(layout.clone());
-    Ok(layout)
+    fs::create_dir_all(&layout.root).map_err(|e| format!("create workspace: {e}"))?;
+    Ok(layout.root)
 }
 
-fn prepare(layout: &RootfsLayout) -> Result<(), String> {
+/// 把 proot / loader / 动态库落到 runtime 目录。幂等，内容不一致才重写。
+fn prepare_runtime(layout: &RootfsLayout) -> Result<(), String> {
     fs::create_dir_all(&layout.runtime).map_err(|e| format!("create rootfs runtime: {e}"))?;
     fs::create_dir_all(&layout.tmp).map_err(|e| format!("create proot tmp: {e}"))?;
     if let Some(parent) = layout.loader.parent() {
@@ -152,10 +200,6 @@ fn prepare(layout: &RootfsLayout) -> Result<(), String> {
         &layout.lib_dir.join("libandroid-shmem.so"),
         PROOT_LIBANDROID_SHMEM,
     )?;
-    if !(layout.marker().is_file() && layout.root.join("bin/sh").exists()) {
-        extract_rootfs(layout)?;
-    }
-    fs::write(layout.marker(), b"1").map_err(|e| format!("write rootfs marker: {e}"))?;
     Ok(())
 }
 
@@ -176,8 +220,214 @@ fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::set_permissions(path, perms).map_err(|e| format!("chmod {}: {e}", path.display()))
 }
 
-/// 解包到临时目录再整体改名，避免中途失败留下半个 rootfs。
+// ===== 命令：状态 / 下载 / 卸载 =====
+
+#[tauri::command]
+pub fn android_rootfs_state(app: AppHandle) -> RootfsState {
+    let layout = layout(&app).ok();
+    let mut state = snapshot();
+    if let Some(layout) = layout {
+        state.root = layout.root.to_string_lossy().to_string();
+        // 没在下载/解包时以磁盘为准：用户可能在文件管理器里删过目录。
+        if !busy() {
+            state.status = if is_installed(&layout) {
+                "ready".to_string()
+            } else {
+                "absent".to_string()
+            };
+        }
+    }
+    state
+}
+
+/// 下载并解包工作区。可重复调用：已就绪时直接返回。
+#[tauri::command]
+pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, String> {
+    let layout = layout(&app)?;
+    prepare_runtime(&layout)?;
+    if is_installed(&layout) {
+        update(&app, |state| {
+            state.status = "ready".to_string();
+            state.message = None;
+        });
+        return Ok(snapshot());
+    }
+    if busy() {
+        return Err("工作区正在处理中".to_string());
+    }
+
+    update(&app, |state| {
+        state.status = "downloading".to_string();
+        state.received = 0;
+        state.total = ROOTFS_SIZE;
+        state.message = None;
+    });
+
+    // 下载：逐源尝试，边下边算 sha256，下完立即校验。
+    let mut last_error = String::new();
+    let mut verified = false;
+    for source in ROOTFS_SOURCES {
+        match download(&app, &layout, source).await {
+            Ok(()) => {
+                verified = true;
+                break;
+            }
+            Err(err) => {
+                last_error = err;
+                update(&app, |state| {
+                    state.message = Some(last_error.clone());
+                });
+            }
+        }
+    }
+    if !verified {
+        let _ = fs::remove_file(&layout.download);
+        update(&app, |state| {
+            state.status = "failed".to_string();
+            state.message = Some(format!("下载失败：{last_error}"));
+        });
+        return Err(last_error);
+    }
+
+    update(&app, |state| {
+        state.status = "extracting".to_string();
+        state.message = None;
+    });
+
+    // 解包在阻塞线程里做（几千个文件），并且只删工作区内容、不动 runtime。
+    let unpack_layout = layout.clone();
+    let unpacked = tauri::async_runtime::spawn_blocking(move || {
+        extract_rootfs(&unpack_layout)?;
+        fs::write(unpack_layout.marker(), b"1")
+            .map_err(|e| format!("write rootfs marker: {e}"))
+    })
+    .await
+    .map_err(|e| format!("rootfs 解包任务失败: {e}"))?;
+
+    let _ = fs::remove_file(&layout.download);
+    match unpacked {
+        Ok(()) => {
+            update(&app, |state| {
+                state.status = "ready".to_string();
+                state.message = None;
+                state.received = state.total;
+            });
+            Ok(snapshot())
+        }
+        Err(err) => {
+            update(&app, |state| {
+                state.status = "failed".to_string();
+                state.message = Some(err.clone());
+            });
+            Err(err)
+        }
+    }
+}
+
+/// 卸载（格式化）：清掉工作区里的全部内容，连同 agent 写过的文件。
+/// proot 运行时不属于工作区，保留（下次下载即可用）。
+#[tauri::command]
+pub async fn android_rootfs_uninstall(app: AppHandle) -> Result<RootfsState, String> {
+    if busy() {
+        return Err("工作区正在处理中".to_string());
+    }
+    let layout = layout(&app)?;
+    let root = layout.root.clone();
+    let marker = layout.marker();
+    tauri::async_runtime::spawn_blocking(move || {
+        match fs::remove_dir_all(&root) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(format!("清空工作区失败: {err}")),
+        }?;
+        fs::create_dir_all(&root).map_err(|e| format!("create workspace: {e}"))?;
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("卸载任务失败: {e}"))??;
+    let _ = fs::remove_file(&marker);
+    let _ = fs::remove_file(&layout.download);
+
+    update(&app, |state| {
+        state.status = "absent".to_string();
+        state.received = 0;
+        state.message = None;
+    });
+    Ok(snapshot())
+}
+
+/// 下载到 runtime 目录并校验 sha256。返回 Ok 表示字节可信（已落盘等解包）。
+async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(900))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let mut response = client
+        .get(source)
+        .send()
+        .await
+        .map_err(|e| format!("{source}: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("{source}: HTTP {}", response.status()));
+    }
+    let total = response.content_length().unwrap_or(ROOTFS_SIZE);
+
+    let mut file = tokio::fs::File::create(&layout.download)
+        .await
+        .map_err(|e| format!("create download: {e}"))?;
+    let mut hasher = Sha256::new();
+    let mut received: u64 = 0;
+    let mut last_emit: u64 = 0;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("下载中断: {e}"))?
+    {
+        hasher.update(&chunk);
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("write download: {e}"))?;
+        received += chunk.len() as u64;
+        // 每 256KB 或每 2% 报一次，别把事件通道刷爆。
+        if received - last_emit >= 262_144 || received >= total {
+            last_emit = received;
+            let app = app.clone();
+            update(&app, |state| {
+                state.received = received;
+                state.total = total;
+            });
+        }
+    }
+    file.flush().await.map_err(|e| format!("flush download: {e}"))?;
+    drop(file);
+
+    let digest = heap_hex(hasher.finalize().as_slice());
+    if digest != ROOTFS_SHA256 {
+        return Err(format!(
+            "{source}: 校验不通过（期望 {}，实际 {digest}）",
+            &ROOTFS_SHA256[..16]
+        ));
+    }
+    Ok(())
+}
+
+fn heap_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// 从已下载的文件解包到工作区。
+///
+/// 与下载不同，这里做的是「写进工作区」：先解到临时目录再整体改名，避免中途失败
+/// 留下半个 rootfs；同时挡住 `../` 逃逸，跳过应用进程建不了的条目（设备节点等）。
 fn extract_rootfs(layout: &RootfsLayout) -> Result<(), String> {
+    let file = fs::File::open(&layout.download).map_err(|e| format!("open download: {e}"))?;
     let staging = layout
         .root
         .parent()
@@ -186,12 +436,14 @@ fn extract_rootfs(layout: &RootfsLayout) -> Result<(), String> {
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging).map_err(|e| format!("create staging: {e}"))?;
 
-    let mut archive = tar::Archive::new(GzDecoder::new(Cursor::new(ROOTFS_TARBALL)));
+    let mut archive = tar::Archive::new(GzDecoder::new(file));
     archive.set_preserve_permissions(true);
     archive.set_overwrite(true);
 
     let mut skipped = 0usize;
-    let entries = archive.entries().map_err(|e| format!("read rootfs archive: {e}"))?;
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("read rootfs archive: {e}"))?;
     for entry in entries {
         let mut entry = match entry {
             Ok(entry) => entry,
@@ -209,7 +461,6 @@ fn extract_rootfs(layout: &RootfsLayout) -> Result<(), String> {
                 continue;
             }
         };
-        // 挡住 ../ 逃逸（tarball 来自上游，仍然不信任它的路径）。
         if relative
             .components()
             .any(|c| matches!(c, Component::ParentDir | Component::RootDir))
@@ -246,7 +497,7 @@ fn extract_rootfs(layout: &RootfsLayout) -> Result<(), String> {
     }
     if let Err(err) = fs::remove_dir_all(&layout.root) {
         if err.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("[rootfs] 清理旧 rootfs 失败: {err}");
+            eprintln!("[rootfs] 清理旧工作区失败: {err}");
         }
     }
     fs::rename(&staging, &layout.root).map_err(|e| format!("promote rootfs: {e}"))?;
@@ -292,24 +543,4 @@ pub fn proot_command(layout: &RootfsLayout, script: &str) -> Command {
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         );
     command
-}
-
-/// 前端用的就绪状态（设置页 / 首屏提示用）。
-#[tauri::command]
-pub fn android_rootfs_status(app: AppHandle) -> Result<serde_json::Value, String> {
-    let layout = layout(&app)?;
-    Ok(serde_json::json!({
-        "ready": is_ready(&layout),
-        "root": layout.root.to_string_lossy(),
-    }))
-}
-
-/// 手动触发一次准备（首次进入聊天页时前端可以调，避免第一条命令等解包）。
-#[tauri::command]
-pub async fn android_rootfs_prepare(app: AppHandle) -> Result<serde_json::Value, String> {
-    let layout = ensure(&app)?;
-    Ok(serde_json::json!({
-        "ready": true,
-        "root": layout.root.to_string_lossy(),
-    }))
 }

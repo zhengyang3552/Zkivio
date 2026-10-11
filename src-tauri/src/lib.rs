@@ -552,14 +552,11 @@ pub fn run() {
                     }
                 });
             }
-            // 自带 rootfs 工作区（App 分支的决定：Android 的工作区就是这套 rootfs）。
-            // 路径缓存是纯计算，先做掉；解包（首次几秒）丢后台，免得第一条命令卡在
-            // 解包上，也免得挡住首屏。见 src/android_rootfs.rs 的模块注释。
+            // rootfs 工作区（App 分支的决定：Android 的工作区就是这套 rootfs）。
+            // 这里只缓存路径 + 落地 proot 运行时（约 300KB）；工作区本体由用户在
+            // 「工作区」页面按需下载，见 android_rootfs 的模块注释。
             #[cfg(target_os = "android")]
-            {
-                android_rootfs::init(app.handle());
-                android_rootfs::spawn_prepare(app.handle().clone());
-            }
+            android_rootfs::init(app.handle());
             // Android：没有多窗口与托盘，唯一的主 WebView 在启动时就建好，
             // 否则用户看到的是一片空白（桌面端由 shortcuts.rs 按需建窗）。
             #[cfg(target_os = "android")]
@@ -923,8 +920,9 @@ pub fn run() {
         #[cfg(target_os = "android")]
         let builder = builder
         .invoke_handler(tauri::generate_handler![
-            android_rootfs::android_rootfs_status,
-            android_rootfs::android_rootfs_prepare,
+            android_rootfs::android_rootfs_state,
+            android_rootfs::android_rootfs_install,
+            android_rootfs::android_rootfs_uninstall,
             provider_oauth::provider_oauth_start,
             provider_oauth::provider_oauth_poll,
             provider_oauth::provider_oauth_cancel,

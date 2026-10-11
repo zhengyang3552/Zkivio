@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
 #
-# 拉取 Android 端 rootfs 工作区所需素材到 src-tauri/android-assets/。
+# 拉取 Android 端 rootfs **运行时** 素材到 src-tauri/android-assets/。
 #
-# 这些文件是二进制、且体积不小（Alpine rootfs 约 4MB），因此不入库：
-# CI 在构建前跑这个脚本，本地要出 APK 也先跑一次。
+# 注意：工作区本体（Alpine minirootfs，约 4MB）不在这里 —— 它按需下载，
+# 由应用在用户点「下载」时从固定 URL 拉取并校验 sha256（见
+# src-tauri/src/android_rootfs.rs）。这里只有 proot 及其动态库（约 300KB），
+# 随包编译进去；它们是运行时，不是工作区。
+#
+# 这些文件是二进制，因此不入库：CI 在构建前跑这个脚本，本地要出 APK 也先跑一次。
 # 版本全部固定，保证同一份源码每次构建拿到同一批二进制。
 #
 # 素材与用途（见 src-tauri/src/android_rootfs.rs）：
 #   proot / proot-loader        ptrace 方式在应用私有目录里伪造 Linux root
 #   libtalloc.so.2              上面两者的动态依赖
 #   libandroid-shmem.so         同上（Android 上 proot 的 SysV shm 替代）
-#   alpine-minirootfs.tar.gz    工作区本体，首次启动解包到 {app_data}/rootfs
 set -euo pipefail
 
 TERMUX_REPO="${TERMUX_REPO:-https://packages.termux.dev/apt/termux-main}"
 PROOT_VERSION="5.1.107.96"
 TALLOC_VERSION="2.5.0"
 ANDROID_SHMEM_VERSION="0.7"
-ALPINE_VERSION="3.24.2"
-ALPINE_BASE="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/aarch64"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO_ROOT/src-tauri/android-assets"
@@ -63,10 +64,7 @@ install -m 0644 \
     "$WORK/talloc/$PREFIX/lib/libtalloc.so.${TALLOC_VERSION}" "$OUT/libtalloc.so.2"
 install -m 0644 "$WORK/shmem/$PREFIX/lib/libandroid-shmem.so" "$OUT/libandroid-shmem.so"
 
-echo "→ $ALPINE_BASE/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
-fetch "$ALPINE_BASE/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz" \
-    "$OUT/alpine-minirootfs.tar.gz"
-
+echo "→ 运行时素材就绪，校验中…"
 # 校验：错了要在构建前就炸，而不是等 APK 装到手机上才发现。
 #
 # 注意别写成 `xxx | grep -q`：脚本开了 pipefail，grep 命中就退出会让上游收到
@@ -75,12 +73,6 @@ PROOT_TYPE="$(file -b "$OUT/proot" 2>/dev/null || true)"
 case "$PROOT_TYPE" in
     *aarch64*) ;;
     *) echo "✗ proot 不是 aarch64 ELF（file: ${PROOT_TYPE:-无 file 命令}）" >&2; exit 1 ;;
-esac
-
-ROOTFS_LISTING="$(tar tzf "$OUT/alpine-minirootfs.tar.gz")"
-case "$ROOTFS_LISTING" in
-    *"./bin/sh"*) ;;
-    *) echo "✗ rootfs 里没有 bin/sh" >&2; exit 1 ;;
 esac
 
 echo
