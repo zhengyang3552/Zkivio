@@ -154,20 +154,6 @@ describe('useConversationMetaMutations: runtime', () => {
     expect(mockPause).not.toHaveBeenCalled()
   })
 
-  it('derives external model / sandbox / preset changes from the active runtime', async () => {
-    const { result } = setup(null, EXTERNAL)
-    await act(async () => {
-      await result.current.changeExternalModel('sonnet', 'high')
-      await result.current.changeExternalSandbox('yolo')
-      await result.current.changeExternalPreset('fast')
-    })
-    const calls = vi.mocked(saveLastAgentRuntime).mock.calls.map(([runtime]) => runtime)
-    expect(calls[0]).toMatchObject({ kind: 'external', externalAgentId: 'claude', externalModel: 'sonnet', externalReasoning: 'high' })
-    expect(calls[1]).toMatchObject({ externalSandbox: 'yolo', externalModel: 'opus' })
-    expect(calls[2]).toMatchObject({ externalAgentPreset: 'fast' })
-    expect(mockSetRuntime).not.toHaveBeenCalled()
-  })
-
   it('persists an approved sandbox and syncs the draft only while still current', async () => {
     mockSetRuntime.mockResolvedValue(conversation())
     const { result, draft } = setup()

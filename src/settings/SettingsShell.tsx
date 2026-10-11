@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
+import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
   Download, Upload, ArrowLeft, Palette,
@@ -25,39 +25,30 @@ import {
 } from '../api/settingsCache'
 import { SettingsEditorController, type SettingsCloseOptions } from './SettingsEditorController'
 import { useSettingsUpdateController } from './useSettingsUpdateController'
-import { useSettingsOcrDownloads } from './useSettingsOcrDownloads'
 import { useSettingsPermissions } from './useSettingsPermissions'
 import { applyProviderDraftIntent, type ProviderDraftIntent } from './providerDraftIntents'
 import { i18n, type Lang } from '../components/i18n'
 import {
-  GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  CliIcon, ComputerIcon, WebSearchIcon, ConnectorsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
+  GeneralIcon, ChatIcon, MemoryIcon, MixerIcon,
+  WebSearchIcon, ConnectorsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
   WorkspaceIcon,
 } from './NavIcons'
-import { formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
-import { ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
 import { UsageStatsPanel } from './UsageStatsPanel'
 import { WorkspacePanel } from './WorkspacePanel'
 import { isMobilePlatform } from '../chat/platform'
 import { RequestDebugPanel } from './RequestDebugPanel'
-import { ExternalAgentsSettings } from './ExternalAgentsSettings'
-import { HotkeysTab } from './tabs/HotkeysTab'
-import { LensTab } from './tabs/LensTab'
 import { MixerTab } from './tabs/MixerTab'
-import { TranslateTab } from './tabs/TranslateTab'
 import { MemoryTab } from './tabs/MemoryTab'
 import { ChatTab } from './tabs/ChatTab'
 import { ProvidersTab } from './tabs/ProvidersTab'
 import { HooksTab } from './tabs/HooksTab'
-import { ComputerControlTab } from './tabs/ComputerControlTab'
 import { AppearanceGroup, BehaviorGroup, PermissionsGroup } from './tabs/GeneralTab'
 import { AppInfoGroup, UpdateGroup } from './tabs/AboutTab'
 import { useSettingsMemoryEditor } from './useSettingsMemoryEditor'
 import { useProviderCatalogController } from './useProviderCatalogController'
 import { useSettingsBackupController } from './useSettingsBackupController'
-import { useSettingsHotkeyRecorder, type HotkeyScopeKey } from './useSettingsHotkeyRecorder'
 import { useProviderModalController } from './useProviderModalController'
 import { useSettingsOnboardingController } from './useSettingsOnboardingController'
 import { ModelDetailDrawer } from './ModelDetailDrawer'
@@ -78,7 +69,7 @@ import {
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
 
-export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'workspace' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'themes' | 'chat' | 'memory' | 'mixer' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'workspace' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 // UI 字号：以 px 展示、以整体缩放（zoom）实现。CSS 全是 px 硬编码，做不了真正的 rem 基准字号，
@@ -104,51 +95,12 @@ export interface SettingsShellHandle {
   requestClose: (options?: SettingsCloseOptions) => void
 }
 
-/** 快捷键作用域。原本是组件体内的局部 type，抽 HotkeysTab 后需要跨模块共享，提到模块作用域。 */
-export type { HotkeyScopeKey } from './useSettingsHotkeyRecorder'
-
-
-/** 快捷键冲突：应用内重复 或 与系统（GNOME）快捷键冲突 */
-export type HotkeyConflict =
-  | { kind: 'app'; partner: HotkeyScopeKey }
-  | { kind: 'system'; label: string; accelerator: string }
-
-/**
- * 把快捷键统一成「排序后的修饰键集合|键」以便跨格式比较：
- * Tauri 格式（CommandOrControl+Alt+T）、GTK 格式（<Control><Alt>t）、
- * GNOME 规范化顺序（<Alt><Control>t）都视为相等。与后端 normalize_trigger 保持一致。
- */
-const normalizeHotkeyForCompare = (trigger: string): string => {
-  const mods = new Set<string>()
-  let key = ''
-  const absorb = (tok: string) => {
-    const low = tok.toLowerCase()
-    const canon =
-      { ctrl: 'ctrl', control: 'ctrl', primary: 'ctrl', commandorcontrol: 'ctrl', cmdorctrl: 'ctrl', command: 'ctrl', cmd: 'ctrl', shift: 'shift', alt: 'alt', option: 'alt', mod1: 'alt', super: 'super', logo: 'super', meta: 'super', mod4: 'super', win: 'super', windows: 'super', mod: 'super', num: 'num', mod2: 'num' }[low]
-    if (canon) mods.add(canon)
-    else if (tok) key = low
-  }
-  let rest = trigger.trim()
-  for (;;) {
-    const s = rest.indexOf('<')
-    if (s < 0) break
-    const e = rest.indexOf('>', s)
-    if (e < 0) break
-    absorb(rest.slice(s + 1, e))
-    rest = rest.slice(e + 1)
-  }
-  for (const part of rest.split('+')) absorb(part.trim())
-  return [...mods].sort().join(',') + '|' + key
-}
-
 function resolveEffectiveChatModel(settings: SettingsData): { provider?: ModelProvider, model: string } {
   const selected = resolvePreferredChatModel({
     providers: settings.providers,
     last: loadLastModel(),
     storedChat: settings.defaultModels.chat,
     legacyChat: { providerId: settings.chatProviderId, model: settings.chatModel },
-    lens: { providerId: settings.lens?.providerId || '', model: settings.lens?.model || '' },
-    translator: { providerId: settings.translatorProviderId, model: settings.translatorModel },
   })
 
   return {
@@ -208,35 +160,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   useEffect(() => {
     if (initialTab) setActiveTab(initialTab)
   }, [initialTab])
-  // 热键被占用未能注册的警告（保存已成功，只是提醒，不阻断）。
-  const [saveWarning, setSaveWarning] = useState('')
-  const hotkeyRecorder = useSettingsHotkeyRecorder((update) => editorController.edit(update))
-  const recordingTarget = hotkeyRecorder.target
-  // GNOME 系统快捷键（用于冲突检查；非 Linux 为空）
-  const [systemShortcuts, setSystemShortcuts] = useState<{ accelerator: string; label: string }[]>([])
-
-  // 加载系统快捷键：把“系统占用”计入冲突检查
-  useEffect(() => {
-    let active = true
-    void api
-      .listGnomeSystemShortcuts()
-      .then((list) => {
-        if (active) setSystemShortcuts(list)
-      })
-      .catch(() => {})
-    return () => {
-      active = false
-    }
-  }, [])
-
-  // 录制快捷键期间暂停全局热键派发：避免按下已注册组合触发翻译/聊天等窗口
-  useEffect(() => {
-    if (!recordingTarget) return
-    void api.setHotkeysSuspended(true)
-    return () => {
-      void api.setHotkeysSuspended(false)
-    }
-  }, [recordingTarget])
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
   const [uiFontPxInput, setUiFontPxInput] = useState('')
@@ -251,18 +174,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const { closePicker, cancelDelete } = providerModals
   const requestWindowFocus = useWindowInteractionFocus()
   const updates = useSettingsUpdateController(settings ? settings.autoCheckUpdate : null)
-  const platform = getPlatform()
-  const isMac = platform === 'macos'
-  const hasSystemOcr = isMac || platform === 'windows'
-  const ocrDownloads = useSettingsOcrDownloads(
-    hasSystemOcr,
-    settings?.screenshotTranslation?.rapidOcrTier ?? 'standard',
-  )
   // 加载失败时的错误信息；非空则渲染错误 UI 而不是用合成默认值进入正常视图
   // （否则用户可能没察觉就自动保存把磁盘真实数据覆盖掉）
   const [reloadKey, setReloadKey] = useState(0)
   const readyEmittedRef = useRef(false)
-  const toastClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const lang = settings?.settingsLanguage || 'zh'
   const memoryEditor = useSettingsMemoryEditor(undefined, lang, activeTab === 'memory')
@@ -293,7 +208,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const controllerSaveError = editorView.saveError.startsWith('Settings conflict: ')
     ? `${lang === 'zh' ? '设置冲突：' : 'Settings conflict: '}${editorView.saveError.slice('Settings conflict: '.length)}`
     : editorView.saveError.startsWith('Save failed: ')
-      ? `${lang === 'zh' ? '保存失败：' : 'Save failed: '}${formatHotkeyError(editorView.saveError.slice('Save failed: '.length), lang)}`
+      ? `${lang === 'zh' ? '保存失败：' : 'Save failed: '}${editorView.saveError.slice('Save failed: '.length)}`
       : editorView.saveError
   const visibleSaveError = providerCatalog.error
     ? `${lang === 'zh' ? '获取模型失败：' : 'Could not fetch models: '}${providerCatalog.error}`
@@ -301,88 +216,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const chatTools = settings?.chatTools
   const nativeBuiltinToolsEnabled = chatTools ? hasEnabledNativeBuiltinTool(chatTools.nativeTools) : false
   const skillRuntimeEnabled = chatTools ? hasEnabledSkillRuntime(chatTools.nativeTools) : false
-
-  // 客户端热键冲突检测:在保存前发现"两个启用功能用了同一个组合"，
-  // 以及与应用内/系统（GNOME）快捷键的冲突。返回每个 scope 对应的冲突对象。
-  const hotkeyConflicts = useMemo<Partial<Record<HotkeyScopeKey, HotkeyConflict>>>(() => {
-    if (!settings) return {}
-    const slots: Array<{ scope: HotkeyScopeKey; hotkey: string; enabled: boolean }> = [
-      { scope: 'main', hotkey: settings.hotkey || '', enabled: !!(settings.hotkey || '').trim() },
-      { scope: 'chat', hotkey: settings.chatHotkey || '', enabled: !!(settings.chatHotkey || '').trim() },
-      {
-        scope: 'closeChat',
-        hotkey: settings.closeChatHotkey || '',
-        enabled: !!(settings.closeChatHotkey || '').trim(),
-      },
-      {
-        scope: 'screenshotTranslation',
-        hotkey: settings.screenshotTranslation.hotkey,
-        enabled: settings.screenshotTranslation.enabled,
-      },
-      {
-        scope: 'screenshotTranslationText',
-        hotkey: settings.screenshotTranslation.textHotkey,
-        enabled: settings.screenshotTranslation.enabled,
-      },
-      {
-        scope: 'screenshotTranslationReplace',
-        hotkey: settings.screenshotTranslation.replaceHotkey || '',
-        enabled: settings.screenshotTranslation.enabled
-          && settings.screenshotTranslation.replaceEnabled !== false,
-      },
-      { scope: 'screenshotAnnotate', hotkey: settings.screenshotAnnotate.hotkey, enabled: settings.screenshotAnnotate.enabled },
-      { scope: 'lens', hotkey: settings.lens.hotkey, enabled: settings.lens.enabled },
-    ]
-    const groups = new Map<string, HotkeyScopeKey[]>()
-    for (const s of slots) {
-      const key = s.hotkey.trim().toLowerCase()
-      if (!key || !s.enabled) continue
-      const list = groups.get(key) ?? []
-      list.push(s.scope)
-      groups.set(key, list)
-    }
-    const out: Partial<Record<HotkeyScopeKey, HotkeyConflict>> = {}
-    for (const list of groups.values()) {
-      if (list.length < 2) continue
-      for (const scope of list) {
-        const partner = list.find(other => other !== scope)
-        if (partner) out[scope] = { kind: 'app', partner }
-      }
-    }
-    // 系统快捷键占用：同一组合被 GNOME（media-keys / wm / shell / mutter / 自定义）占用
-    const systemByNorm = new Map<string, { label: string; accelerator: string }>()
-    for (const s of systemShortcuts) {
-      const norm = normalizeHotkeyForCompare(s.accelerator)
-      if (!systemByNorm.has(norm)) systemByNorm.set(norm, s)
-    }
-    for (const s of slots) {
-      if (!s.enabled || !s.hotkey.trim()) continue
-      const sys = systemByNorm.get(normalizeHotkeyForCompare(s.hotkey))
-      if (sys && !out[s.scope]) out[s.scope] = { kind: 'system', label: sys.label, accelerator: sys.accelerator }
-    }
-    return out
-  }, [settings, systemShortcuts])
-
-  const SCOPE_I18N_KEY: Record<HotkeyScopeKey, 'hotkeyScopeTranslator' | 'hotkeyScopeChat' | 'hotkeyScopeCloseChat' | 'hotkeyScopeScreenshot' | 'hotkeyScopeScreenshotText' | 'hotkeyScopeScreenshotReplace' | 'annotateHotkeyLabel' | 'hotkeyScopeLens'> = {
-    main: 'hotkeyScopeTranslator',
-    chat: 'hotkeyScopeChat',
-    closeChat: 'hotkeyScopeCloseChat',
-    screenshotTranslation: 'hotkeyScopeScreenshot',
-    screenshotTranslationText: 'hotkeyScopeScreenshotText',
-    screenshotTranslationReplace: 'hotkeyScopeScreenshotReplace',
-    screenshotAnnotate: 'annotateHotkeyLabel',
-    lens: 'hotkeyScopeLens',
-  }
-  const conflictMessageFor = (scope: HotkeyScopeKey): string | undefined => {
-    const conflict = hotkeyConflicts[scope]
-    if (!conflict) return undefined
-    if (conflict.kind === 'app') {
-      return t.hotkeyConflictWith.replace('{partner}', t[SCOPE_I18N_KEY[conflict.partner]])
-    }
-    return t.hotkeyConflictWithSystem
-      .replace('{label}', conflict.label)
-      .replace('{accelerator}', conflict.accelerator)
-  }
 
   // 初始化：加载设置、版本号、默认提示词
   // 重试通过递增 reloadKey 触发本 effect 重跑
@@ -470,33 +303,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
    */
   const persistSettingsNow = useCallback(() => editorController.flush(), [editorController])
 
-  useEffect(() => {
-    return () => {
-      if (toastClearTimerRef.current) clearTimeout(toastClearTimerRef.current)
-    }
-  }, [])
-
-  // 错误 / 热键警告：短暂 toast，几秒后自动消失
-  useEffect(() => {
-    if (!saveWarning) return
-    if (toastClearTimerRef.current) clearTimeout(toastClearTimerRef.current)
-    toastClearTimerRef.current = setTimeout(() => {
-      setSaveWarning('')
-      toastClearTimerRef.current = null
-    }, 5000)
-    return () => {
-      if (toastClearTimerRef.current) {
-        clearTimeout(toastClearTimerRef.current)
-        toastClearTimerRef.current = null
-      }
-    }
-  }, [saveWarning])
-
   /**
    * 关闭设置页：默认等待 flush 成功；显式 waitForSave=false 才立即退场。
    */
   const handleCloseRequest = useCallback((options?: SettingsCloseOptions) => {
-    if (recordingTarget) return
     void (async () => {
       if (themeDraft && !await confirmDialog({
         message: lang === 'zh' ? '自定义主题尚未保存。放弃编辑并关闭？' : 'The custom theme is not saved. Discard edits and close?',
@@ -505,7 +315,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       setThemeDraft(null)
       await editorController.requestClose(onClose, options)
     })()
-  }, [editorController, onClose, recordingTarget, themeDraft, lang])
+  }, [editorController, onClose, themeDraft, lang])
 
   useImperativeHandle(ref, () => ({ requestClose: handleCloseRequest }), [handleCloseRequest])
 
@@ -522,7 +332,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   // 全局键盘：Esc 关闭、Cmd/Ctrl+S 立即 flush；弹窗打开时优先处理弹窗内的 Esc
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (recordingTarget) return
       // 应用内确认框（原生 <dialog>）自己处理 Esc；捕获阶段在这里先接住会把整个设置页关掉。
       if (e.target instanceof Element && e.target.closest('dialog[open]')) return
 
@@ -556,7 +365,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     return () => window.removeEventListener('keydown', handler, true)
   }, [
     handleCloseRequest,
-    recordingTarget,
     confirmDeleteProviderId,
     modelPickerProviderId,
     closePicker,
@@ -682,24 +490,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [setSettings])
 
-  // 保存后若有热键被系统/其他应用占用未注册，后端推 hotkey-warning——提示但不视为保存失败。
-  useEffect(() => {
-    let cancelled = false
-    let unlisten: (() => void) | null = null
-    void api.onHotkeyWarning((raw) => {
-      if (cancelled) return
-      const detail = formatHotkeyError(raw, lang).replace(/\n/g, ' / ')
-      setSaveWarning(lang === 'zh' ? `已保存,但部分热键未注册:${detail}` : `Saved, but some hotkeys were not registered: ${detail}`)
-    }).then((fn) => {
-      if (cancelled) fn()
-      else unlisten = fn
-    })
-    return () => {
-      cancelled = true
-      unlisten?.()
-    }
-  }, [lang])
-
   const dispatchProviderIntent = useCallback((intent: ProviderDraftIntent) => {
     setSettings((current) => current ? applyProviderDraftIntent(current, intent) : current)
   }, [setSettings])
@@ -776,36 +566,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const openModelPicker = (providerId: string) => {
     providerModals.openPicker(providerId)
   }
-
-  /**
-   * 更新截图翻译配置
-   */
-  const updateScreenshotTranslation = useCallback((updates: Partial<SettingsData['screenshotTranslation']>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      return { ...prev, screenshotTranslation: { ...prev.screenshotTranslation, ...updates } }
-    })
-  }, [setSettings])
-
-  /**
-   * 更新截图标注配置
-   */
-  const updateScreenshotAnnotate = useCallback((updates: Partial<NonNullable<SettingsData['screenshotAnnotate']>>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      return { ...prev, screenshotAnnotate: { ...prev.screenshotAnnotate, ...updates } }
-    })
-  }, [setSettings])
-
-  /**
-   * 更新 Lens 配置
-   */
-  const updateLens = useCallback((updates: Partial<SettingsData['lens']>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      return { ...prev, lens: { ...prev.lens, ...updates } }
-    })
-  }, [setSettings])
 
   const updateChat = useCallback((updates: Partial<NonNullable<SettingsData['chat']>>) => {
     setSettings((prev) => {
@@ -884,7 +644,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   // These values come from the canonical backend response. Do not synthesize persisted defaults
   // in the webview: legacy omissions are migrated before get_settings returns.
-  const lensDefaults = defaultPrompts?.lensPrompts?.[settings.lens.defaultLanguage === 'en' ? 'en' : 'zh']
   const chatLangKey = settings.chat.defaultLanguage === 'en' ? 'en' : 'zh'
   const chatDefaults = defaultPrompts?.chatPrompts?.[chatLangKey]
   const chatRuntimeDefaults = defaultPrompts?.chatRuntimePrompt
@@ -906,14 +665,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'general' as const, label: t.tabGeneral, icon: GeneralIcon },
     { id: 'themes' as const, label: lang === 'zh' ? '主题' : 'Themes', icon: Palette },
     { id: 'providers' as const, label: t.tabModels, icon: ProvidersIcon },
-    { id: 'hotkeys' as const, label: t.tabHotkeys, icon: HotkeysIcon },
-    { id: 'translate' as const, label: t.tabTranslation, icon: TranslateIcon },
-    { id: 'lens' as const, label: t.lensTabLabel, icon: LensIcon },
     { id: 'chat' as const, label: t.tabChatClient, icon: ChatIcon },
     { id: 'memory' as const, label: t.tabMemory, icon: MemoryIcon },
     { id: 'mixer' as const, label: t.tabMixer, icon: MixerIcon },
-    { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: CliIcon },
-    { id: 'computerControl' as const, label: lang === 'zh' ? '电脑操控' : 'Computer control', icon: ComputerIcon },
     { id: 'hooks' as const, label: t.tabHooks, icon: HooksIcon },
     { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
     { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
@@ -935,18 +689,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       title: lang === 'zh' ? '主题' : 'Themes',
       subtitle: lang === 'zh' ? '管理明暗色板，预览、编辑与分享自定义主题。' : 'Manage light and dark palettes. Preview, edit, and share custom themes.',
     },
-    translate: {
-      title: t.tabTranslation,
-      subtitle: lang === 'zh' ? '输入翻译与快速翻译的语言、模型、OCR 和提示词。' : 'Language, model, OCR, and prompts for input and quick translation.',
-    },
-    hotkeys: {
-      title: t.tabHotkeys,
-      subtitle: lang === 'zh' ? '集中管理所有全局快捷键。' : 'Manage all global hotkeys in one place.',
-    },
-    lens: {
-      title: t.lensTabLabel,
-      subtitle: lang === 'zh' ? '视觉问答的快捷键、响应方式和提示词。' : 'Shortcut, response behavior, and prompts for visual Q&A.',
-    },
     chat: {
       title: t.tabChatClient,
       subtitle: lang === 'zh'
@@ -964,16 +706,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       subtitle: lang === 'zh'
         ? '按副任务路由模型：视觉、标题总结、上下文压缩、生图。'
         : 'Route models by side task: vision, title summaries, context compression, and image generation.',
-    },
-    computerControl: {
-      title: lang === 'zh' ? '电脑操控' : 'Computer control',
-      subtitle: lang === 'zh' ? '管理桌面、浏览器和文档操作工具。' : 'Manage desktop, browser, and document control tools.',
-    },
-    externalAgents: {
-      title: t.tabExternalAgents,
-      subtitle: lang === 'zh'
-        ? '检测外部 CLI 编码代理，管理版本、路径、模型与环境变量。'
-        : 'Detect external CLI coding agents; manage versions, paths, models, and env vars.',
     },
     hooks: {
       title: t.tabHooks,
@@ -1218,68 +950,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               </>
             )}
 
-            {/* ===== 翻译设置标签页 ===== */}
-            {activeTab === 'translate' && (
-              <>
-                <TranslateTab
-                  settings={settings}
-                  t={t}
-                  lang={lang}
-                  defaultPrompts={defaultPrompts}
-                  onUpdateSettings={updateSettings}
-                />
-
-                <div className="kv-section-title">{t.tabScreenshot}</div>
-                <ScreenshotTranslationSettings
-                  settings={settings}
-                  isMac={isMac}
-                  hasSystemOcr={hasSystemOcr}
-                  defaultPrompts={defaultPrompts}
-                  rapidOcrStatus={ocrDownloads.rapidStatus}
-                  rapidOcrDownloadState={ocrDownloads.rapidDownloadState}
-                  rapidOcrDownloadError={ocrDownloads.rapidDownloadError}
-                  replacePackStatus={ocrDownloads.replaceStatus}
-                  replacePackDownloadState={ocrDownloads.replaceDownload.downloadState}
-                  replacePackDownloadError={ocrDownloads.replaceDownload.error}
-                  replacePackProgress={ocrDownloads.replaceDownload.progress}
-                  t={t}
-                  onUpdate={updateScreenshotTranslation}
-                  onRefreshRapidOcrStatus={ocrDownloads.refreshRapid}
-                  onDownloadRapidOcr={ocrDownloads.downloadRapid}
-                  onRefreshReplacePack={ocrDownloads.refreshReplace}
-                  onDownloadReplacePack={ocrDownloads.downloadReplace}
-                />
-              </>
-            )}
-
-            {/* ===== 快捷键标签页：集中所有全局热键 ===== */}
-            {activeTab === 'hotkeys' && (
-              <HotkeysTab
-                settings={settings}
-                t={t}
-                recordingTarget={recordingTarget}
-                onToggleRecording={hotkeyRecorder.toggle}
-                conflictMessageFor={conflictMessageFor}
-                hotkeyConflicts={hotkeyConflicts}
-                onUpdateSettings={updateSettings}
-                onUpdateScreenshotTranslation={updateScreenshotTranslation}
-                onUpdateScreenshotAnnotate={updateScreenshotAnnotate}
-                onUpdateLens={updateLens}
-              />
-            )}
-
-            {/* ===== Lens 标签页 ===== */}
-            {activeTab === 'lens' && (
-              <LensTab
-                settings={settings}
-                t={t}
-                lang={lang}
-                lensDefaults={lensDefaults}
-                onUpdateSettings={updateSettings}
-                onUpdateLens={updateLens}
-              />
-            )}
-
             {/* ===== AI 客户端标签页 ===== */}
             {activeTab === 'chat' && (
               <ChatTab
@@ -1335,18 +1005,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 onUpdateChatTools={updateChatTools}
                 onUpdateChat={updateChat}
               />
-            )}
-
-            {activeTab === 'externalAgents' && (
-              <ExternalAgentsSettings
-                lang={lang}
-                settings={settings}
-                updateChat={updateChat}
-              />
-            )}
-
-            {activeTab === 'computerControl' && (
-              <ComputerControlTab lang={lang} tools={settings.chatTools} onChange={updateChatTools} />
             )}
 
             {/* ===== Hooks 标签页（对话生命周期） ===== */}
@@ -1467,14 +1125,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             )}
           </div>
 
-          {(visibleSaveError || saveWarning) && (
+          {visibleSaveError && (
             <div
-              className={`settings-autosave-toast ${visibleSaveError ? 'error' : 'warn'}`}
+              className="settings-autosave-toast error"
               role="status"
-              title={visibleSaveError || saveWarning}
+              title={visibleSaveError}
               data-tauri-drag-region="false"
             >
-              {visibleSaveError || saveWarning}
+              {visibleSaveError}
             </div>
           )}
         </main>
@@ -1623,7 +1281,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             <div className="kv-sidebar-brand-mark">
               <img src="/icon.png" alt="" aria-hidden="true" />
             </div>
-            <div className="kv-sidebar-brand-name">Kivio Desktop</div>
+            <div className="kv-sidebar-brand-name">Kivio</div>
             <div className="kv-sidebar-brand-ver">v{appVersion}</div>
           </div>
           {categoryNav}

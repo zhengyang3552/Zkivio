@@ -1,6 +1,6 @@
 import { SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
-import { MemoryIcon, AgentIcon, ProvidersIcon } from '../NavIcons'
+import { MemoryIcon, ProvidersIcon } from '../NavIcons'
 import type { I18n, Lang } from '../../components/i18n'
 import type { SettingsTab } from '../SettingsShell'
 import type {
@@ -49,14 +49,6 @@ export function ChatToolsStatusGroup({
         >
           <MemoryIcon size={11} />
           {t.tabMemory}
-        </Button>
-        <Button
-          size="sm"
-          onClick={() => onNavigateTab('externalAgents')}
-          data-tauri-drag-region="false"
-        >
-          <AgentIcon size={11} />
-          {t.chatOpenExternalAgents}
         </Button>
         <Button
           size="sm"

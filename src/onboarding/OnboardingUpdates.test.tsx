@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api, type Settings } from '../api/tauri'
+import { api } from '../api/tauri'
 import { i18n } from '../components/i18n'
 import { makeProvider, makeSettings } from '../settings/tabs/testFixtures'
 import { ProviderSetupPanel } from './ProviderSetupPanel'
-import { HotkeyStep } from './steps/HotkeyStep'
 import { DoneStep } from './steps/DoneStep'
 
 vi.mock('../api/tauri', async () => {
@@ -43,35 +42,20 @@ describe('onboarding matches current capabilities', () => {
     }))
   })
 
-  it('records the chat shortcut and keeps explicitly cleared shortcuts empty', () => {
-    let latest: Settings = makeSettings({ hotkey: '', screenshotTranslation: { ...makeSettings().screenshotTranslation, replaceHotkey: '' } })
-    function Setup() {
-      const [settings, setSettings] = useState(latest)
-      return <HotkeyStep t={i18n.zh} settings={settings} onChange={next => { latest = next; setSettings(next) }} />
-    }
-    render(<Setup />)
-    const row = screen.getByText(i18n.zh.chatHotkeyLabel).closest('.onboarding-form-row') as HTMLElement
-    fireEvent.click(within(row).getByRole('button', { name: i18n.zh.hotkeyRecord }))
-    fireEvent.keyDown(window, { key: 'u', code: 'KeyU', ctrlKey: true, shiftKey: true })
-    expect(latest.chatHotkey).toBe('CommandOrControl+Shift+U')
-    expect(latest.hotkey).toBe('')
-    for (const label of [i18n.zh.onboardingHotkeyTranslator, i18n.zh.onboardingHotkeyReplace]) {
-      const field = screen.getByText(label, { selector: '.onboarding-field-label' }).closest('.onboarding-form-row') as HTMLElement
-      expect(within(field).queryByRole('button', { name: i18n.zh.hotkeyClear })).not.toBeInTheDocument()
-    }
-    fireEvent.click(within(row).getByRole('button', { name: i18n.zh.hotkeyClear }))
-    expect(latest.chatHotkey).toBe('')
-    expect(within(row).queryByRole('button', { name: i18n.zh.hotkeyClear })).not.toBeInTheDocument()
-  })
-
-  it('reports chat search as enabled independently from Lens search', () => {
+  it('reports chat search state in the done summary', () => {
     const settings = makeSettings({ providers: [makeProvider()] })
-    settings.lens.webSearch = { enabled: false, provider: 'tavily', tavilyApiKey: 'key', exaApiKey: '', maxResults: 5, searchDepth: 'basic' }
     render(<DoneStep t={i18n.zh} settings={settings} />)
     const summary = within(screen.getByText(i18n.zh.onboardingDoneSectionModels).parentElement as HTMLElement)
     const chatRow = summary.getByText(`${i18n.zh.webSearchChatSection} · ${i18n.zh.onboardingDoneWebSearch}`).closest('.onboarding-summary-row') as HTMLElement
-    const lensRow = summary.getByText(`${i18n.zh.webSearchLensSection} · ${i18n.zh.onboardingDoneWebSearch}`).closest('.onboarding-summary-row') as HTMLElement
-    expect(within(chatRow).getByText(i18n.zh.enabled)).toBeInTheDocument()
-    expect(within(lensRow).getByText(i18n.zh.onboardingDoneDisabled)).toBeInTheDocument()
+    expect(chatRow).toBeInTheDocument()
+  })
+
+  it('no longer renders translation, Lens or hotkey sections', () => {
+    const settings = makeSettings({ providers: [makeProvider()] })
+    const { container } = render(<DoneStep t={i18n.zh} settings={settings} />)
+    // 仅保留「模型与联网」一节，且只含 Chat 联网搜索一行。
+    expect(container.querySelectorAll('.onboarding-summary-row')).toHaveLength(1)
+    expect(screen.queryByText(`${i18n.zh.webSearchLensSection} · ${i18n.zh.onboardingDoneWebSearch}`)).not.toBeInTheDocument()
+    expect(screen.queryByText('全局快捷键')).not.toBeInTheDocument()
   })
 })

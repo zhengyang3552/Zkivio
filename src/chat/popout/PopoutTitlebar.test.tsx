@@ -9,7 +9,6 @@ import { PopoutTitlebar } from './PopoutTitlebar'
 
 vi.mock('../RuntimePicker', () => ({
   RuntimePicker: () => <span data-testid="runtime-picker" />,
-  ExternalModelSelector: () => <span />,
 }))
 vi.mock('../ModelSelector', () => ({ ModelSelector: () => <span data-testid="model-selector" /> }))
 vi.mock('../ThinkingLevelSelector', () => ({ ThinkingLevelSelector: () => <span /> }))
@@ -33,11 +32,9 @@ describe('PopoutTitlebar', () => {
             updated_at: 0,
           }}
           runtime={runtime}
-          usesExternalRuntime={false}
           approvalPolicy="readonly_auto_sensitive_confirm"
           onRuntimeChange={() => {}}
           onModelChange={() => {}}
-          onExternalModelChange={() => {}}
           onThinkingLevelChange={() => {}}
           onApprovalPolicyChange={() => {}}
         />

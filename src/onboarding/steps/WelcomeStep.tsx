@@ -4,11 +4,8 @@ import {
   BookOpen,
   CalendarClock,
   ChevronRight,
-  FolderGit2,
   MessageSquare,
   Images,
-  ScanSearch,
-  Terminal,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { I18n } from '../../components/i18n'
@@ -27,11 +24,8 @@ type FeatureCard = {
 export function WelcomeStep({ t }: WelcomeStepProps) {
   const features: FeatureCard[] = [
     { icon: MessageSquare, title: t.onboardingWelcomeChatTitle, desc: t.onboardingWelcomeChatDesc },
-    { icon: Terminal, title: t.onboardingWelcomeCliAgentTitle, desc: t.onboardingWelcomeCliAgentDesc },
     { icon: Blocks, title: t.onboardingWelcomeExtensionsTitle, desc: t.onboardingWelcomeExtensionsDesc },
     { icon: BookOpen, title: t.onboardingWelcomeKnowledgeTitle, desc: t.onboardingWelcomeKnowledgeDesc },
-    { icon: ScanSearch, title: t.onboardingWelcomeLensTitle, desc: t.onboardingWelcomeLensDesc },
-    { icon: FolderGit2, title: t.onboardingWelcomeWorkspaceTitle, desc: t.onboardingWelcomeWorkspaceDesc },
     { icon: CalendarClock, title: t.onboardingWelcomeTasksTitle, desc: t.onboardingWelcomeTasksDesc },
     { icon: Images, title: t.onboardingWelcomeMediaTitle, desc: t.onboardingWelcomeMediaDesc },
   ]
@@ -39,7 +33,6 @@ export function WelcomeStep({ t }: WelcomeStepProps) {
   const setupSteps = [
     t.onboardingWelcomeStepProvider,
     t.onboardingWelcomeStepWebSearch,
-    t.onboardingWelcomeStepHotkey,
   ]
 
   return (

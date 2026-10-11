@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, FolderOpen, Pencil, Trash2 } from 'lucide-react'
+import { FolderOpen, Pencil, Trash2 } from 'lucide-react'
 import { useT } from '../components/i18n'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import { useCloseAnimation } from './useCloseAnimation'
@@ -11,7 +11,6 @@ interface ProjectContextMenuProps {
   hasRootFolder: boolean
   onRename: () => void
   onOpenFolder: () => void
-  onImportFromCli: () => void
   onDelete: () => void
   onClose: () => void
 }
@@ -21,7 +20,6 @@ export function ProjectContextMenu({
   hasRootFolder,
   onRename,
   onOpenFolder,
-  onImportFromCli,
   onDelete,
   onClose: onCloseProp,
 }: ProjectContextMenuProps) {
@@ -82,22 +80,6 @@ export function ProjectContextMenu({
       >
         <FolderOpen strokeWidth={1.75} />
         {t.chatOpenProjectFolder}
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        disabled={!hasRootFolder}
-        // 导入按工作目录匹配会话，没有项目根就无从比对（ADR-0001）。
-        title={hasRootFolder ? undefined : t.chatPickFolderFirst}
-        className="kv-menu-item"
-        onClick={() => {
-          if (!hasRootFolder) return
-          onImportFromCli()
-          onClose()
-        }}
-      >
-        <Download strokeWidth={1.75} />
-        {t.chatImportFromCli}
       </button>
       <div className="my-1 border-t border-neutral-200/80" />
       <button

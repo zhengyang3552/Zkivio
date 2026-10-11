@@ -69,7 +69,7 @@ import {
 import type { AssistantStreamStats, MessageListProps } from './MessageList'
 import type { InputBarProps } from './InputBar'
 import { SessionUsageStrip } from './SessionUsageStrip'
-import { deriveDshPresetModes, derivePermissionModes, useDetectedExternalAgents, useDshCustomPresets } from './permissionModes'
+import { derivePermissionModes } from './permissionModes'
 import { ContextIndicator } from './ContextIndicator'
 import {
   agentRuntimesEqual,
@@ -810,9 +810,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     changeAdditionalDirectories: handleChangeAdditionalDirectories,
     toggleForceKnowledgeSearch: handleToggleForceKnowledgeSearch,
     changeRuntime: handleRuntimeChange,
-    changeExternalModel: handleExternalModelChange,
     changeExternalSandbox: handleExternalSandboxChange,
-    changeExternalPreset: handleExternalPresetChange,
     persistApprovedExternalSandbox,
     editGoal: handleEditGoal,
     pauseGoal: handlePauseGoal,
@@ -827,9 +825,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     applyConversationIfCurrent,
     setStreamErrorForConversation,
   })
-  // 底栏模式胶囊：内置 Agent = Act/Plan/Orchestrate；Kivio Chat 无此胶囊；本地 CLI = 沙盒档位。
-  // CLI 没有档位时返回空表 → 胶囊隐藏。
-  const detectedExternalAgents = useDetectedExternalAgents(currentConversation?.id ?? null)
+  // 底栏模式胶囊：内置 Agent = Act/Plan/Orchestrate；Kivio Chat 无此胶囊（返回空表 → 隐藏）。
   const activeAgentPlanMode = currentConversation?.agent_plan_state?.mode
     ?? currentConversation?.agentPlanState?.mode
     ?? 'act'
@@ -841,16 +837,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     () => derivePermissionModes({
       target: 'composer',
       agentRuntime: activeAgentRuntime,
-      agents: detectedExternalAgents,
       agentPlanMode: activeAgentPlanMode,
       goalActive: goalActive || goalDraft,
     }),
-    [activeAgentRuntime, detectedExternalAgents, activeAgentPlanMode, goalActive, goalDraft],
-  )
-  const dshCustomPresets = useDshCustomPresets(activeAgentRuntime)
-  const composerPresets = useMemo(
-    () => deriveDshPresetModes(activeAgentRuntime, dshCustomPresets),
-    [activeAgentRuntime, dshCustomPresets],
+    [activeAgentRuntime, activeAgentPlanMode, goalActive, goalDraft],
   )
   const currentConversationIsBlank = isPlainBlankConversation(currentConversation)
   const activeProviderId = currentConversation && !currentConversationIsBlank
@@ -1120,18 +1110,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           providerId: settings.chatProviderId || '',
           model: settings.chatModel || '',
         },
-        lens: {
-          providerId: settings.lens?.providerId || '',
-          model: settings.lens?.model || '',
-        },
-        translator: {
-          providerId: settings.translatorProviderId || '',
-          model: settings.translatorModel || '',
-        },
       })
       setDraftProviderId(preferred.providerId)
       setDraftModel(preferred.model)
-      // 聊天里选过的模型才写回 settings，避免把 Lens/翻译回落误当成 Chat 默认。
+      // 聊天里选过的模型才写回 settings，避免回落值被误当成 Chat 默认。
       const stored = settings.defaultModels?.chat
       if (
         last
@@ -2020,26 +2002,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   //     codex 有 `turn/steer`；pi 有 RPC `steer`；dsh 有 bridge `session/steer`。
   //     claude 的 stream-json 输入是顺序处理的、ACP 只有 prompt/cancel。
   //   - 多模型一问多答 → 一律不给：同会话 N 条并发 run，按 conversation 键的信箱定不到某条臂。
-  const activeExternalAgentSupportsSteering = useMemo(() => {
-    const agentId = activeAgentRuntime.externalAgentId
-    if (!agentId) return false
-    const agent = detectedExternalAgents.find((item) => item.id === agentId)
-    return Boolean(agent?.supportsSteering ?? agent?.supports_steering)
-  }, [activeAgentRuntime.externalAgentId, detectedExternalAgents])
-  const activeExternalAgentSupportsFollowUp = useMemo(() => {
-    const agentId = activeAgentRuntime.externalAgentId
-    if (!agentId) return false
-    const agent = detectedExternalAgents.find((item) => item.id === agentId)
-    return Boolean(agent?.supportsFollowUp ?? agent?.supports_follow_up)
-  }, [activeAgentRuntime.externalAgentId, detectedExternalAgents])
-  const canSteerCurrentConversation =
-    (usesExternalRuntime ? activeExternalAgentSupportsSteering : true)
-    && activeReplyModels.length < 2
+  const canSteerCurrentConversation = activeReplyModels.length < 2
   // Goal 的用户输入必须先于自动续跑，因此复用原生 follow-up；普通内置循环仍保留
   // 可见队列和「立刻引导」。外部 CLI 仅在协议原生支持时启用，多模型一问多答不给。
-  const canFollowUpCurrentConversation =
-    ((usesExternalRuntime && activeExternalAgentSupportsFollowUp) || goalActive)
-    && activeReplyModels.length < 2
+  const canFollowUpCurrentConversation = goalActive && activeReplyModels.length < 2
 
   const handleQueueMessage = useCallback((content: string, attachments: PendingAttachment[]) => {
     const conversation = currentConversationRef.current
@@ -2625,7 +2591,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           || popoutConversationIds.has(currentConversation.id)
         )
       }
-      usesExternalRuntime={usesExternalRuntime}
       usesChatRuntime={usesChatRuntime}
       activeProviderId={activeProviderId}
       activeModel={activeModel}
@@ -2640,7 +2605,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       dockOpen={dockOpen}
       uiLang={uiLang}
       onRuntimeChange={handleRuntimeChange}
-      onExternalModelChange={handleExternalModelChange}
       onModelChange={handleModelChange}
       onThinkingLevelChange={handleThinkingLevelChange}
       onApprovalPolicyChange={handleApprovalPolicyChange}
@@ -2657,7 +2621,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     dockOpen,
     draftThinkingLevel,
     handleApprovalPolicyChange,
-    handleExternalModelChange,
     handleModelChange,
     handleOpenConversationPopout,
     handleOpenDockTasks,
@@ -2667,7 +2630,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     popoutConversationIds,
     uiLang,
     usesChatRuntime,
-    usesExternalRuntime,
   ])
 
   const handleTitlebarToggleSidebar = useCallback(() => {
@@ -2738,11 +2700,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     modeOptions: composerModes.options,
     modeValue: composerModes.current,
     onModeChange: handleComposerModeChange,
-    presetOptions: composerPresets.options,
-    presetValue: composerPresets.current,
-    onPresetChange: handleExternalPresetChange,
-    presetLocked: Boolean(currentConversation) && !currentConversationIsBlank,
-    presetLockedReason: i18n[uiLang].chatAgentPresetLocked,
     usageSlot: composerUsageSlot,
   }), [
     activeAgentRuntime.externalAgentId,
@@ -2750,7 +2707,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     activeReplyModels,
     activeWebSearchMode,
     composerModes,
-    composerPresets,
     composerContextSlot,
     composerCurrentAssistant,
     composerForceKnowledgeSearch,
@@ -2760,7 +2716,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     loadInputHistory,
     conversationProject,
     currentConversation,
-    currentConversationIsBlank,
     dockWorkdir,
     enabledTools,
     handleAgentPlanModeChange,
@@ -2771,7 +2726,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleClearChat,
     handleCompressContext,
     handleComposerModeChange,
-    handleExternalPresetChange,
     handleOpenChatSettings,
     handleOpenDockGit,
     handleQueueMessage,

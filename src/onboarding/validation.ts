@@ -27,23 +27,11 @@ export function isProviderModelBindingUsable(
   return provider.enabledModels.includes(modelName)
 }
 
+// 手机端没有截图翻译 / Lens 窗口，只有常规对话与网页搜索，因此引导只要求至少一个可用供应商。
 export function validateProviderStep(settings: Settings): { ok: boolean; reason?: string } {
   if (settings.providers.length === 0) {
     return { ok: false, reason: 'no_provider' }
   }
-
-  const quickProviderId = settings.screenshotTranslation?.providerId?.trim() ?? ''
-  const quickModel = settings.screenshotTranslation?.model?.trim() ?? ''
-  if (!isProviderModelBindingUsable(settings, quickProviderId, quickModel)) {
-    return { ok: false, reason: 'missing_quick_translate_model' }
-  }
-
-  const lensProviderId = settings.lens?.providerId?.trim() ?? ''
-  const lensModel = settings.lens?.model?.trim() ?? ''
-  if (!isProviderModelBindingUsable(settings, lensProviderId, lensModel)) {
-    return { ok: false, reason: 'missing_lens_model' }
-  }
-
   return { ok: true }
 }
 

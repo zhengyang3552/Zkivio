@@ -51,8 +51,9 @@ it('refreshes the chat draft from the saved setup before the first conversation'
   window.history.replaceState(null, '', '#chat/onboarding')
   render(<Chat onSettingsChange={() => {}} />)
   fireEvent.click(await screen.findByRole('button', { name: '开始配置' }))
-  for (let step = 0; step < 3; step++) fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始使用 Kivio Desktop' })) })
+  // 引导只剩 provider / webSearch 两步（热键步已随翻译、Lens 一并移除）。
+  for (let step = 0; step < 2; step++) fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '完成' })) })
   await waitFor(() => expect(screen.getByRole('button', { name: binding.model })).toBeInTheDocument())
   expect(screen.queryByRole('button', { name: 'GPT-4o' })).not.toBeInTheDocument()
   expect(cached.onboardingStatus).toBe('completed')

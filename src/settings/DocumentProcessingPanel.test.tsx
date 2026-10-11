@@ -8,9 +8,6 @@ vi.mock('../api/tauri', () => ({
   api: {
     rapidOcrStatus: vi.fn(),
     rapidOcrInstall: vi.fn(),
-    replaceTranslationPackStatus: vi.fn(),
-    replaceTranslationPackInstall: vi.fn(),
-    onReplaceTranslationPackProgress: vi.fn(async () => () => {}),
   },
 }))
 
@@ -40,19 +37,10 @@ describe('DocumentProcessingPanel RapidOCR flight', () => {
     resetSettingsOcrDownloadsForTests()
     vi.mocked(api.rapidOcrStatus).mockReset()
     vi.mocked(api.rapidOcrInstall).mockReset()
-    vi.mocked(api.replaceTranslationPackStatus).mockReset()
     vi.mocked(api.rapidOcrStatus).mockImplementation(async () => ({
       standardAvailable: false,
       highAvailable,
       modelDir: highAvailable ? '/models/rapid' : null,
-    }))
-    vi.mocked(api.replaceTranslationPackStatus).mockImplementation(async (tier) => ({
-      tier,
-      ready: false,
-      totalBytes: 1,
-      readyBytes: 0,
-      missingBytes: 1,
-      files: [],
     }))
   })
 

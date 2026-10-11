@@ -43,14 +43,16 @@ export function saveLastModel(providerId: string, model: string): void {
  * 聊天草稿 / 设置页「当前模型」共用同一条回落：上次选择 → 已写入的 last-used →
  * 旧字段 chatProviderId → Lens → 翻译 → 首个启用模型。
  * 每一项都必须仍在启用列表中；没有可选模型时留空，不带入历史占位值。
+ *
+ * `lens` / `translator` 为可选项：Android 端没有这两个功能，调用方不传即跳过这两级回落。
  */
 export function resolvePreferredChatModel(input: {
   providers: Array<{ id: string; enabled?: boolean; enabledModels: string[] }>
   last: ChatModelBinding | null
   storedChat: ChatModelBinding
   legacyChat: ChatModelBinding
-  lens: ChatModelBinding
-  translator: ChatModelBinding
+  lens?: ChatModelBinding
+  translator?: ChatModelBinding
 }): ChatModelBinding {
   const providers = input.providers.filter(provider => provider.enabled !== false)
   for (const binding of [input.last, input.storedChat, input.legacyChat, input.lens, input.translator]) {

@@ -32,9 +32,7 @@ vi.mock('../api/tauri', async (importOriginal) => {
       getDefaultPromptTemplates: async () => ({}),
       listSystemFonts: async () => [],
       getPermissionStatus: async () => ({ platform: 'windows', accessibility: true, screenRecording: true }),
-      onHotkeyWarning: async () => () => {},
       onUpdateAvailable: async () => () => {},
-      onReplaceTranslationPackProgress: async () => () => {},
     },
   }
 })

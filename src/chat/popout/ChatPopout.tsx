@@ -133,11 +133,9 @@ function ChatPopoutBody({
     <PopoutTitlebar
       conversation={session.conversation}
       runtime={session.runtime}
-      usesExternalRuntime={session.usesExternalRuntime}
       approvalPolicy={session.approvalPolicy}
       onRuntimeChange={session.handleRuntimeChange}
       onModelChange={session.handleModelChange}
-      onExternalModelChange={session.handleExternalModelChange}
       onThinkingLevelChange={session.handleThinkingLevelChange}
       onApprovalPolicyChange={session.handleApprovalPolicyChange}
     />

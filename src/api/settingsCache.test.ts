@@ -5,7 +5,6 @@ const getSettingsMock = vi.fn()
 const saveSettingsMock = vi.fn()
 const importSettingsMock = vi.fn()
 const setFavoriteModelsMock = vi.fn()
-const setTranslateCardSizeMock = vi.fn()
 const onKivioSettingsChangedMock = vi.fn()
 
 vi.mock('./tauri', () => ({
@@ -14,7 +13,6 @@ vi.mock('./tauri', () => ({
     saveSettings: (...args: unknown[]) => saveSettingsMock(...args),
     importSettings: (...args: unknown[]) => importSettingsMock(...args),
     setFavoriteModels: (...args: unknown[]) => setFavoriteModelsMock(...args),
-    setTranslateCardSize: (...args: unknown[]) => setTranslateCardSizeMock(...args),
     onKivioSettingsChanged: (...args: unknown[]) => onKivioSettingsChangedMock(...args),
   },
   isSettingsVersionConflict: (error: unknown) => (
@@ -35,7 +33,6 @@ import {
   refreshSettingsSnapshot,
   saveSettingsCached,
   setFavoriteModelsCached,
-  setTranslateCardSizeCached,
   startBackendSettingsSync,
   subscribeSettings,
   subscribeSettingsSnapshot,
@@ -56,7 +53,6 @@ beforeEach(() => {
   saveSettingsMock.mockReset()
   importSettingsMock.mockReset()
   setFavoriteModelsMock.mockReset()
-  setTranslateCardSizeMock.mockReset()
   onKivioSettingsChangedMock.mockReset()
 })
 
@@ -180,13 +176,11 @@ describe('settingsCache versioned snapshots', () => {
     await getSettingsSnapshotCached()
     const favoriteCanonical = { ...settingsB, favoriteModels: ['p:m', 'p:n'] } as Settings
     setFavoriteModelsMock.mockResolvedValue(snapshot(favoriteCanonical, 2))
-    setTranslateCardSizeMock.mockResolvedValue(snapshot(settingsB, 3))
+    setFavoriteModelsMock.mockResolvedValue(snapshot(favoriteCanonical, 2))
     await setFavoriteModelsCached([' p:m ', '', 'p:m', 'p:n'])
     expect(setFavoriteModelsMock).toHaveBeenCalledWith([' p:m ', '', 'p:m', 'p:n'])
     expect(peekSettings()).toBe(favoriteCanonical)
-    await setTranslateCardSizeCached(999)
-    expect(peekSettings()).toBe(settingsB)
-    expect(peekSettingsSnapshot()?.version).toEqual(version(3))
+    expect(peekSettingsSnapshot()?.version).toEqual(version(2))
   })
 
   it('leaves the cache unchanged when a lightweight write fails', async () => {

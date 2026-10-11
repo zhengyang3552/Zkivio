@@ -213,7 +213,7 @@ function RapidOcrWidget({
     rapidDownloadError: downloadError,
     refreshRapid,
     downloadRapid,
-  } = useSettingsOcrDownloads(true, tier, api, { observeReplacePack: false })
+  } = useSettingsOcrDownloads(true, tier, api)
   const refresh = () => { void refreshRapid() }
   const download = () => { void downloadRapid(tier) }
   const available = tier === 'high' ? status?.highAvailable : status?.standardAvailable

@@ -238,12 +238,6 @@ export async function setFavoriteModelsCached(models: string[]): Promise<void> {
   acceptSnapshot(saved, requestSequence, true)
 }
 
-export async function setTranslateCardSizeCached(width: number): Promise<void> {
-  const requestSequence = beginRequest()
-  const saved = await api.setTranslateCardSize(width)
-  acceptSnapshot(saved, requestSequence, true)
-}
-
 /** Test-only reset. */
 export function __resetSettingsCacheForTest(): void {
   cached = null

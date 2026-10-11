@@ -2,7 +2,6 @@ import { useCallback, type MutableRefObject } from 'react'
 import { persistLastChatModelToSettings, saveLastThinkingLevel, saveLastWebSearchMode } from '../composerPreferences'
 import { saveLastModel } from '../../data/chatModelPreference'
 import { chatApi } from '../api'
-import { withExternalModel } from '../externalModelEffort'
 import { saveLastAgentRuntime } from '../lastAgentRuntime'
 import type {
   AdditionalDirectory,
@@ -134,17 +133,8 @@ export function useConversationMetaMutations({
     }
   }, [applyConversationIfCurrent, currentConversationRef, draft, setStreamErrorForConversation])
 
-  // 下面三个都经 changeRuntime：没有会话时草稿也要更新（首次发送创建会话时应用）。
-  const changeExternalModel = useCallback(async (model: string, reasoning?: string | null) => {
-    await changeRuntime(withExternalModel(activeAgentRuntime, model, reasoning))
-  }, [activeAgentRuntime, changeRuntime])
-
   const changeExternalSandbox = useCallback(async (sandbox: string) => {
     await changeRuntime({ ...activeAgentRuntime, kind: 'external', externalSandbox: sandbox })
-  }, [activeAgentRuntime, changeRuntime])
-
-  const changeExternalPreset = useCallback(async (preset: string) => {
-    await changeRuntime({ ...activeAgentRuntime, kind: 'external', externalAgentPreset: preset })
   }, [activeAgentRuntime, changeRuntime])
 
   /** 审批卡里「本次及以后」选择的沙盒档位：写会话，只有仍是当前会话时才同步草稿 / 全局默认。 */
@@ -206,9 +196,7 @@ export function useConversationMetaMutations({
     changeAdditionalDirectories,
     toggleForceKnowledgeSearch,
     changeRuntime,
-    changeExternalModel,
     changeExternalSandbox,
-    changeExternalPreset,
     persistApprovedExternalSandbox,
     editGoal,
     pauseGoal,

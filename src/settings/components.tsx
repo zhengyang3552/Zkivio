@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ExternalLink, X } from 'lucide-react'
-import { formatHotkey, getPlatform, type SelectOption } from './utils'
+import { Check, ChevronDown, ExternalLink, RefreshCw } from 'lucide-react'
+import { type SelectOption } from './utils'
 import { Button, IconButton } from '../components/Button'
 import { copyToClipboard, readClipboardText } from '../utils/clipboard'
 import { TextEditContextMenu } from './TextEditContextMenu'
@@ -629,105 +629,56 @@ export function PermissionItem({
 }
 
 /**
- * 键盘按键徽章
+ * 自定义提示词字段：空值时把默认模板预填进文本框（可编辑起点），
+ * 用户未编辑前保存仍写空串（运行时用内置默认）；"恢复默认" 清空并复位预填。
  */
-export function KeyBadge({ children }: { children: ReactNode }) {
-  return (
-    <kbd
-      className="kv-kbd"
-    >
-      {children}
-    </kbd>
-  )
-}
-
-/**
- * 快捷键展示
- */
-export function HotkeyDisplay({ hotkey }: { hotkey: string }) {
-  const platform = getPlatform()
-  const keys = formatHotkey(hotkey, platform)
-  return (
-    <div className="flex items-center gap-1">
-      {keys.map((k, i) => (
-        <KeyBadge key={i}>{k}</KeyBadge>
-      ))}
-    </div>
-  )
-}
-
-/**
- * 快捷键输入(含录制态)
- * onClear / clearLabel: 提供时,值非空且非录制态会渲染 X 按钮以清空(给"想关掉某个功能的热键"留出口);留空则不显示
- * error: 客户端冲突等校验消息,以红色小字显示在输入框下方
- */
-export function HotkeyInput({
+export function PromptField({
+  label,
+  description,
   value,
-  placeholder,
-  recording,
-  onToggleRecording,
-  recordLabel,
-  recordingLabel,
-  recordingPlaceholder,
-  onClear,
-  clearLabel,
-  error,
-  inline = false,
+  defaultText,
+  restoreLabel,
+  onChange,
 }: {
+  label: string
+  description?: string
   value: string
-  placeholder: string
-  recording: boolean
-  onToggleRecording: () => void
-  recordLabel: string
-  recordingLabel: string
-  recordingPlaceholder: string
-  onClear?: () => void
-  clearLabel?: string
-  error?: string
-  inline?: boolean
+  defaultText: string
+  restoreLabel: string
+  onChange: (value: string) => void
 }) {
-  const showClear = !!onClear && !!value && !recording
+  const [interacted, setInteracted] = useState(false)
+  const shown = interacted ? value : value || defaultText
+
   return (
-    <div className={`space-y-1 ${inline ? 'flex flex-col items-end' : ''}`}>
-      <div className="flex items-center gap-2">
-        <div
-          className={`kv-hotkey ${inline ? '' : 'flex-1'} ${recording ? 'recording' : ''} ${error ? 'error' : ''}`}
-          title={!value && !recording ? placeholder : undefined}
-        >
-          {recording ? (
-            <span className="kv-hotkey-record-label animate-pulse">{recordingPlaceholder}</span>
-          ) : value ? (
-            <HotkeyDisplay hotkey={value} />
-          ) : (
-            <span className="min-w-0 truncate text-[12px] leading-[19px] text-neutral-400 dark:text-neutral-500">
-              {placeholder}
-            </span>
-          )}
-          {showClear && (
-            <button
-              type="button"
-              onClick={onClear}
-              title={clearLabel}
-              aria-label={clearLabel}
-              className="kv-hotkey-clear"
-              data-tauri-drag-region="false"
-            >
-              <X size={12} strokeWidth={2.5} />
-            </button>
-          )}
+    <div className="py-2">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div>
+          <div className="kv-row-label">{label}</div>
+          {description && <p className="kv-row-desc">{description}</p>}
         </div>
-        <button
-          type="button"
-          onClick={onToggleRecording}
-          className={`kv-btn ${recording ? 'accent' : ''}`}
+        <Button
+          size="sm"
+          className="shrink-0"
+          onClick={() => {
+            setInteracted(false)
+            onChange('')
+          }}
+          disabled={!defaultText || (!value && !interacted)}
           data-tauri-drag-region="false"
         >
-          {recording ? recordingLabel : recordLabel}
-        </button>
+          <RefreshCw size={10} />
+          {restoreLabel}
+        </Button>
       </div>
-      {error && (
-        <p className="text-[11px] text-red-500 dark:text-red-400 leading-snug">{error}</p>
-      )}
+      <TextArea
+        value={shown}
+        onChange={(v) => {
+          setInteracted(true)
+          onChange(v)
+        }}
+        rows={4}
+      />
     </div>
   )
 }

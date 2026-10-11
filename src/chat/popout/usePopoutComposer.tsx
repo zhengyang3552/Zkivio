@@ -8,7 +8,7 @@ import {
 } from '../../api/tauri'
 import { getSettingsCached, refreshSettings, subscribeSettings, updateSettingsCached } from '../../api/settingsCache'
 import { isPluginManagedServer, preservePluginManagedServers } from '../../settings/public/connectors'
-import { i18n, type Lang } from '../../components/i18n'
+import { type Lang } from '../../components/i18n'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../api/chatTools'
 import { chatApi, type AgentRuntimeConfig } from '../api'
 import { setGoalDraftMode, useGoalDraft } from '../goalPresentation'
@@ -19,10 +19,7 @@ import { useTauriEvent } from '../hooks/useTauriEvent'
 import { keepNewerTodoState } from '../agentTodoState'
 import type { InputBarProps } from '../InputBar'
 import {
-  deriveDshPresetModes,
   derivePermissionModes,
-  useDetectedExternalAgents,
-  useDshCustomPresets,
 } from '../permissionModes'
 import { SessionUsageStrip } from '../SessionUsageStrip'
 import { resolveSendSkillId } from '../skillSelection'
@@ -82,14 +79,6 @@ function normalizeSkill(skill: import('../../api/tauri').SkillMeta): SkillMeta {
   }
 }
 
-function isBlankConversation(conversation: Conversation | null): boolean {
-  return Boolean(
-    conversation
-    && conversation.messages.length === 0
-    && !(conversation.assistant_id ?? conversation.assistantId),
-  )
-}
-
 function applyConversationMeta(
   setConversation: Dispatch<SetStateAction<Conversation | null>>,
   updated: Conversation,
@@ -112,7 +101,6 @@ type UsePopoutComposerArgs = {
   displayMessages: Conversation['messages']
   streaming: boolean
   usesChatRuntime: boolean
-  usesExternalRuntime: boolean
   runtime: AgentRuntimeConfig
   onSend: (
     content: string,
@@ -133,7 +121,6 @@ export function usePopoutComposer({
   displayMessages,
   streaming,
   usesChatRuntime,
-  usesExternalRuntime,
   runtime,
   onSend,
   onCancel,
@@ -165,8 +152,6 @@ export function usePopoutComposer({
   const [boundSet, setBoundSet] = useState<ChatSet | null>(null)
   const [gitWorkdir, setGitWorkdir] = useState('')
 
-  const detectedExternalAgents = useDetectedExternalAgents(conversationId)
-  const dshCustomPresets = useDshCustomPresets(runtime)
   const activeAgentPlanMode = conversation?.agent_plan_state?.mode
     ?? conversation?.agentPlanState?.mode
     ?? 'act'
@@ -177,15 +162,10 @@ export function usePopoutComposer({
     () => derivePermissionModes({
       target: 'composer',
       agentRuntime: runtime,
-      agents: detectedExternalAgents,
       agentPlanMode: activeAgentPlanMode,
       goalActive: goalActive || goalDraft,
     }),
-    [runtime, detectedExternalAgents, activeAgentPlanMode, goalActive, goalDraft],
-  )
-  const composerPresets = useMemo(
-    () => deriveDshPresetModes(runtime, dshCustomPresets),
-    [runtime, dshCustomPresets],
+    [runtime, activeAgentPlanMode, goalActive, goalDraft],
   )
 
   const projectId = conversation?.project_id ?? conversation?.projectId ?? null
@@ -540,15 +520,6 @@ export function usePopoutComposer({
   }, [conversationId, refreshContextStats, setConversation])
 
   const handleComposerModeChange = useCallback(async (value: string) => {
-    if (usesExternalRuntime) {
-      const next = await chatApi.setAgentRuntime(conversationId, {
-        ...runtime,
-        kind: 'external',
-        externalSandbox: value,
-      })
-      applyConversationMeta(setConversation, next)
-      return
-    }
     if (value === 'goal') {
       if (!goalActive) setGoalDraftMode(conversationId, true)
       return
@@ -559,16 +530,7 @@ export function usePopoutComposer({
     }
     await handleAgentPlanModeChange(value as AgentPlanMode)
     setGoalDraftMode(conversationId, false)
-  }, [conversationId, goalActive, handleAgentPlanModeChange, runtime, setConversation, usesExternalRuntime])
-
-  const handleExternalPresetChange = useCallback(async (preset: string) => {
-    const next = await chatApi.setAgentRuntime(conversationId, {
-      ...runtime,
-      kind: 'external',
-      externalAgentPreset: preset,
-    })
-    applyConversationMeta(setConversation, next)
-  }, [conversationId, runtime, setConversation])
+  }, [conversationId, goalActive, handleAgentPlanModeChange, setConversation])
 
   const enabledSkills = useMemo(
     () => skills.filter((skill) => !disabledSkillIds.includes(skill.id)),
@@ -613,7 +575,6 @@ export function usePopoutComposer({
     return ''
   }, [enabledToolCount, recommendedTools.length, toolsDisabledReason, toolsRequested, unavailableRecommendedTools])
 
-  const conversationBlank = isBlankConversation(conversation)
   const explicitWebSearch = conversation?.webSearchMode ?? conversation?.web_search_mode
   const webSearchMode: WebSearchMode = explicitWebSearch
     || loadLastWebSearchMode()
@@ -637,11 +598,10 @@ export function usePopoutComposer({
         compressing={contextCompressing}
         generating={streaming}
         error={contextError}
-        usesExternalRuntime={usesExternalRuntime}
         onRefresh={handleRefreshContext}
         onCompress={handleCompressContext}
         onStopCompression={handleStopCompression}
-        onClear={usesExternalRuntime ? undefined : handleClearContext}
+        onClear={handleClearContext}
         lang={lang}
       />
     ),
@@ -657,7 +617,6 @@ export function usePopoutComposer({
       handleRefreshContext,
       lang,
       streaming,
-      usesExternalRuntime,
     ],
   )
 
@@ -670,11 +629,6 @@ export function usePopoutComposer({
         lang={lang}
         apiFormats={providerApiFormats}
         defaultApiFormat={conversation ? (providerApiFormats[conversation.provider_id] ?? '') : ''}
-        cacheIncludedInInput={
-          usesExternalRuntime
-            ? runtime.externalAgentId === 'codex'
-            : undefined
-        }
       />
     ),
     [
@@ -682,9 +636,7 @@ export function usePopoutComposer({
       displayMessages,
       lang,
       providerApiFormats,
-      runtime.externalAgentId,
       streaming,
-      usesExternalRuntime,
     ],
   )
 
@@ -717,8 +669,6 @@ export function usePopoutComposer({
     onOpenAssistantCenter: openMainSettings,
     onSelectAssistant: handleSelectAssistant,
     autoFocus: true,
-    usesExternalRuntime,
-    externalAgentName: runtime.externalAgentId ?? null,
     conversationId,
     knowledgeBaseIds: conversation?.knowledge_base_ids ?? conversation?.knowledgeBaseIds ?? [],
     inputHistory: conversation?.messages.filter((message) => message.role === 'user').map((message) => message.content),
@@ -745,11 +695,6 @@ export function usePopoutComposer({
     modeOptions: composerModes.options,
     modeValue: composerModes.current,
     onModeChange: handleComposerModeChange,
-    presetOptions: composerPresets.options,
-    presetValue: composerPresets.current,
-    onPresetChange: handleExternalPresetChange,
-    presetLocked: Boolean(conversation) && !conversationBlank,
-    presetLockedReason: i18n[lang].chatAgentPresetLocked,
     usageSlot,
   }
 }

@@ -8,7 +8,6 @@ import { Button } from '../components/Button'
 import { ONBOARDING_STEPS, type OnboardingStepId } from './types'
 import { canCompleteOnboarding, validateProviderStep } from './validation'
 import { DoneStep } from './steps/DoneStep'
-import { HotkeyStep } from './steps/HotkeyStep'
 import { ProviderStep } from './steps/ProviderStep'
 import { WebSearchStep } from './steps/WebSearchStep'
 import { WelcomeStep } from './steps/WelcomeStep'
@@ -201,7 +200,6 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
     welcome: t.onboardingStepWelcome,
     provider: t.onboardingWelcomeStepProvider,
     webSearch: t.onboardingWelcomeStepWebSearch,
-    hotkey: t.onboardingWelcomeStepHotkey,
     done: t.onboardingStepDone,
   }
 
@@ -227,7 +225,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
       >
         <div className="onboarding-side-brand" data-tauri-drag-region>
           <img src="/logo-mark.png" alt="" className="onboarding-side-logo" draggable={false} />
-          <span className="onboarding-side-brand-name">Kivio Desktop</span>
+          <span className="onboarding-side-brand-name">Kivio</span>
         </div>
         <nav className="onboarding-side-steps">
           {ONBOARDING_STEPS.map((step, index) => {
@@ -281,9 +279,6 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
           ) : null}
           {stepId === 'webSearch' ? (
             <WebSearchStep t={t} settings={settings} onChange={updateSettings} />
-          ) : null}
-          {stepId === 'hotkey' ? (
-            <HotkeyStep t={t} settings={settings} onChange={updateSettings} />
           ) : null}
           {stepId === 'done' ? <DoneStep t={t} settings={settings} /> : null}
         </div>

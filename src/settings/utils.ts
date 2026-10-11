@@ -1,5 +1,4 @@
 import { type ModelProvider } from '../api/tauri'
-import { i18n, type Lang } from '../components/i18n'
 
 export type Platform = 'macos' | 'windows' | 'linux'
 
@@ -7,60 +6,6 @@ export type SelectOption = {
   value: string
   label: string
   title?: string
-}
-
-// 修饰键集合（录制快捷键时忽略）
-const modifierKeys = new Set(['Shift', 'Meta', 'Control', 'Alt', 'AltGraph'])
-
-// 键盘按键别名映射
-const keyAliasMap: Record<string, string> = {
-  Escape: 'Esc',
-  ' ': 'Space',
-  Spacebar: 'Space',
-  ArrowUp: 'Up',
-  ArrowDown: 'Down',
-  ArrowLeft: 'Left',
-  ArrowRight: 'Right',
-}
-
-/**
- * 从键盘 code 提取字母/数字键值
- */
-const normalizeKeyFromCode = (code: string) => {
-  if (code.startsWith('Key')) return code.slice(3)
-  if (code.startsWith('Digit')) return code.slice(5)
-  return ''
-}
-
-/**
- * 将键盘事件转换为快捷键字符串
- */
-export const normalizeHotkeyKey = (event: KeyboardEvent) => {
-  const { key, code } = event
-  if (!key) return ''
-  if (modifierKeys.has(key)) return ''
-  if (/^F\d{1,2}$/.test(key)) return key.toUpperCase()
-  const alias = keyAliasMap[key]
-  if (alias) return alias
-  const fromCode = normalizeKeyFromCode(code)
-  if (fromCode) return fromCode.toUpperCase()
-  if (key === 'Dead' || key === 'Process') return ''
-  if (key.length === 1 && key !== '+') return key.toUpperCase()
-  return ''
-}
-
-/**
- * 构建完整的快捷键字符串（如 CommandOrControl+Alt+T）
- */
-export const buildHotkey = (event: KeyboardEvent) => {
-  const key = normalizeHotkeyKey(event)
-  if (!key) return ''
-  const parts: string[] = []
-  if (event.metaKey || event.ctrlKey) parts.push('CommandOrControl')
-  if (event.altKey || event.getModifierState('AltGraph')) parts.push('Alt')
-  if (event.shiftKey) parts.push('Shift')
-  parts.push(key)
-  return parts.join('+')
 }
 
 /**
@@ -160,71 +105,3 @@ export const stableStringify = (value: unknown): string =>
     return v
   })
 
-type HotkeyErrorPayload = {
-  kind: 'conflict' | 'duplicate' | 'empty' | 'other'
-  scope:
-    | 'translator'
-    | 'chat'
-    | 'close_chat'
-    | 'screenshot'
-    | 'screenshot_text'
-    | 'screenshot_replace'
-    | 'screenshot_annotate'
-    | 'lens'
-  hotkey: string
-  raw?: string
-}
-
-const SCOPE_KEY: Record<HotkeyErrorPayload['scope'], keyof typeof i18n.zh> = {
-  translator: 'hotkeyScopeTranslator',
-  chat: 'hotkeyScopeChat',
-  close_chat: 'hotkeyScopeCloseChat',
-  screenshot: 'hotkeyScopeScreenshot',
-  screenshot_text: 'hotkeyScopeScreenshotText',
-  screenshot_replace: 'hotkeyScopeScreenshotReplace',
-  screenshot_annotate: 'annotateHotkeyLabel',
-  lens: 'hotkeyScopeLens',
-}
-
-const KIND_KEY: Record<HotkeyErrorPayload['kind'], keyof typeof i18n.zh> = {
-  conflict: 'hotkeyErrorConflict',
-  duplicate: 'hotkeyErrorDuplicate',
-  empty: 'hotkeyErrorEmpty',
-  other: 'hotkeyErrorOther',
-}
-
-/**
- * 把后端 register_hotkeys 抛出的 JSON 错误数组翻译成用户语言的可读消息。
- * 解析失败(普通字符串错误)时原样返回,保证所有非热键错误也能正常显示。
- */
-export const formatHotkeyError = (raw: string, lang: Lang): string => {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return raw
-  }
-  if (!Array.isArray(parsed) || parsed.length === 0) return raw
-  const table = i18n[lang]
-  const messages: string[] = []
-  for (const item of parsed) {
-    if (
-      !item ||
-      typeof item !== 'object' ||
-      !(SCOPE_KEY as Record<string, unknown>)[(item as HotkeyErrorPayload).scope] ||
-      !(KIND_KEY as Record<string, unknown>)[(item as HotkeyErrorPayload).kind]
-    ) {
-      return raw
-    }
-    const e = item as HotkeyErrorPayload
-    const scope = table[SCOPE_KEY[e.scope]]
-    const template = table[KIND_KEY[e.kind]]
-    messages.push(
-      template
-        .replace('{scope}', scope)
-        .replace('{hotkey}', e.hotkey)
-        .replace('{raw}', e.raw ?? ''),
-    )
-  }
-  return messages.join(' / ')
-}

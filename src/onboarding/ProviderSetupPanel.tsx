@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, isOpenCodeFree, providerAuthenticationReady, type ModelProvider, type ProviderApiFormat, type Settings } from '../api/tauri'
 import { applyModelCatalog } from '../data/modelCatalog'
-import { ModelPairSelect, ProviderModelsPicker } from '../settings/public/modelSelection'
+import { ProviderModelsPicker } from '../settings/public/modelSelection'
 import { Button, IconButton } from '../components/Button'
 import { Input, Label, Select } from '../settings/public/controls'
 import type { I18n, Lang } from '../components/i18n'
 import { PROVIDER_PRESETS, type ProviderPreset } from '../settings/public/modelSelection'
-import { isProviderEnabled, ProviderOAuthPanel } from '../settings/public/providers'
+import { ProviderOAuthPanel } from '../settings/public/providers'
 import { ProviderIcon } from '../components/ModelIcon'
 import { createProviderRequestDraft } from '../settings/public/providerDraft'
 
@@ -31,18 +31,6 @@ function isCustomProvider(provider: ModelProvider): boolean {
 }
 
 function resolveActiveProviderId(settings: Settings): string {
-  const screenshotId = settings.screenshotTranslation?.providerId?.trim()
-  if (screenshotId) {
-    const byScreenshot = settings.providers.find((item) => item.id === screenshotId)
-    if (byScreenshot) return byScreenshot.id
-  }
-
-  const lensId = settings.lens?.providerId?.trim()
-  if (lensId) {
-    const byLens = settings.providers.find((item) => item.id === lensId)
-    if (byLens) return byLens.id
-  }
-
   const chatId = settings.defaultModels.chat.providerId.trim()
   if (chatId) {
     const byChat = settings.providers.find((item) => item.id === chatId)
@@ -55,18 +43,6 @@ function resolveActiveProviderId(settings: Settings): string {
   if (configured) return configured.id
 
   return settings.providers[0]?.id ?? ''
-}
-
-function resolveProvider(providers: ModelProvider[], providerId: string): ModelProvider | undefined {
-  const matched = providers.find((item) => item.id === providerId)
-  if (matched && isProviderEnabled(matched)) return matched
-  return providers.find((item) => isProviderEnabled(item))
-}
-
-function resolveModel(provider: ModelProvider | undefined, currentModel: string): string {
-  if (!provider) return currentModel
-  if (provider.enabledModels.includes(currentModel)) return currentModel
-  return provider.enabledModels[0] || currentModel
 }
 
 function freshCustomProvider(id: string, lang: Lang, index: number): ModelProvider {
@@ -98,34 +74,6 @@ function freshPresetProvider(preset: ProviderPreset, id: string): ModelProvider 
   }
 }
 
-function maybeAutoBindDefaults(settings: Settings, provider: ModelProvider): Settings {
-  if (provider.enabledModels.length === 0) return settings
-
-  const primaryModel = provider.enabledModels[0]
-  const next: Settings = { ...settings }
-
-  const screenshotEmpty = !next.screenshotTranslation?.providerId?.trim()
-    || !next.screenshotTranslation?.model?.trim()
-  if (screenshotEmpty) {
-    next.screenshotTranslation = {
-      ...next.screenshotTranslation,
-      providerId: provider.id,
-      model: primaryModel,
-    }
-  }
-
-  const lensEmpty = !next.lens?.providerId?.trim() || !next.lens?.model?.trim()
-  if (lensEmpty) {
-    next.lens = {
-      ...next.lens,
-      providerId: provider.id,
-      model: primaryModel,
-    }
-  }
-
-  return next
-}
-
 function updateProviderInSettings(
   settings: Settings,
   providerId: string,
@@ -134,9 +82,7 @@ function updateProviderInSettings(
   const providers = settings.providers.map((item) =>
     item.id === providerId ? { ...item, ...patch } : item,
   )
-  const updated = providers.find((item) => item.id === providerId)
-  if (!updated) return { ...settings, providers }
-  return maybeAutoBindDefaults({ ...settings, providers }, updated)
+  return { ...settings, providers }
 }
 
 function addPresetProvider(settings: Settings, preset: ProviderPreset): { settings: Settings; id: string } {
@@ -165,11 +111,8 @@ function addCustomProvider(settings: Settings, lang: Lang): { settings: Settings
 
 function deleteProviderFromSettings(settings: Settings, id: string): Settings {
   const nextProviders = settings.providers.filter((item) => item.id !== id)
-  const screenshotProvider = resolveProvider(nextProviders, settings.screenshotTranslation?.providerId || '')
-  const lensProvider = resolveProvider(nextProviders, settings.lens?.providerId || '')
   const deletedProviderWasChatModel =
     settings.defaultModels.chat.providerId === id || settings.chatProviderId === id
-  const deletedProviderWasLensModel = settings.lens?.providerId === id
 
   const next: Settings = {
     ...settings,
@@ -179,18 +122,6 @@ function deleteProviderFromSettings(settings: Settings, id: string): Settings {
       chat: settings.defaultModels.chat.providerId === id
         ? { providerId: '', model: '' }
         : settings.defaultModels.chat,
-    },
-    screenshotTranslation: {
-      ...settings.screenshotTranslation,
-      providerId: screenshotProvider?.id ?? '',
-      model: resolveModel(screenshotProvider, settings.screenshotTranslation?.model || ''),
-    },
-    lens: {
-      ...settings.lens,
-      providerId: deletedProviderWasLensModel ? '' : (settings.lens?.providerId ?? ''),
-      model: deletedProviderWasLensModel
-        ? ''
-        : resolveModel(lensProvider, settings.lens?.model || ''),
     },
     chatProviderId: deletedProviderWasChatModel ? '' : settings.chatProviderId,
     chatModel: deletedProviderWasChatModel ? '' : settings.chatModel,
@@ -314,7 +245,6 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
     setModelPickerOpen(true)
   }
 
-  const hasAnyEnabledModels = settings.providers.some((item) => item.enabledModels.length > 0)
   // 未添加过的预设直接以「+ 名称」虚线 chip 混排在服务商列表尾部，避免「已添加」和「快速添加」两块重复列表。
   const unaddedPresets = PROVIDER_PRESETS.filter(
     (preset) => !settings.providers.some((item) => isPresetMatch(item, preset)),
@@ -491,54 +421,6 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
           </div>
         ) : null}
       </div>
-
-      {hasAnyEnabledModels ? (
-        <div className="onboarding-section">
-          <div className="onboarding-section-label">{t.onboardingProviderDefaultModels}</div>
-          <div className="onboarding-defaults-grid">
-            <div className="onboarding-default-cell">
-              <span className="onboarding-field-label">{t.onboardingProviderQuickTranslateModel}</span>
-              <ModelPairSelect
-                providerId={settings.screenshotTranslation?.providerId || ''}
-                model={settings.screenshotTranslation?.model || ''}
-                providers={settings.providers}
-                className="w-full"
-                onChange={(providerId, model) => {
-                  onChange({
-                    ...settings,
-                    screenshotTranslation: {
-                      ...settings.screenshotTranslation,
-                      providerId,
-                      model,
-                    },
-                  })
-                }}
-              />
-              <p className="onboarding-field-hint">{t.onboardingProviderQuickTranslateHint}</p>
-            </div>
-            <div className="onboarding-default-cell">
-              <span className="onboarding-field-label">{t.onboardingProviderLensModel}</span>
-              <ModelPairSelect
-                providerId={settings.lens?.providerId || ''}
-                model={settings.lens?.model || ''}
-                providers={settings.providers}
-                className="w-full"
-                onChange={(providerId, model) => {
-                  onChange({
-                    ...settings,
-                    lens: {
-                      ...settings.lens,
-                      providerId,
-                      model,
-                    },
-                  })
-                }}
-              />
-              <p className="onboarding-field-hint">{t.onboardingProviderLensHint}</p>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       {confirmDelete && provider ? (
         <div

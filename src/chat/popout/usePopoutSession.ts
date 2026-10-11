@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '../../api/tauri'
-import { withExternalModel } from '../externalModelEffort'
 import { syncChatProtocol } from '../../api/chatProtocol'
 import { getSettingsCached, updateSettingsCached } from '../../api/settingsCache'
 import {
@@ -392,11 +391,6 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     acceptPersistedConversation(next)
   }, [acceptPersistedConversation, conversation, conversationId])
 
-  const handleExternalModelChange = useCallback(async (model: string, reasoning?: string | null) => {
-    const current = normalizeAgentRuntime(conversation)
-    await handleRuntimeChange(withExternalModel(current, model, reasoning))
-  }, [conversation, handleRuntimeChange])
-
   const handleApprovalPolicyChange = useCallback(async (nextApprovalPolicy: string) => {
     setApprovalPolicy(nextApprovalPolicy)
     try {
@@ -415,7 +409,6 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const pendingUserPromptRecord = pendingUserPrompt ? userPromptEventToRecord(pendingUserPrompt) : null
   const runtime = normalizeAgentRuntime(conversation)
   const usesChatRuntime = runtime.kind === 'chat'
-  const usesExternalRuntime = runtime.kind === 'external'
 
   const runGoalMutation = useCallback(async (
     mutation: (id: string) => Promise<Conversation>,
@@ -441,7 +434,6 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     displayMessages,
     streaming: streamCoarse.streaming,
     usesChatRuntime,
-    usesExternalRuntime,
     runtime,
     onSend: handleSend,
     onCancel: handleCancel,
@@ -463,7 +455,6 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     loadError,
     runtime,
     usesChatRuntime,
-    usesExternalRuntime,
     approvalPolicy,
     inputBarProps,
     messageListProps,
@@ -491,7 +482,6 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     handleModelChange,
     handleThinkingLevelChange,
     handleRuntimeChange,
-    handleExternalModelChange,
     handleApprovalPolicyChange,
     editGoal: (objective: string) => runGoalMutation((id) => chatApi.editGoal(id, objective), true),
     pauseGoal: () => runGoalMutation(chatApi.pauseGoal),

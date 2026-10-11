@@ -4,7 +4,6 @@ import { ConversationTitlebarControls } from './ConversationTitlebarControls'
 
 vi.mock('./RuntimePicker', () => ({
   RuntimePicker: () => <div data-testid="runtime-picker" />,
-  ExternalModelSelector: () => <div data-testid="external-model" />,
 }))
 vi.mock('./ModelSelector', () => ({
   ModelSelector: () => <div data-testid="model-selector" />,
@@ -30,7 +29,6 @@ const base = {
   dockOpen: false,
   uiLang: 'zh' as const,
   onRuntimeChange: vi.fn(),
-  onExternalModelChange: vi.fn(),
   onModelChange: vi.fn(),
   onThinkingLevelChange: vi.fn(),
   onApprovalPolicyChange: vi.fn(),
@@ -40,29 +38,25 @@ const base = {
 }
 
 describe('ConversationTitlebarControls', () => {
-  it('renders the external model picker for a CLI runtime', () => {
-    const { getByTestId, queryByTestId } = render(
-      <ConversationTitlebarControls
-        {...base}
-        activeAgentRuntime={{ kind: 'external', externalAgentId: 'claude' }}
-        usesExternalRuntime
-      />,
-    )
-    expect(getByTestId('external-model')).toBeTruthy()
-    expect(queryByTestId('model-selector')).toBeNull()
-    expect(queryByTestId('thinking')).toBeNull()
-  })
-
-  it('renders the built-in model + thinking selectors otherwise', () => {
-    const { getByTestId, queryByTestId } = render(
+  it('renders the built-in model + thinking selectors', () => {
+    const { getByTestId } = render(
       <ConversationTitlebarControls
         {...base}
         activeAgentRuntime={{ kind: 'builtin' }}
-        usesExternalRuntime={false}
       />,
     )
     expect(getByTestId('model-selector')).toBeTruthy()
     expect(getByTestId('thinking')).toBeTruthy()
-    expect(queryByTestId('external-model')).toBeNull()
+  })
+
+  it('still renders the model selector for the plain chat runtime', () => {
+    const { getByTestId } = render(
+      <ConversationTitlebarControls
+        {...base}
+        activeAgentRuntime={{ kind: 'chat' }}
+        usesChatRuntime
+      />,
+    )
+    expect(getByTestId('model-selector')).toBeTruthy()
   })
 })

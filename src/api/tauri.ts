@@ -1593,19 +1593,8 @@ export type OfflineModelFileStatus = {
   error?: string | null
 }
 
-export type ReplaceTranslationPackStatus = {
-  tier: RapidOcrTier
-  ready: boolean
-  totalBytes: number
-  readyBytes: number
-  missingBytes: number
-  modelDir?: string | null
-  files: OfflineModelFileStatus[]
-}
-
 export type OfflineModelProgress = {
-  // 两个安装包共用同一事件名；面板按 pack 过滤，避免普通 RapidOCR 安装驱动替换翻译离线包 UI。
-  pack: 'rapidocr' | 'replace_translation'
+  pack: 'rapidocr'
   componentId: string
   fileName: string
   downloadedBytes: number
@@ -1861,9 +1850,6 @@ export const api = {
   /** 轻量持久化收藏模型；后端返回最终 canonical Settings 供缓存原样采用。 */
   setFavoriteModels: (models: string[]) =>
     invoke<SettingsSnapshot>('set_favorite_models', { models }).then(normalizeSettingsSnapshot),
-  /** 轻量持久化快速翻译卡宽度（拖拽缩放记忆；高度始终自动）。 */
-  setTranslateCardSize: (width: number) =>
-    invoke<SettingsSnapshot>('set_translate_card_size', { width }).then(normalizeSettingsSnapshot),
   exportSettings: (path: string) => invoke<void>('export_settings', { path }),
   importSettings: async (path: string, expectedVersion: SettingsVersion) =>
     normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion })),
@@ -1904,13 +1890,6 @@ export const api = {
   // 应用信息
   getAppVersion: () => getVersion(),
   openSettingsWindow: () => invoke<void>('open_settings_window'),
-  setHotkeysSuspended: (suspended: boolean) => invoke<void>('set_hotkeys_suspended', { suspended }),
-  listGnomeSystemShortcuts: () => invoke<{ accelerator: string; label: string }[]>('list_gnome_system_shortcuts'),
-  closeTranslatorWindow: () => invoke<void>('close_translator_window'),
-
-  // 文本翻译
-  translateText: (text: string) => invoke<string>('translate_text', { text }),
-  commitTranslation: (text: string) => invoke<void>('commit_translation', { text }),
 
   // 外部链接
   openExternal: (url: string) => invoke<void>('open_external', { url }),
@@ -2301,11 +2280,6 @@ export const api = {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<McpServerStatePayload>('mcp-server-state', (payload) => listener(payload))
   },
-  /** 保存设置时部分热键被占用未能注册的警告（保存本身已成功）。payload 是后端 HotkeyError JSON 字符串。 */
-  onHotkeyWarning: (listener: (raw: string) => void) => {
-    if (!isTauriRuntime()) return Promise.resolve(() => {})
-    return on<string>('hotkey-warning', (payload) => listener(payload))
-  },
   chatTakeExternalSends: (ownerId: string) => {
     if (!isTauriRuntime()) {
       return Promise.resolve({ success: true, requests: [] as ChatExternalSendRequest[], pendingLeased: false })
@@ -2547,13 +2521,6 @@ export const api = {
   lensSetFloating: (rect: { x?: number; y?: number; width: number; height: number }) =>
     invoke<void>('lens_set_floating', { rect }),
   // macOS 走 AppKit 原生 NSAnimationContext + animator setFrame,一次 IPC 触发,Core Animation
-  // 在合成器线程驱动剩余帧;duration_ms 必须与前端 TRANSITION_MS 对齐。非 macOS 平台是 snap 兜底。
-  lensAnimateFloating: (args: { x: number; y: number; width: number; height: number; durationMs: number }) =>
-    invoke<void>('lens_animate_floating', args),
-
-  // 取走 Rust 端在 lens_request_internal 中抓到的选中文本（take 一次清一次）
-  takeLensSelection: () => invoke<string>('take_lens_selection'),
-
   // ========== 自动更新（仅检查 + 跳转，不做自动下载安装） ==========
 
   /** 调后端 GitHub Releases API 检查最新版本 */
@@ -2586,11 +2553,4 @@ export const api = {
    *  阻塞到全部完成返回(standard ~30-50MB,high ~150MB),前端转圈圈等。 */
   rapidOcrInstall: (tier: RapidOcrTier) =>
     invoke<RapidOcrInstallResult>('rapidocr_install', { tier }),
-
-  replaceTranslationPackStatus: (tier: RapidOcrTier) =>
-    invoke<ReplaceTranslationPackStatus>('replace_translation_pack_status', { tier }),
-  replaceTranslationPackInstall: (tier: RapidOcrTier) =>
-    invoke<RapidOcrInstallResult>('replace_translation_pack_install', { tier }),
-  onReplaceTranslationPackProgress: (listener: (progress: OfflineModelProgress) => void) =>
-    on<OfflineModelProgress>('replace-translation-pack-progress', payload => listener(payload)),
 }

@@ -98,12 +98,29 @@ const configuredBindings = {
 }
 
 describe('onboarding validation', () => {
-  it('detects usable provider config', () => {
+  it('requires at least one provider', () => {
+    const settings = baseSettings({ providers: [] })
+    expect(providerHasUsableConfig(settings)).toBe(false)
+    expect(validateProviderStep(settings)).toEqual({ ok: false, reason: 'no_provider' })
+    expect(canCompleteOnboarding(settings)).toBe(false)
+  })
+
+  it('completes with a usable provider and no translation / Lens bindings', () => {
     const settings = baseSettings({
-      providers: [testProvider],
+      ...configuredBindings,
+      // 手机端没有截图翻译 / Lens，这些绑定留空也不应阻塞引导。
+      screenshotTranslation: {
+        enabled: false,
+        hotkey: '',
+        textHotkey: '',
+        providerId: '',
+        model: '',
+      },
+      lens: { enabled: false, hotkey: '', providerId: '', model: '' },
     })
     expect(providerHasUsableConfig(settings)).toBe(true)
-    expect(validateProviderStep(settings).ok).toBe(false)
+    expect(validateProviderStep(settings).ok).toBe(true)
+    expect(canCompleteOnboarding(settings)).toBe(true)
   })
 
   it('does not require a Chat default model', () => {
@@ -140,7 +157,7 @@ describe('onboarding validation', () => {
       }],
     })
     expect(isProviderModelBindingUsable(settings, 'p1', 'gpt-4o')).toBe(false)
-    expect(canCompleteOnboarding(settings)).toBe(false)
+    expect(canCompleteOnboarding(settings)).toBe(true)
   })
 
   it('rejects bindings that point to providers without a base URL', () => {
@@ -152,7 +169,7 @@ describe('onboarding validation', () => {
       }],
     })
     expect(isProviderModelBindingUsable(settings, 'p1', 'gpt-4o')).toBe(false)
-    expect(canCompleteOnboarding(settings)).toBe(false)
+    expect(canCompleteOnboarding(settings)).toBe(true)
   })
 
   it('detects configured web search keys', () => {
