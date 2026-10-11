@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
 use flate2::read::GzDecoder;
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE, USER_AGENT};
 use serde::Serialize;
@@ -1234,6 +1234,9 @@ fn extract_archive_entry(
 
 static ORT_INIT: OnceCell<()> = OnceCell::const_new();
 
+/// Android 不参与编译：ONNX Runtime 走 `ort` crate（见 Cargo.toml 的
+/// `cfg(not(target_os = "android"))` 依赖分区），移动端 OCR 用云端视觉模型。
+#[cfg(not(target_os = "android"))]
 pub async fn ensure_ort_init(manager: &OfflineModelManager) -> Result<(), String> {
     let dir = manager.model_dir()?;
     if runtime_files().iter().any(|file| {

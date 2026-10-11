@@ -1280,7 +1280,12 @@ pub fn run() {
             // 桌宠只在最终退出时拆掉。ExitRequested 在用户关窗（code 为空）
             // 和子进程清理未完成时都会 prevent_exit，那种路径进程还活着。
             tauri::RunEvent::Exit => {
+                // 桌宠是桌面专属模块（见文件头模块声明），Android 上没有可拆除
+                // 的桌宠，保持同一退出流程、不额外分支。
+                #[cfg(not(target_os = "android"))]
                 desktop_pet::shutdown(app_handle);
+                #[cfg(target_os = "android")]
+                let _ = app_handle;
             }
             #[cfg(target_os = "macos")]
             // Dock 图标点击重开窗口是 macOS 特有的；其余平台（含 Android）不处理。

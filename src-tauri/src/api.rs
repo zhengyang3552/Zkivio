@@ -26,7 +26,13 @@ use crate::chat::model::{
     MessagePart, ModelError, ModelErrorKind, ModelMessage, ModelRole, RequestMetadata, StreamPart,
     StreamSink,
 };
+// 「图片追问」的图片来源是桌面 Lens 的截图浮层与 lens-history 目录；Android
+// 没有框选浮层，android.rs 给出同签名的等价实现（明确报不可用），让下面的
+// 调用点两边共用一份代码。
+#[cfg(not(target_os = "android"))]
 use crate::lens_commands::resolve_explain_image_path;
+#[cfg(target_os = "android")]
+use crate::android::resolve_explain_image_path;
 use crate::prompts::COMBINED_TRANSLATE_SEPARATOR;
 use crate::settings::{
     self, default_lens_system_prompt, no_think_instruction, ExplainMessage, Settings,

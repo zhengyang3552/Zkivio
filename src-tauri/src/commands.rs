@@ -19,6 +19,8 @@ use crate::prompts::{
     DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE, DEFAULT_SELECTED_TEXT_TRANSLATION_TEMPLATE,
     DEFAULT_TRANSLATION_TEMPLATE,
 };
+// RapidOCR 是桌面/离线包专用（见 lib.rs 模块声明），Android 走云端 OCR。
+#[cfg(not(target_os = "android"))]
 use crate::rapidocr;
 use crate::settings::{
     commit_settings, default_chat_system_prompt, default_lens_system_prompt,
@@ -701,7 +703,9 @@ pub(crate) async fn open_local_file(
         !(trimmed.len() >= 7 && trimmed[..7].eq_ignore_ascii_case("file://"))
             && !std::path::Path::new(trimmed).is_absolute()
     };
-    let base = if needs_base {
+    // Android 分支只回 None（没有 Dock 工作区可解析），显式标注类型，
+    // 否则两端都为 None 时 rustc 无法推断 Option<T> 的 T。
+    let base: Option<PathBuf> = if needs_base {
         let id = conversation_id
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());

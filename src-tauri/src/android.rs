@@ -41,3 +41,17 @@ pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
 /// 桌面端把「关闭」拦成「藏进托盘」；移动端没有托盘，且唯一窗口被隐藏后
 /// 用户无法再唤回，所以这里保持空实现——关闭就是关闭。
 pub(crate) fn hide_chat_window(_app: &AppHandle, _window: &tauri::Window) {}
+
+/// 桌面 Lens 的「图片追问」取图入口（桌面实现见
+/// `lens_commands::resolve_explain_image_path`）。
+///
+/// 桌面的图片来源是框选截图浮层 + `lens-history` 持久副本；Android 没有浮层，
+/// 因而既没有活跃图片也没有历史目录，这里保持同一签名并明确报不可用，让
+/// `api.rs` 的 explain 流程两端共用一处调用点、不各写一套分支。
+pub(crate) fn resolve_explain_image_path(
+    _app: &AppHandle,
+    _state: &tauri::State<'_, crate::state::AppState>,
+    _image_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    Err("图片追问在当前移动端不可用".to_string())
+}

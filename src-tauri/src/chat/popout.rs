@@ -163,31 +163,26 @@ pub async fn chat_open_conversation_popout(
         reveal_popout(&app, &window);
         return Ok(());
     }
-    // 移动端没有多窗口形态的对话弹出窗，直接拒绝（桌面端行为不变）。
+    // 移动端没有多窗口形态的对话弹出窗，唯一 WebView 就是主聊天页：直接拒绝。
     #[cfg(target_os = "android")]
-    return Err("独立对话窗口在移动端不可用".to_string());
-
-    #[cfg(not(target_os = "android"))]
-    let open = list_popout_conversation_ids(&app);
-    if open.len() >= MAX_POPOUT_WINDOWS {
-        return Err(format!("最多同时打开 {MAX_POPOUT_WINDOWS} 个独立对话窗口"));
+    {
+        return Err("独立对话窗口在移动端不可用".to_string());
     }
-    // Android：不支持独立对话窗口，前面的早返回已经拦住这条路径。
-    #[cfg(target_os = "android")]
-    let window = {
-        unreachable!("popouts are not available on Android")
-    };
-    #[cfg(not(target_os = "android"))]
-    let window = windows::ensure_chat_popout_window(&app, &label, &conversation_id)?;
-    emit_popouts_changed(&app);
+    // 桌面：独立窗口形态的对话窗，数量与窗口装饰沿用既有逻辑。
     #[cfg(not(target_os = "android"))]
     {
+        let open = list_popout_conversation_ids(&app);
+        if open.len() >= MAX_POPOUT_WINDOWS {
+            return Err(format!("最多同时打开 {MAX_POPOUT_WINDOWS} 个独立对话窗口"));
+        }
+        let window = windows::ensure_chat_popout_window(&app, &label, &conversation_id)?;
+        emit_popouts_changed(&app);
         crate::windows::apply_chat_window_chrome(&window);
         crate::windows::normalize_chat_window_behavior(&window);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        #[cfg(target_os = "macos")]
+        {
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        }
     }
     Ok(())
 }
@@ -214,6 +209,9 @@ pub async fn chat_close_conversation_popout(
     conversation_id: String,
 ) -> Result<(), String> {
     close_popout_for_conversation(&app, &conversation_id);
+    // 关掉独立窗口后把主聊天窗带回前台。unminimize / show / set_focus 是桌面
+    // 窗口管理，移动端由系统 Activity 负责，Android 上不调用。
+    #[cfg(not(target_os = "android"))]
     if let Some(chat) = app.get_webview_window("chat") {
         let _ = chat.unminimize();
         let _ = chat.show();
