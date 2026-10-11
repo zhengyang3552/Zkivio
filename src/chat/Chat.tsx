@@ -2540,6 +2540,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       openEmbeddedSettings('usage')
     })
   }, [openEmbeddedSettings, runAfterLeavingEditors])
+  /** 工作区页（仅 Android）：自带 rootfs 的按需下载 / 卸载。 */
+  const handleSidebarOpenWorkspace = useCallback(() => {
+    runAfterLeavingEditors(() => {
+      setExtensionsNavItem(null)
+      openEmbeddedSettings('workspace')
+    })
+  }, [openEmbeddedSettings, runAfterLeavingEditors])
 
   const handleSidebarSearchOpenChange = useCallback((open: boolean) => {
     if (open) {
@@ -2926,6 +2933,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onOpenSettings={handleSidebarOpenSettings}
           onSelectLang={handleSidebarSelectLang}
           onOpenUsage={handleSidebarOpenUsage}
+          onOpenWorkspace={isMobilePlatform ? handleSidebarOpenWorkspace : undefined}
           settingsActive={settingsPanelActive}
           extensionsActive={extensionsActive}
           collapsed={sidebarCollapsed || settingsPanelActive}

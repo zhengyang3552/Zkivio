@@ -1805,7 +1805,23 @@ function chatSubagentControl(conversationId: string, args: SubAgentControlReques
   return invoke('chat_subagent_control', { conversationId, arguments: args })
 }
 
+/** Android rootfs 工作区状态（`android_rootfs_state` / 进度事件同款载荷）。 */
+export type AndroidRootfsState = {
+  status: 'absent' | 'downloading' | 'extracting' | 'ready' | 'failed'
+  received: number
+  total: number
+  message: string | null
+  root: string
+  version: string
+}
+
 export const api = {
+  /** 工作区状态：进页面读一次，之后靠 android-rootfs-progress 事件推送。 */
+  androidRootfsState: () => invoke<AndroidRootfsState>('android_rootfs_state'),
+  /** 下载并解包工作区（已就绪时直接返回当前状态）。 */
+  androidRootfsInstall: () => invoke<AndroidRootfsState>('android_rootfs_install'),
+  /** 卸载（格式化）：清掉工作区里的全部内容，包含 agent 写过的文件。 */
+  androidRootfsUninstall: () => invoke<AndroidRootfsState>('android_rootfs_uninstall'),
   chatArtifactsList: (importHistory = true) => invoke<ArtifactLibraryPage>('chat_artifacts_list', { importHistory }),
   chatArtifactAction: (id: string, action: 'open' | 'reveal' | 'export' | 'export_unique' | 'delete' | 'rename', destination?: string, name?: string) =>
     invoke<string | null>('chat_artifact_action', { id, action, destination, name }),

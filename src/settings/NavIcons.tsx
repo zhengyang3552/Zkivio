@@ -381,6 +381,18 @@ export function UsageIcon(props: IconProps) {
   )
 }
 
+// 工作区：一块带底座与读写指示灯的盘（「这套 rootfs 就在设备上」），
+// 与用量那组柱状拉开轮廓，避免两个都读成「数据」。
+export function WorkspaceIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)}>
+      <rect x="3" y="5" width="18" height="7.5" rx="2" />
+      <path d="M3 14.5h18" />
+      <circle cx="17.5" cy="8.75" r="0.9" />
+    </svg>
+  )
+}
+
 
 // 模型：等轴立方体（一个模型 = 一个封装好的块），与齿轮式的「基础」拉开轮廓
 export function ProvidersIcon(props: IconProps) {

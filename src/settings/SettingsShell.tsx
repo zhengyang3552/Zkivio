@@ -32,12 +32,15 @@ import { i18n, type Lang } from '../components/i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
   CliIcon, ComputerIcon, WebSearchIcon, ConnectorsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
+  WorkspaceIcon,
 } from './NavIcons'
 import { formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
 import { ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
 import { UsageStatsPanel } from './UsageStatsPanel'
+import { WorkspacePanel } from './WorkspacePanel'
+import { isMobilePlatform } from '../chat/platform'
 import { RequestDebugPanel } from './RequestDebugPanel'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { HotkeysTab } from './tabs/HotkeysTab'
@@ -75,7 +78,7 @@ import {
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
 
-export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'workspace' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 // UI 字号：以 px 展示、以整体缩放（zoom）实现。CSS 全是 px 硬编码，做不了真正的 rem 基准字号，
@@ -916,6 +919,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
     { id: 'usage' as const, label: lang === 'zh' ? '使用统计' : 'Usage', icon: UsageIcon },
+    // 工作区只有 Android 才有（自带 rootfs 的按需下载），桌面端不出现这个分类。
+    ...(isMobilePlatform
+      ? [{ id: 'workspace' as const, label: lang === 'zh' ? '工作区' : 'Workspace', icon: WorkspaceIcon }]
+      : []),
     // 关于固定在分类列表最末
     { id: 'about' as const, label: lang === 'zh' ? '关于' : 'About', icon: AboutIcon },
   ]
@@ -989,6 +996,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     usage: {
       title: lang === 'zh' ? '使用统计' : 'Usage',
       subtitle: '',
+    },
+    workspace: {
+      title: lang === 'zh' ? '工作区' : 'Workspace',
+      subtitle:
+        lang === 'zh'
+          ? '随应用自带的 Linux rootfs：按需下载，agent 在里面读写文件、执行命令。'
+          : 'The Linux rootfs the app runs the agent in: downloaded on demand for reading, writing and running commands.',
     },
     providers: {
       title: t.tabModels,
@@ -1391,6 +1405,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 <UsageStatsPanel lang={lang} view={usageView} />
               )
             )}
+
+            {/* ===== 工作区（Android）：自带 rootfs 的按需下载 / 卸载 ===== */}
+            {activeTab === 'workspace' && <WorkspacePanel lang={lang} />}
 
             {/* ===== 模型管理标签页 ===== */}
             {activeTab === 'providers' && (

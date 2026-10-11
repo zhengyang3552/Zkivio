@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { BarChart3, Globe, PawPrint } from 'lucide-react'
+import { BarChart3, Globe, HardDrive, PawPrint } from 'lucide-react'
+import { isMobilePlatform } from './platform'
 import { useCloseAnimation } from './useCloseAnimation'
 import { i18n, type Lang } from '../components/i18n'
 import { api } from '../api/tauri'
@@ -14,6 +15,8 @@ interface SidebarAccountMenuProps {
   onSelectLang: (lang: Lang) => void
   /** 打开设置「用量统计」页。行右侧另显示今日 token，点整行进详情。 */
   onOpenUsage: () => void
+  /** 打开设置「工作区」页（仅 Android：自带 rootfs 的按需下载 / 卸载）。 */
+  onOpenWorkspace?: () => void
   onClose: () => void
 }
 
@@ -22,6 +25,7 @@ export function SidebarAccountMenu({
   lang,
   onSelectLang,
   onOpenUsage,
+  onOpenWorkspace,
   onClose: onCloseProp,
 }: SidebarAccountMenuProps) {
   const t = i18n[lang]
@@ -147,6 +151,21 @@ export function SidebarAccountMenu({
           {todayTokens == null ? '' : formatTokensCompact(todayTokens)}
         </span>
       </button>
+
+      {isMobilePlatform && onOpenWorkspace && (
+        <button
+          type="button"
+          role="menuitem"
+          className="kv-menu-item"
+          onClick={() => {
+            onOpenWorkspace()
+            onClose()
+          }}
+        >
+          <HardDrive strokeWidth={1.75} />
+          {t.workspace}
+        </button>
+      )}
 
       <div className="kv-menu-sep" />
 
