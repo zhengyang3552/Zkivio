@@ -4,6 +4,8 @@ pub mod agents;
 #[cfg(target_os = "android")]
 pub mod android;
 #[cfg(target_os = "android")]
+pub mod android_rootfs;
+#[cfg(target_os = "android")]
 mod android_keyring;
 pub mod api;
 pub mod app_data;
@@ -550,6 +552,14 @@ pub fn run() {
                     }
                 });
             }
+            // 自带 rootfs 工作区（App 分支的决定：Android 的工作区就是这套 rootfs）。
+            // 路径缓存是纯计算，先做掉；解包（首次几秒）丢后台，免得第一条命令卡在
+            // 解包上，也免得挡住首屏。见 src/android_rootfs.rs 的模块注释。
+            #[cfg(target_os = "android")]
+            {
+                android_rootfs::init(app.handle());
+                android_rootfs::spawn_prepare(app.handle().clone());
+            }
             // Android：没有多窗口与托盘，唯一的主 WebView 在启动时就建好，
             // 否则用户看到的是一片空白（桌面端由 shortcuts.rs 按需建窗）。
             #[cfg(target_os = "android")]
@@ -913,6 +923,8 @@ pub fn run() {
         #[cfg(target_os = "android")]
         let builder = builder
         .invoke_handler(tauri::generate_handler![
+            android_rootfs::android_rootfs_status,
+            android_rootfs::android_rootfs_prepare,
             provider_oauth::provider_oauth_start,
             provider_oauth::provider_oauth_poll,
             provider_oauth::provider_oauth_cancel,

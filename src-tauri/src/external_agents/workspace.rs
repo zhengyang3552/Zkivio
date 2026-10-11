@@ -14,11 +14,22 @@ pub fn resolve_effective_cwd(
     conversation_id: &str,
     project_id: Option<&str>,
 ) -> Result<PathBuf, String> {
-    if let Some(path) = project_cli_root_for_conversation(app, conversation_id, project_id) {
-        return Ok(path);
+    // 桌面：外部 Agent（claude/codex/kimi…）用项目根，没有项目就落到每会话 workspace。
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Some(path) = project_cli_root_for_conversation(app, conversation_id, project_id) {
+            return Ok(path);
+        }
+        return conversation_workspace_path(app, conversation_id);
     }
-
-    conversation_workspace_path(app, conversation_id)
+    // Android：工作区就是应用自带的 rootfs（见 android_rootfs 的模块注释）。
+    // 这里刻意不看项目根和会话 id —— 移动端没有目录选择器，也没有第二个可写目录，
+    // 「工作区 = rootfs 根」是 App 分支定下来的唯一形态。
+    #[cfg(target_os = "android")]
+    {
+        let _ = (conversation_id, project_id);
+        crate::android_rootfs::workspace_root(app)
+    }
 }
 
 fn project_cli_root_for_conversation(

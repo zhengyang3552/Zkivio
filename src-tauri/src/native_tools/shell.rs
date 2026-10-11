@@ -272,6 +272,13 @@ pub(crate) fn build_shell_command(command: &str) -> Command {
     }
     #[cfg(not(target_os = "windows"))]
     {
+        // Android：命令要在应用自带的 rootfs 里跑（工作区就是它的根）。否则宿主上
+        // 既没有 `/bin/sh` 之外的工具（git / apk 全缺），agent 执行时看到的 `/` 也和
+        // 它读写文件的路径不是同一套。rootfs 还没就绪时退回宿主 sh —— 不劣于改造前。
+        #[cfg(target_os = "android")]
+        if let Some(layout) = crate::android_rootfs::cached_layout() {
+            return crate::android_rootfs::proot_command(layout, command);
+        }
         let mut c = Command::new("sh");
         c.args(["-c", command]);
         c

@@ -123,6 +123,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # rootfs 工作区素材：proot / proot-loader / libtalloc / libandroid-shmem /
+      # Alpine minirootfs。二进制不入库（见 .gitignore），构建前现拉；
+      # Rust 侧用 include_bytes! 打进 so（src-tauri/src/android_rootfs.rs）。
+      - name: Fetch Android rootfs assets
+        run: bash scripts/fetch-android-rootfs.sh
+
       # tauri-build 的 build.rs 会校验 externalBin 与 frontendDist 存在性；
       # 真正的 dist 由 beforeBuildCommand 生成，这里先放空壳让构建脚本通过。
       # 安卓不需要 OCR sidecar，但校验只看文件名，四个 ABI 名都补上空文件。
