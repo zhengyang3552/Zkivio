@@ -24,6 +24,27 @@ name: Package Linux
 on:
   push:
     branches: [Linux]   # 上游同步:只构建打包,产物供下载测试
+    # 只有「会改变 Linux 产物」的提交才重新打包。apt 源派生物(pool/** 与
+    # Packages/Release/InRelease/key.gpg 由本流程 apt 作业自己提交)、文档、
+    # README 等提交都不再触发整轮 16~45 分钟的重建,避免重复打包。
+    # 注意:本文件自身不在列表内,改工作流请用 workflow_dispatch 手动验证。
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.npmrc'
+      - 'vite.config.ts'
+      - 'tsconfig.json'
+      - 'tsconfig.node.json'
+      - 'postcss.config.cjs'
+      - '.eslintrc.cjs'
+      - 'architecture-boundaries.json'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'ci/**'
   # 网页上创建 Release(写说明)时,自动把最近一次成功构建的产物原样挂上——
   # 不重新编译,测过的包就是发布的包
   release:
@@ -54,7 +75,11 @@ env:
 jobs:
   build:
     name: Compile (tauri build)
-    if: github.event_name != 'release' && github.event.inputs.tag == ''
+    # 打包按分支分开:Linux 分支只出 Linux 包;App 分支的提交永不触发这里
+    # (release 事件的 ref 是 tag,不受此限制)。
+    if: >-
+      github.event_name != 'release' && github.event.inputs.tag == '' &&
+      github.ref == 'refs/heads/Linux'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
@@ -169,7 +194,11 @@ jobs:
   package:
     name: Package (deb / arch / appimage / nix / tar.gz)
     needs: build
-    if: github.event_name != 'release' && github.event.inputs.tag == ''
+    # 打包按分支分开:Linux 分支只出 Linux 包;App 分支的提交永不触发这里
+    # (release 事件的 ref 是 tag,不受此限制)。
+    if: >-
+      github.event_name != 'release' && github.event.inputs.tag == '' &&
+      github.ref == 'refs/heads/Linux'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

@@ -7,12 +7,30 @@ on:
       - '**.md'
       - 'docs/**'
       - 'LICENSE'
+      # apt 源的派生物:由 package-linux.yml 的 apt 作业自动提交,与前端的
+      # lint / typecheck / 单测无关,不该再跑一遍完整质量门。
+      - '/pool/**'
+      - '/Packages'
+      - '/Packages.gz'
+      - '/Release'
+      - '/Release.gpg'
+      - '/InRelease'
+      - '/key.gpg'
   pull_request:
     branches: [Linux]
     paths-ignore:
       - '**.md'
       - 'docs/**'
       - 'LICENSE'
+      # apt 源的派生物:由 package-linux.yml 的 apt 作业自动提交,与前端的
+      # lint / typecheck / 单测无关,不该再跑一遍完整质量门。
+      - '/pool/**'
+      - '/Packages'
+      - '/Packages.gz'
+      - '/Release'
+      - '/Release.gpg'
+      - '/InRelease'
+      - '/key.gpg'
 jobs:
   app-checks:
     runs-on: ubuntu-latest
