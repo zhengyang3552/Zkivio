@@ -68,14 +68,20 @@ fetch "$ALPINE_BASE/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz" \
     "$OUT/alpine-minirootfs.tar.gz"
 
 # 校验：错了要在构建前就炸，而不是等 APK 装到手机上才发现。
-if ! file "$OUT/proot" | grep -q "aarch64"; then
-    echo "✗ proot 不是 aarch64 ELF" >&2
-    exit 1
-fi
-if ! tar tzf "$OUT/alpine-minirootfs.tar.gz" | grep -qx "./bin/sh"; then
-    echo "✗ rootfs 里没有 bin/sh" >&2
-    exit 1
-fi
+#
+# 注意别写成 `xxx | grep -q`：脚本开了 pipefail，grep 命中就退出会让上游收到
+# SIGPIPE(141)，整条管道被判失败 —— 明明校验通过却报「不通过」。先落成变量再比。
+PROOT_TYPE="$(file -b "$OUT/proot" 2>/dev/null || true)"
+case "$PROOT_TYPE" in
+    *aarch64*) ;;
+    *) echo "✗ proot 不是 aarch64 ELF（file: ${PROOT_TYPE:-无 file 命令}）" >&2; exit 1 ;;
+esac
+
+ROOTFS_LISTING="$(tar tzf "$OUT/alpine-minirootfs.tar.gz")"
+case "$ROOTFS_LISTING" in
+    *"./bin/sh"*) ;;
+    *) echo "✗ rootfs 里没有 bin/sh" >&2; exit 1 ;;
+esac
 
 echo
 echo "已就绪（src-tauri/android-assets/）："
