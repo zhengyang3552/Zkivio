@@ -277,7 +277,9 @@ pub(crate) fn build_shell_command(command: &str) -> Command {
         // 它读写文件的路径不是同一套。rootfs 还没就绪时退回宿主 sh —— 不劣于改造前。
         #[cfg(target_os = "android")]
         if let Some(layout) = crate::android_rootfs::cached_layout() {
-            return crate::android_rootfs::proot_command(layout, command);
+            // build_shell_command 返回的是 tokio 的 Command（会设 kill_on_drop 等），
+            // 而 proot_command 给的是 std 的（更中性，Dock 终端那边也能直接用）。
+            return crate::android_rootfs::proot_command(layout, command).into();
         }
         let mut c = Command::new("sh");
         c.args(["-c", command]);
