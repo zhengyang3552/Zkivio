@@ -13,6 +13,7 @@ use reqwest::Client;
 use crate::macos_ocr::MacOcrClient;
 use crate::mcp::types::McpTool;
 use crate::offline_models::OfflineModelManager;
+#[cfg(not(target_os = "android"))]
 use crate::rapidocr::RapidOcrClient;
 use crate::settings::{Settings, SettingsError, SettingsSnapshot, SettingsVersion};
 
@@ -74,6 +75,8 @@ pub struct AppState {
     pub offline_models: std::sync::Arc<OfflineModelManager>,
     /// RapidOCR 离线 OCR 客户端。模型 + onnxruntime dylib 都由用户在设置页面下载到 app data 目录,
     /// 安装包不带任何 ONNX Runtime 二进制。`status()` 检查 4 个文件齐不齐, 不齐让前端引导下载。
+    /// Android：oar-ocr / onnxruntime 没有对应后端，整个离线 OCR 关闭（见 lib.rs 模块声明）。
+    #[cfg(not(target_os = "android"))]
     pub rapidocr: std::sync::Arc<RapidOcrClient>,
     /// 多 agent / 子 agent 任务表（P3）：spawn 的子 agent 状态、按名寻址、并发上限。
     pub sub_agents: crate::chat::sub_agent::SubAgentManager,
@@ -176,7 +179,7 @@ impl AppState {
         http: Client,
         #[cfg(target_os = "macos")] macos_ocr: std::sync::Arc<MacOcrClient>,
         offline_models: std::sync::Arc<OfflineModelManager>,
-        rapidocr: std::sync::Arc<RapidOcrClient>,
+        #[cfg(not(target_os = "android"))] rapidocr: std::sync::Arc<RapidOcrClient>,
     ) -> Self {
         let mcp_runtime = crate::mcp::McpRuntimeState::load(&usage_dir);
         let request_debug = crate::chat::request_debug::RequestDebugState::new(&usage_dir);
@@ -207,6 +210,7 @@ impl AppState {
             #[cfg(target_os = "macos")]
             macos_ocr,
             offline_models,
+            #[cfg(not(target_os = "android"))]
             rapidocr,
             sub_agents: crate::chat::sub_agent::SubAgentManager::default(),
             background_commands: Arc::new(
@@ -234,6 +238,7 @@ impl AppState {
             #[cfg(target_os = "macos")]
             MacOcrClient::headless(),
             offline_models.clone(),
+            #[cfg(not(target_os = "android"))]
             RapidOcrClient::headless(offline_models),
         )
     }
@@ -534,6 +539,7 @@ pub(crate) fn test_app_state() -> AppState {
         #[cfg(target_os = "macos")]
         MacOcrClient::disabled(),
         offline_models.clone(),
+        #[cfg(not(target_os = "android"))]
         RapidOcrClient::new(offline_models),
     )
 }

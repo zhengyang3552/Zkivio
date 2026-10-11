@@ -12,6 +12,9 @@ default-run = "kivio"
 [lib]
 name = "kivio"
 path = "src/lib.rs"
+# Android 构建把本 crate 当 JNI 动态库链接进 APK，必须有 staticlib/cdylib；
+# rlib 保留给 [[bin]] 与集成测试。
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
 name = "kivio"
@@ -36,7 +39,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # Tauri 核心及插件
-tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
+tauri = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # DeepSeek Harness 的用户设置是 YAML；模型探测必须结构化读取 models/providers 数组，
@@ -49,11 +52,8 @@ ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
 # gzip：api.rs 请求体压缩开关 + rapidocr 模型解包（跨平台）
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
-tauri-plugin-global-shortcut = "2"
 tauri-plugin-store = "2"
 tauri-plugin-shell = "2"
-tauri-plugin-autostart = "2"
-tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
 chrono = "0.4"
 parking_lot = "0.12"
@@ -82,8 +82,6 @@ ignore = "0.4"
 # Dock：workspace 文件监听（notify）+ git 命令超时杀进程树（wait-timeout）。
 notify = "7"
 wait-timeout = "0.2"
-# Dock 终端面板：跨平台 PTY（macOS/Linux forkpty，Windows ConPTY）。
-portable-pty = "0.8"
 
 # 跨平台 app-data 目录定位。
 directories = "5"
@@ -97,15 +95,12 @@ similar = { version = "2.7", default-features = false }
 # 工具库
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
-keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
 # 连接器 OAuth（PKCE + DCR + loopback）：sha2 算 code_challenge，rand 生成 code_verifier，
 # url 构造/解析 authorize URL 与回调 query。
 sha2 = "0.10"
 rand = "0.8"
 url = "2.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-arboard = "3"
-enigo = "0.1.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # 知识库 PDF 文本抽取（纯文本，扫描件留待 OCR fallback）。
 pdf-extract = "0.7"
@@ -115,13 +110,23 @@ calamine = "0.26"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
 
-# RapidOCR 离线识别：用 oar-ocr 封装好的 PaddleOCR pipeline。
-# default-features = false 关掉 download-binaries，避免 cargo build 时下载 onnxruntime。
-# 直接依赖 ort 并启用 load-dynamic，运行时通过 ort::init_from(dylib_path) 加载用户在
-# 设置页面下载到 app data 目录的 dylib，安装包不带任何 ONNX Runtime 二进制。
+croner = "4"
+
+# 桌面端专用依赖：Android 上没有对应后端（托盘 / 全局热键 / 单实例 / 自启 /
+# PTY / 系统剪贴板 / 输入模拟 / 系统钥匙串 / ONNX Runtime OCR），因此只在
+# 非 Android 目标编译；对应模块在 lib.rs 里用 cfg(not(target_os = "android"))
+# 一并关闭，Android 侧的替代实现在 src/android.rs。
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+portable-pty = "0.8"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
+arboard = "3"
+enigo = "0.1.3"
 oar-ocr = { version = "0.8", default-features = false, features = ["simd"] }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-23"] }
-croner = "4"
 
 # macOS 平台特有依赖（系统 API 调用）
 [target.'cfg(target_os = "macos")'.dependencies]

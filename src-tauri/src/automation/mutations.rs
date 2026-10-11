@@ -33,8 +33,12 @@ pub(super) fn set_enabled(app: &AppHandle, id: &str, enabled: bool) -> Result<Au
     Ok(saved)
 }
 
+// Android 没有系统级全局热键，自动化启用/停用不需要重注册。
+#[cfg(not(target_os = "android"))]
 fn refresh_hotkeys(app: &AppHandle) {
     if let Err(err) = crate::shortcuts::register_hotkeys(app) {
         let _ = app.emit("hotkey-warning", err);
     }
 }
+#[cfg(target_os = "android")]
+fn refresh_hotkeys(_app: &AppHandle) {}

@@ -1882,6 +1882,7 @@ fn upsert_segment(
 /// 订阅者时，才跳过主窗 All 的高频事件。按「窗口已打开」跳过会在通道未订上/已死时黑洞。
 /// debug 构建额外广播到全局事件总线,喂 chat probe(probe.rs 靠 `app.listen` 收实时载荷)。
 fn emit_protocol(app: &AppHandle, event: ChatProtocolEvent) {
+    #[cfg(not(target_os = "android"))]
     crate::desktop_pet::observe_protocol(app, &event);
     #[cfg(debug_assertions)]
     notify_protocol_debug_sink(&event);
@@ -2251,6 +2252,7 @@ pub fn resolve_session_consent(app: &AppHandle, run_id: &str) {
         .chat_protocol()
         .hub()
         .resolve_session_consent(run_id);
+    #[cfg(not(target_os = "android"))]
     crate::desktop_pet::resolve_interaction(app, run_id, None);
 }
 
@@ -2259,6 +2261,7 @@ pub fn resolve_user_prompt(app: &AppHandle, run_id: &str, tool_call_id: &str) {
         .chat_protocol()
         .hub()
         .resolve_user_prompt(run_id, tool_call_id);
+    #[cfg(not(target_os = "android"))]
     crate::desktop_pet::resolve_interaction(app, run_id, Some(tool_call_id));
 }
 

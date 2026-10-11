@@ -1,0 +1,135 @@
+name: Package Android
+
+# App 分支 = Kivio 安卓端：只在 App 分支的提交上跑，产出 APK。
+# Linux 分支的打包在 package-linux.yml，两边按分支完全分开、互不触发
+# （各自的 push 过滤都只看自己那条分支，另有 job 级 github.ref 守卫）。
+#
+# 与桌面端的差异（见 src-tauri/src/android.rs 的模块注释）：
+#   托盘 / 全局热键 / 单实例 / 开机自启 / 多窗口 / Dock 终端 / Lens 浮层 /
+#   离线 RapidOCR 全部不参与编译。首版只出 debug APK（Gradle 自动用 debug
+#   keystore 签名，可直接安装）；release APK 需要签名 secrets，另开一步做。
+#
+# Android 工程（src-tauri/gen/android）由 `tauri android init` 在本流程生成，
+# 不入库：它含二进制 gradle-wrapper.jar，每次由 CLI 生成更可靠。
+
+on:
+  push:
+    branches: [App]
+    # 只有会改变 APK 的提交才重新打包（与 package-linux.yml 同一套白名单思路）。
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.npmrc'
+      - 'vite.config.ts'
+      - 'tsconfig.json'
+      - 'tsconfig.node.json'
+      - 'postcss.config.cjs'
+      - '.eslintrc.cjs'
+      - 'architecture-boundaries.json'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'ci/**'
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'debug(默认,免签名) 或 release(需要签名 secrets)'
+        required: false
+        default: 'debug'
+
+concurrency:
+  group: package-android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  NDK_VERSION: '27.0.12077973'
+  JAVA_VERSION: '17'
+
+jobs:
+  apk:
+    # 打包按分支分开：App 分支只出 APK；Linux 分支的提交永不触发这里。
+    if: github.ref == 'refs/heads/App'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 直接走 sdkmanager 装 NDK / platform / build-tools：不依赖第三方 NDK
+      # action 的具体版本号，装什么由这里说了算。
+      - name: Install Android NDK and platform tools
+        run: |
+          sdkmanager --install "ndk;${NDK_VERSION}" "platforms;android-34" "build-tools;34.0.0"
+          echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      # tauri-build 的 build.rs 会校验 externalBin 与 frontendDist 存在性；
+      # 真正的 dist 由 beforeBuildCommand 生成，这里先放空壳让构建脚本通过。
+      # 安卓不需要 OCR sidecar，但校验只看文件名，四个 ABI 名都补上空文件。
+      - name: Stub sidecar binary and frontend dist
+        run: |
+          mkdir -p dist src-tauri/binaries
+          for t in aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android; do
+            : > "src-tauri/binaries/kivio-ocr-helper-$t"
+            chmod +x "src-tauri/binaries/kivio-ocr-helper-$t"
+          done
+
+      # 把 CLI 支持的参数打进日志，命令形式不对时不用等下一轮才发现。
+      - name: Show android CLI options
+        run: |
+          npx tauri android init --help || true
+          npx tauri android build --help || true
+
+      - name: Init Android project
+        run: npx tauri android init --ci --skip-targets-install
+
+      - name: Build debug APK (arm64)
+        run: |
+          npx tauri android build --apk --debug --target aarch64
+
+      - name: List APK outputs
+        if: always()
+        run: find src-tauri/gen/android/app/build/outputs -name '*.apk' -print 2>/dev/null || true
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kivio-android-arm64-debug-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

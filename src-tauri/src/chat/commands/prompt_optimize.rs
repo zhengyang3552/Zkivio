@@ -414,6 +414,7 @@ mod tests {
             #[cfg(target_os = "macos")]
             crate::macos_ocr::MacOcrClient::disabled(),
             offline_models.clone(),
+            #[cfg(not(target_os = "android"))]
             crate::rapidocr::RapidOcrClient::new(offline_models),
         )
     }

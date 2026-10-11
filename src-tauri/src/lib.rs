@@ -1,6 +1,8 @@
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
 pub mod agents;
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod api;
 pub mod app_data;
 pub mod automation;
@@ -9,11 +11,14 @@ pub mod chat;
 pub mod commands;
 mod computer_control;
 pub mod connectors;
+#[cfg(not(target_os = "android"))]
 pub mod desktop_pet;
+#[cfg(not(target_os = "android"))]
 pub mod dock;
 pub mod external_agents;
 pub mod fonts;
 pub mod lens;
+#[cfg(not(target_os = "android"))]
 pub mod lens_commands;
 #[cfg(target_os = "linux")]
 pub mod linux_portal;
@@ -33,14 +38,18 @@ pub mod proc;
 pub mod prompts;
 pub mod provider_oauth;
 pub mod provider_request;
+#[cfg(not(target_os = "android"))]
 pub mod rapidocr;
+#[cfg(not(target_os = "android"))]
 pub mod replace_translation;
 pub mod scheduled_tasks;
 #[cfg(target_os = "macos")]
 pub mod sck;
+#[cfg(not(target_os = "android"))]
 pub mod screenshot;
 pub mod self_config;
 pub mod settings;
+#[cfg(not(target_os = "android"))]
 pub mod shortcuts;
 pub mod skills;
 pub mod state;
@@ -50,6 +59,7 @@ pub mod utils;
 pub mod web_search;
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) mod window_focus;
+#[cfg(not(target_os = "android"))]
 pub mod windows;
 #[cfg(target_os = "windows")]
 pub mod windows_ocr;
@@ -59,19 +69,25 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
+#[cfg(not(target_os = "android"))]
 use tauri_plugin_single_instance::init as init_single_instance;
 
 use api::build_http_client;
+#[cfg(not(target_os = "android"))]
 use commands::initialize_launch_at_startup;
 use native_tools::cleanup_stale_sandbox_exports;
+#[cfg(not(target_os = "android"))]
 use screenshot::cleanup_orphan_temp_files;
 use settings::load_settings;
 #[cfg(target_os = "macos")]
 use shortcuts::set_macos_regular_activation_policy;
+#[cfg(not(target_os = "android"))]
 use shortcuts::{
     display_hotkey_errors, hide_chat_window, open_chat_window, open_settings_window_for_activation,
     register_hotkeys, setup_tray,
 };
+#[cfg(target_os = "android")]
+use android::{hide_chat_window, open_chat_window};
 use state::AppState;
 use updates::check_github_latest_release;
 #[cfg(target_os = "macos")]
@@ -120,7 +136,11 @@ fn disable_process_power_throttling() {
 }
 
 /// 应用入口函数
-/// 初始化 Tauri Builder，加载插件，配置窗口事件处理，设置全局状态、热键和托盘
+/// 初始化 Tauri Builder，加载插件，配置窗口事件处理，设置全局状态、热键和托盘。
+///
+/// Android 上由 `mobile_entry_point` 生成的 JNI 入口调用本函数；桌面端由
+/// `main.rs` 调用。
+#[cfg_attr(target_os = "android", tauri::mobile_entry_point)]
 pub fn run() {
     // GUI launches don't always inherit the *current* user PATH, so packaged
     // builds can't find user-installed CLIs. Enrich the process PATH once,
@@ -139,6 +159,8 @@ pub fn run() {
     // fix is inherited by the dock PTY, run_command, MCP, and CLI probes.
     path_env::ensure_utf8_locale();
 
+    // 开机自启插件只在桌面端存在（Android 由系统管理应用生命周期）。
+    #[cfg(not(target_os = "android"))]
     let autostart_plugin = {
         #[cfg(target_os = "macos")]
         {
@@ -155,17 +177,23 @@ pub fn run() {
         }
     };
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init());
+    // 单实例 / 全局热键 / 开机自启都是桌面概念（多实例、系统级热键、登录项），
+    // Android 上不注册这三个插件，其余流程共用。
+    #[cfg(not(target_os = "android"))]
+    let builder = builder
         .plugin(init_single_instance(|app, _args, _cwd| {
             if let Err(err) = open_settings_window_for_activation(app) {
                 eprintln!("Single-instance activation failed: {err}");
             }
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(autostart_plugin)
+        .plugin(autostart_plugin);
+
+    builder
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "chat" {
@@ -185,20 +213,13 @@ pub fn run() {
                     // 弹出窗关即销毁，不走主聊天窗 keep-alive。
                     return;
                 }
+                // Lens / 翻译浮层只在桌面端存在（Android 没有 overlay 面板）。
+                #[cfg(not(target_os = "android"))]
                 if window.label() == "lens" || window.label() == "translate" {
                     api.prevent_close();
-                    // Windows：原生关闭（Alt+F4 等 WM_CLOSE）也要走完整清理 + destroy，回收内存，
+                    // 原生关闭（Alt+F4 / 交通灯等）也要走完整清理 + destroy，回收内存，
                     // 不留隐藏僵尸 overlay（active_overlay_window 只认可见窗，hide 掉的再也销毁不到）。
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = lens_commands::lens_close(window.app_handle().clone());
-                    }
-                    // macOS：换回原类后可安全 destroy（见 windows::destroy_overlay_window），
-                    // 原生关闭也走完整清理 + destroy 回收内存，不留隐藏僵尸 overlay。
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        let _ = lens_commands::lens_close(window.app_handle().clone());
-                    }
+                    let _ = lens_commands::lens_close(window.app_handle().clone());
                     return;
                 }
                 // 翻译浮层若仍收到默认 CloseRequested，必须拦截并走安全销毁：先恢复
@@ -271,6 +292,7 @@ pub fn run() {
             }
 
             // 清理上次崩溃 / 强杀 / 旧版本遗留的截图 PNG（24h 之前的，避免误删并发实例的活文件）
+            #[cfg(not(target_os = "android"))]
             cleanup_orphan_temp_files();
             cleanup_stale_sandbox_exports();
             // 会话副产物：空/孤儿工作区目录、已删会话残留的附件目录。只碰 Kivio 自己造的
@@ -350,6 +372,7 @@ pub fn run() {
                     Err(err) => eprintln!("Failed to merge built-in assistants v3: {err}"),
                 }
             }
+            #[cfg(not(target_os = "android"))]
             if let Err(err) = initialize_launch_at_startup(&app.handle(), &mut settings) {
                 eprintln!("Failed to initialize launch-at-startup setting: {err}");
             }
@@ -377,6 +400,7 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 macos_ocr::MacOcrClient::new(&app.handle()),
                 offline_models.clone(),
+                #[cfg(not(target_os = "android"))]
                 rapidocr::RapidOcrClient::new(offline_models),
             ));
             app.manage(chat::repository::ConversationRepository::default());
@@ -402,14 +426,19 @@ pub fn run() {
                     }
                 });
             }
-            // Dock 的 workspace 文件监听服务（文件树 / Git 面板的秒级刷新源）。
-            app.manage(std::sync::Arc::new(dock::watch::WorkspaceWatchService::new(
-                app.handle().clone(),
-            )));
-            // Dock 终端面板的 PTY 会话登记表（会话 drop 时兜底 kill 子进程）。
-            app.manage(std::sync::Arc::new(dock::terminal::TerminalService::new(
-                app.handle().clone(),
-            )));
+            // Dock（右侧文件树 / Git 面板 / 终端）依赖桌面 PTY 与本地工作区语义，
+            // Android 上整块关闭（见模块声明），两个服务也不再 manage。
+            #[cfg(not(target_os = "android"))]
+            {
+                // Dock 的 workspace 文件监听服务（文件树 / Git 面板的秒级刷新源）。
+                app.manage(std::sync::Arc::new(dock::watch::WorkspaceWatchService::new(
+                    app.handle().clone(),
+                )));
+                // Dock 终端面板的 PTY 会话登记表（会话 drop 时兜底 kill 子进程）。
+                app.manage(std::sync::Arc::new(dock::terminal::TerminalService::new(
+                    app.handle().clone(),
+                )));
+            }
 
             // Apply the stored sub-agent concurrency cap (default sizes the gate
             // to DEFAULT_SUB_AGENT_CONCURRENCY; reconcile to the user's setting).
@@ -419,19 +448,24 @@ pub fn run() {
                 state.sub_agents.set_concurrency(n);
             }
 
-            if let Err(err) = register_hotkeys(&app.handle()) {
-                eprintln!(
-                    "Failed to register hotkeys: {}",
-                    display_hotkey_errors(&err)
-                );
-            }
-            if let Err(err) = desktop_pet::initialize(&app.handle()) {
-                eprintln!("Failed to initialize desktop pet: {err}");
-            }
             crate::automation::spawn_scheduler(app.handle().clone());
             crate::scheduled_tasks::spawn_scheduler(app.handle().clone());
-            if let Err(err) = setup_tray(&app.handle()) {
-                eprintln!("Failed to setup tray: {err}");
+            // 全局热键 / 墨墨桌宠 / 托盘都是桌面形态：Android 没有系统级热键、没有
+            // 独立桌宠进程、也没有托盘，这三项整体关闭。
+            #[cfg(not(target_os = "android"))]
+            {
+                if let Err(err) = register_hotkeys(&app.handle()) {
+                    eprintln!(
+                        "Failed to register hotkeys: {}",
+                        display_hotkey_errors(&err)
+                    );
+                }
+                if let Err(err) = desktop_pet::initialize(&app.handle()) {
+                    eprintln!("Failed to initialize desktop pet: {err}");
+                }
+                if let Err(err) = setup_tray(&app.handle()) {
+                    eprintln!("Failed to setup tray: {err}");
+                }
             }
 
             // 启动后 5s 静默检查更新（settings.auto_check_update 控制）
@@ -501,6 +535,7 @@ pub fn run() {
             // enables/tests a server. Tray startup must not launch tool processes.
 
             // 手动启动默认打开聊天窗口；自启 / 「启动后最小化到托盘」则只留托盘常驻。
+            #[cfg(not(target_os = "android"))]
             if !skip_chat_on_launch {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -510,10 +545,19 @@ pub fn run() {
                     }
                 });
             }
+            // Android：没有多窗口与托盘，唯一的主 WebView 在启动时就建好，
+            // 否则用户看到的是一片空白（桌面端由 shortcuts.rs 按需建窗）。
+            #[cfg(target_os = "android")]
+            if let Err(err) = open_chat_window(app.handle()) {
+                eprintln!("Failed to open the main window: {err}");
+            }
             #[cfg(target_os = "macos")]
             macos_hang_watchdog::start(app.handle());
             Ok(())
         })
+        // 桌面：完整命令表（含 dock / lens / windows / desktop_pet 等桌面模块）。
+        #[cfg(not(target_os = "android"))]
+        let builder = builder
         .invoke_handler(tauri::generate_handler![
             desktop_pet::desktop_pet_get_enabled,
             desktop_pet::desktop_pet_set_enabled,
@@ -857,7 +901,295 @@ pub fn run() {
             dock::terminal::dock_terminal_write,
             dock::terminal::dock_terminal_resize,
             dock::terminal::dock_terminal_close,
-        ])
+        ]);
+
+        // Android：去掉桌面专属模块的命令（托盘 / 热键 / 多窗口 / Lens / Dock / 桌宠），
+        // 其余命令与桌面共用同一份实现。
+        #[cfg(target_os = "android")]
+        let builder = builder
+        .invoke_handler(tauri::generate_handler![
+            provider_oauth::provider_oauth_start,
+            provider_oauth::provider_oauth_poll,
+            provider_oauth::provider_oauth_cancel,
+            provider_oauth::provider_oauth_disconnect,
+            provider_oauth::usage::provider_oauth_usage,
+            provider_oauth::account::provider_oauth_account,
+            chat::media_station::media_station_list,
+            chat::media_station::media_station_start,
+            chat::media_station::media_station_cancel,
+            chat::media_station::media_station_delete,
+            chat::media_station::media_station_resume,
+            chat::media_station::media_station_read,
+            chat::media_station::media_station_export,
+            chat::media_station::media_station_reference,
+            commands::get_settings,
+            commands::set_hotkeys_suspended,
+            commands::list_gnome_system_shortcuts,
+            chat::notification_viewing::chat_report_notification_view,
+            fonts::list_system_fonts,
+            commands::get_default_prompt_templates,
+            commands::save_settings,
+            commands::set_favorite_models,
+            commands::set_translate_card_size,
+            commands::export_settings,
+            commands::import_settings,
+            commands::open_settings_window,
+            commands::close_translator_window,
+            commands::translate_text,
+            commands::commit_translation,
+            commands::open_external,
+            commands::open_local_file,
+            commands::open_data_url_file,
+            commands::open_html_preview,
+            commands::fetch_models,
+            commands::test_provider_connection,
+            commands::test_web_search,
+            commands::get_permission_status,
+            commands::request_linux_screen_capture_permission,
+            commands::open_permission_settings,
+            commands::take_lens_selection,
+            updates::check_github_latest_release,
+            updates::download_update_asset,
+            updates::install_update_and_quit,
+            commands::rapidocr_status,
+            commands::rapidocr_install,
+            commands::replace_translation_pack_status,
+            commands::replace_translation_pack_install,
+            usage::usage_get_stats,
+            usage::usage_get_conversation_cost,
+            usage::usage_clear,
+            chat::commands::interaction::get_request_debug_records,
+            chat::commands::interaction::clear_request_debug_records,
+            chat::protocol::chat_sync_state,
+            chat::protocol::chat_protocol_subscribe,
+            chat::popout::chat_open_conversation_popout,
+            chat::popout::chat_focus_conversation_popout,
+            chat::popout::chat_close_conversation_popout,
+            chat::popout::chat_list_conversation_popouts,
+            // Chat 模块命令
+            chat::commands::catalog::chat_get_conversations,
+            chat::commands::interaction::chat_list_background_tasks,
+            chat::commands::interaction::chat_clear_finished_background_tasks,
+            chat::commands::interaction::chat_stop_external_background_task,
+            chat::commands::interaction::chat_kill_background_command,
+            chat::commands::catalog::chat_search_conversations,
+            chat::commands::catalog::chat_query_conversations,
+            chat::commands::catalog::chat_get_conversation,
+            chat::commands::catalog::chat_get_conversation_window,
+            chat::commands::catalog::chat_get_conversation_page,
+            chat::commands::catalog::chat_get_conversation_revision,
+            chat::export::chat_export_conversation_markdown,
+            chat::export::chat_export_set_backup,
+            chat::export::chat_import_set_backup,
+            chat::commands::catalog::chat_create_conversation,
+            chat::commands::catalog::chat_import_external_conversation,
+            chat::commands::catalog::chat_create_builder_conversation,
+            chat::commands::catalog::chat_get_assistants,
+            chat::commands::catalog::chat_create_assistant,
+            chat::commands::catalog::chat_update_assistant,
+            chat::commands::catalog::chat_duplicate_assistant,
+            chat::commands::catalog::chat_delete_assistant,
+            chat::commands::catalog::chat_get_projects,
+            chat::commands::catalog::chat_reorder_projects,
+            chat::commands::catalog::chat_get_conversation_pins,
+            chat::commands::catalog::chat_set_conversation_pins,
+            chat::commands::catalog::chat_create_project,
+            chat::commands::catalog::chat_update_project,
+            chat::commands::catalog::chat_delete_project,
+            chat::commands::catalog::chat_project_open_folder,
+            chat::commands::catalog::chat_get_sets,
+            chat::commands::catalog::chat_reorder_sets,
+            chat::commands::catalog::chat_create_set,
+            chat::commands::catalog::chat_update_set,
+            chat::commands::catalog::chat_delete_set,
+            chat::commands::context::chat_get_context_stats,
+            chat::commands::context::chat_compress_context,
+            chat::commands::context::chat_clear_context,
+            chat::commands::interaction::chat_take_external_sends,
+            chat::commands::interaction::chat_ack_external_send,
+            chat::commands::interaction::chat_renew_external_sends,
+            chat::commands::interaction::chat_release_external_sends,
+            chat::commands::interaction::chat_set_agent_plan_mode,
+            chat::commands::interaction::chat_execute_agent_plan,
+            chat::goal::chat_get_goal,
+            chat::goal::chat_start_goal,
+            chat::goal::chat_edit_goal,
+            chat::goal::chat_pause_goal,
+            chat::goal::chat_resume_goal,
+            chat::goal::chat_cancel_goal,
+            chat::goal::chat_set_goal_user_queue_pending,
+            chat::commands::send::chat_continue_goal,
+            chat::commands::send::chat_send_message,
+            chat::commands::interaction::chat_cancel_stream,
+            chat::sub_agent::control::chat_subagent_control,
+            chat::commands::interaction::chat_confirm_tool_call,
+            chat::commands::interaction::chat_respond_session_consent,
+            chat::commands::interaction::chat_submit_user_choice,
+            chat::commands::interaction::chat_steer_message,
+            chat::commands::interaction::chat_follow_up_message,
+            chat::commands::attachments::chat_read_attachment,
+            chat::artifacts::chat_artifacts_list,
+            chat::artifacts::chat_artifact_action,
+            chat::commands::attachments::chat_open_attachment,
+            chat::commands::attachments::chat_reveal_attachment,
+            chat::commands::attachments::chat_open_generated_artifact,
+            chat::commands::attachments::chat_reveal_generated_artifact,
+            chat::commands::attachments::chat_save_pasted_image,
+            chat::commands::attachments::chat_save_pasted_attachment,
+            chat::commands::attachments::chat_inspect_attachment_paths,
+            chat::commands::attachments::chat_read_clipboard_files,
+            chat::commands::attachments::chat_read_clipboard,
+            chat::commands::attachments::chat_write_clipboard_text,
+            chat::commands::mutations::chat_delete_conversation,
+            chat::commands::mutations::chat_update_conversation,
+            chat::commands::title::chat_regenerate_title,
+            chat::commands::prompt_optimize::chat_optimize_prompt,
+            chat::commands::mutations::chat_bulk_update_conversations,
+            chat::commands::mutations::chat_bulk_delete_conversations,
+            chat::commands::reasoning::chat_reasoning_efforts_for_model,
+            chat::commands::mutations::chat_update_message,
+            chat::commands::mutations::chat_delete_message,
+            chat::commands::mutations::chat_set_group_selection,
+            chat::commands::mutations::chat_reply_with_model,
+            chat::commands::mutations::chat_regenerate_message,
+            chat::commands::mutations::chat_rewind_to_message,
+            chat::commands::mutations::chat_fork_conversation,
+            external_agents::commands::chat_detect_external_agents,
+            external_agents::commands::chat_detect_external_agent_models,
+            external_agents::commands::chat_list_external_cli_slash_commands,
+            external_agents::commands::chat_external_cli_provider_cleanup,
+            external_agents::commands::chat_external_cli_pi_agent_dir,
+            external_agents::commands::chat_external_cli_scan_cc_switch,
+            external_agents::commands::chat_external_cli_fetch_relay_models,
+            external_agents::installer::chat_external_cli_install_info,
+            external_agents::installer::chat_external_cli_install,
+            external_agents::installer::chat_external_cli_open_config_dir,
+            external_agents::pi_extensions::chat_pi_extensions_inventory,
+            external_agents::pi_extensions::chat_pi_extension_set_enabled,
+            external_agents::pi_extensions::chat_pi_extension_install,
+            external_agents::pi_extensions::chat_pi_extension_update,
+            external_agents::pi_extensions::chat_pi_extension_remove,
+            external_agents::pi_extensions::chat_pi_extension_open,
+            external_agents::pi_extensions::chat_pi_extensions_open_dir,
+            external_agents::pi_skills::chat_pi_skills_inventory,
+            external_agents::pi_skills::chat_pi_skill_set_enabled,
+            external_agents::pi_skills::chat_pi_skill_commands_set_enabled,
+            external_agents::pi_skills::chat_pi_skill_add_path,
+            external_agents::pi_skills::chat_pi_skill_remove_path,
+            external_agents::pi_skills::chat_pi_skill_remove,
+            external_agents::pi_skills::chat_pi_skill_open,
+            external_agents::pi_skills::chat_pi_skills_open_dir,
+            external_agents::dsh_plugins::chat_dsh_plugin_settings_get,
+            external_agents::dsh_plugins::chat_dsh_plugin_settings_save,
+            external_agents::dsh_plugins::chat_dsh_plugin_inventory,
+            external_agents::dsh_plugins::chat_dsh_open_settings_file,
+            external_agents::dsh_plugins::chat_dsh_official_credential_status,
+            external_agents::dsh_plugins::chat_dsh_official_credential_save,
+            external_agents::dsh_plugins::chat_dsh_native_provider_get,
+            external_agents::dsh_plugins::chat_dsh_native_provider_delete,
+            external_agents::dsh_profile::chat_dsh_list_agent_presets,
+            external_agents::commands::chat_set_agent_runtime,
+            external_agents::commands::chat_list_importable_cli_sessions,
+            external_agents::commands::chat_import_cli_sessions,
+            external_agents::commands::chat_imported_history_stale,
+            external_agents::commands::chat_external_native_session_id,
+            chat::memory::chat_memory_get,
+            chat::memory::chat_memory_save,
+            chat::memory::chat_memory_open_folder,
+            mcp::registry::chat_mcp_list_tools,
+            mcp::registry::chat_mcp_test_server,
+            computer_control::computer_control_check,
+            computer_control::computer_control_status,
+            computer_control::computer_control_install,
+            computer_control::computer_control_update,
+            mcp::registry::chat_mcp_import_json,
+            mcp::registry::chat_cli_import_scan,
+            mcp::registry::chat_mcp_server_status,
+            mcp::registry::chat_mcp_list_tool_defs,
+            mcp::registry::chat_mcp_reload_server,
+            mcp::registry::chat_mcp_warmup,
+            connectors::connector_oauth_connect,
+            connectors::connector_oauth_cancel,
+            connectors::obsidian::list_obsidian_vaults_cmd,
+            market::market_snapshot,
+            market::market_install,
+            market::market_uninstall,
+            market::market_set_enabled,
+            plugins::plugins_list,
+            plugins::packages::plugin_packages_list,
+            plugins::packages::details::plugin_packages_describe,
+            plugins::marketplaces::plugin_marketplaces_describe,
+            plugins::marketplaces::plugin_marketplaces_list,
+            plugins::marketplaces::plugin_marketplaces_add,
+            plugins::marketplaces::plugin_marketplaces_refresh,
+            plugins::marketplaces::plugin_marketplaces_remove,
+            plugins::marketplaces::plugin_marketplaces_install,
+            plugins::packages::plugin_packages_import,
+            plugins::packages::plugin_packages_set_enabled,
+            plugins::packages::plugin_packages_remove,
+            plugins::packages::workflow_hooks_get,
+            plugins::packages::workflow_hooks_save,
+            plugins::plugins_list_cached,
+            plugins::plugins_install_brief,
+            plugins::plugins_run_official_install,
+            plugins::plugins_set_enabled,
+            plugins::plugins_uninstall,
+            notes::notes_list,
+            notes::notes_read,
+            notes::notes_create,
+            notes::notes_update,
+            notes::notes_delete,
+            notes::notes_folders_list,
+            notes::notes_folder_create,
+            notes::notes_folder_rename,
+            notes::notes_folder_delete,
+            notes::notes_open_folder,
+            notes::notes_dir_path,
+            automation::commands::automation_list,
+            automation::commands::automation_get,
+            automation::commands::automation_save,
+            automation::commands::automation_delete,
+            automation::commands::automation_set_enabled,
+            automation::commands::automation_run,
+            automation::commands::automation_test_node,
+            automation::commands::automation_validate,
+            automation::commands::automation_cancel,
+            automation::commands::automation_active_run,
+            automation::commands::automation_export,
+            automation::commands::automation_import,
+            automation::commands::automation_runs_list,
+            automation::commands::automation_run_get,
+            scheduled_tasks::commands::scheduled_tasks_list,
+            scheduled_tasks::commands::scheduled_task_save,
+            scheduled_tasks::commands::scheduled_task_delete,
+            scheduled_tasks::commands::scheduled_task_set_enabled,
+            scheduled_tasks::commands::scheduled_task_run_now,
+            scheduled_tasks::commands::scheduled_task_runs,
+            scheduled_tasks::commands::scheduled_task_preview,
+            scheduled_tasks::commands::scheduled_task_run_delete,
+            skills::chat_skills_list,
+            skills::chat_skills_read,
+            skills::chat_skills_import,
+            skills::chat_skills_uninstall,
+            skills::chat_skills_install_from_url,
+            skills::chat_skills_open_folder,
+            chat::knowledge_base::commands::kb_list_libraries,
+            chat::knowledge_base::commands::kb_create_library,
+            chat::knowledge_base::commands::kb_rename_library,
+            chat::knowledge_base::commands::kb_delete_library,
+            chat::knowledge_base::commands::kb_list_documents,
+            chat::knowledge_base::commands::kb_delete_document,
+            chat::knowledge_base::commands::kb_retrieval_test,
+            chat::knowledge_base::ingest::kb_upload_document,
+            chat::knowledge_base::ingest::kb_import_url,
+            chat::knowledge_base::ingest::kb_reindex_library,
+            chat::knowledge_base::ingest::kb_update_embedding,
+            chat::knowledge_base::ingest::kb_set_embed_batch_size,
+            // Dock 模块命令（右侧文件树 + Git 面板 + 终端面板 + workspace 监听）
+        ]);
+
+        builder
+
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
@@ -952,6 +1284,8 @@ pub fn run() {
                 desktop_pet::shutdown(app_handle);
             }
             #[cfg(target_os = "macos")]
+            // Dock 图标点击重开窗口是 macOS 特有的；其余平台（含 Android）不处理。
+            #[cfg(not(target_os = "android"))]
             tauri::RunEvent::Reopen {
                 has_visible_windows,
                 ..

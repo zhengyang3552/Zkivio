@@ -3,6 +3,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use crate::chat::protocol;
 use crate::state::AppState;
+#[cfg(not(target_os = "android"))]
 use crate::windows;
 
 pub const POPOUT_LABEL_PREFIX: &str = "chat-popout-";
@@ -115,8 +116,11 @@ pub fn protocol_filter_for_window(
 }
 
 fn reveal_popout(app: &AppHandle, window: &WebviewWindow) {
-    crate::windows::apply_chat_window_chrome(window);
-    crate::windows::normalize_chat_window_behavior(window);
+    #[cfg(not(target_os = "android"))]
+    {
+        crate::windows::apply_chat_window_chrome(window);
+        crate::windows::normalize_chat_window_behavior(window);
+    }
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
@@ -155,8 +159,11 @@ pub async fn chat_open_conversation_popout(
     }
     let window = windows::ensure_chat_popout_window(&app, &label, &conversation_id)?;
     emit_popouts_changed(&app);
-    crate::windows::apply_chat_window_chrome(&window);
-    crate::windows::normalize_chat_window_behavior(&window);
+    #[cfg(not(target_os = "android"))]
+    {
+        crate::windows::apply_chat_window_chrome(&window);
+        crate::windows::normalize_chat_window_behavior(&window);
+    }
     #[cfg(target_os = "macos")]
     {
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);

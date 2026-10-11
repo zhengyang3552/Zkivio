@@ -111,10 +111,19 @@ async fn ocr_image(state: &AppState, path: &Path, engine: &str) -> Result<String
             }
         }
         "rapid_ocr" => {
-            let tier = crate::offline_models::OcrModelTier::parse(
-                &state.settings_read().document_processing.rapid_ocr_tier,
-            );
-            state.rapidocr.ocr_image(path, tier).await
+            // Android：oar-ocr / onnxruntime 后端不存在，离线 OCR 整块关闭。
+            #[cfg(not(target_os = "android"))]
+            {
+                let tier = crate::offline_models::OcrModelTier::parse(
+                    &state.settings_read().document_processing.rapid_ocr_tier,
+                );
+                return state.rapidocr.ocr_image(path, tier).await;
+            }
+            #[cfg(target_os = "android")]
+            {
+                let _ = (state, path);
+                return Err("RapidOCR 在此平台不可用".into());
+            }
         }
         _ => Err("图片入库需先在「文档处理」选择 OCR 引擎".into()),
     }

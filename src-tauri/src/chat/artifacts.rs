@@ -1151,8 +1151,16 @@ pub async fn chat_artifact_action(
         }
         match action.as_str() {
             "reveal" => {
-                crate::dock::fs::reveal_file_in_manager(Path::new(path))?;
-                Ok(None)
+                // Android 没有桌面文件管理器，也不能「在文件夹中显示」。
+                #[cfg(not(target_os = "android"))]
+                {
+                    crate::dock::fs::reveal_file_in_manager(Path::new(path))?;
+                    Ok(None)
+                }
+                #[cfg(target_os = "android")]
+                {
+                    Err("此平台不支持在文件管理器中显示".into())
+                }
             }
             "open" => {
                 use tauri_plugin_shell::ShellExt;
