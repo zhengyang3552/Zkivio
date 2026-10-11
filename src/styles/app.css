@@ -24,3 +24,6 @@
 @import "./notes-editor.css";
 /* Former index.css 8275-8401: Chat-owned selection and loading overlays. */
 @import "./chat-03-overlays.css";
+/* Android 移动外壳：抽屉侧栏 / 安全区 / 触摸命中区。全部规则挂在 html.mobile 下，
+   桌面端不受影响（见 index.html 的 UA 判定）。放在最后，便于覆盖上面的桌面形态。 */
+@import "./mobile.css";

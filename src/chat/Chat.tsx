@@ -101,6 +101,7 @@ import { scheduleIdleTask } from './idleTask'
 import {
   chatTitlebarMacInsetClass,
   chatTitlebarRowClass,
+  isMobilePlatform,
   usesNativeTitlebar,
 } from './platform'
 import type {
@@ -381,6 +382,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     collapse: handleCollapseSidebar,
     setWidth: handleSidebarWidthChange,
   } = useSidebarLayout()
+  // 移动端（Android）把侧栏当抽屉：进应用、切到另一条对话都先合上，
+  // 否则一进来就被侧栏盖住大半屏幕。桌面端不受影响，仍按用户上次的折叠记忆。
+  // 只在对话切换时收起——不能把 sidebarCollapsed 放进依赖，否则用户刚拉开抽屉
+  // 就会被这个 effect 立刻合上。
+  const lastMobileConversationRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!isMobilePlatform) return
+    const nextId = currentConversation?.id ?? null
+    if (lastMobileConversationRef.current === nextId) return
+    lastMobileConversationRef.current = nextId
+    setSidebarCollapsedPersisted(true)
+  }, [currentConversation?.id, setSidebarCollapsedPersisted])
   const [searchOpen, setSearchOpen] = useState(false)
   const [selectedProject, setSelectedProject] = useState<ChatProject | null>(null)
   const [selectedSet, setSelectedSet] = useState<ChatSet | null>(null)
@@ -2905,7 +2918,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onSelectSet={handleSidebarSelectSet}
           onSelectConversation={handleSidebarSelectConversation}
           onNewConversation={handleSidebarNewConversation}
-          onOpenInPopout={handleOpenConversationPopout}
+          onOpenInPopout={isMobilePlatform ? undefined : handleOpenConversationPopout}
           onConversationDeleted={handleSidebarConversationDeleted}
           onForceDropConversation={handleSidebarForceDropConversation}
           onConversationsLoaded={handleSidebarConversationsLoaded}
@@ -2924,6 +2937,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           searchOpen={searchOpen}
           onSearchOpenChange={handleSidebarSearchOpenChange}
         />
+        ) : null}
+
+        {/* 移动端抽屉遮罩：点它收起侧栏（桌面端侧栏常驻，不需要遮罩）。 */}
+        {isMobilePlatform && !sidebarCollapsed && !settingsPanelActive ? (
+          <div className="chat-mobile-scrim" onClick={handleCollapseSidebar} aria-hidden />
         ) : null}
 
         <ChatRouteKeepAlive

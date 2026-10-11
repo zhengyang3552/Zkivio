@@ -1,0 +1,113 @@
+/*
+ * 移动端（Android）外壳适配。
+ *
+ * 全部规则都挂在 html.mobile 下（见 index.html 的 UA 判定），桌面端一行都不受影响。
+ * 这里只解决「桌面布局跑在手机上」的形态问题，不改任何业务逻辑：
+ *
+ *   1. 窗口 chrome：手机上没有最小化 / 最大化 / 关闭，也没有可拖拽的窗口边缘。
+ *   2. 安全区：状态栏、挖孔、手势条（viewport-fit=cover + env(safe-area-inset-*)）。
+ *   3. 触摸命中：去掉点击高亮、抑制双击缩放、把关键控件提到 40px 以上。
+ *   4. 侧栏：桌面是常驻列（宽度由 --chat-sidebar-width 驱动），手机上改成抽屉——
+ *      收起时就是原来的折叠态（宽度 0 + opacity 0），展开时浮在内容之上并配一层
+ *      遮罩（.chat-mobile-scrim，由 Chat.tsx 在移动端且侧栏展开时渲染）。
+ *      为此把移动端的 --chat-sidebar-width 压成 0，主内容始终占满整宽。
+ */
+
+/* ===== 1. 基础：触摸与滚动 ===== */
+
+html.mobile {
+  /* 抽屉展开时主内容不参与列宽计算，占满整宽。 */
+  --chat-sidebar-width: 0px;
+  /* 移动端没有悬浮卡片外的桌面缝，卡片圆角与留白一并收掉。 */
+  overscroll-behavior: none;
+}
+
+html.mobile body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+
+/* 长按不要在正文里弹出系统选择菜单（输入框、可选择文本除外）。 */
+html.mobile button,
+html.mobile [role='button'],
+html.mobile a {
+  touch-action: manipulation;
+}
+
+/* ===== 2. 窗口 chrome 与桌面专属控件 ===== */
+
+/* 手机上没有窗口三键；桌面三键在这个外壳里点了也没有意义。 */
+html.mobile .chat-win-controls {
+  display: none;
+}
+
+/* 侧栏宽度拖拽手柄在移动端没有意义（抽屉宽度固定）。 */
+html.mobile .chat-sidebar-resize {
+  display: none;
+}
+
+/* 触摸设备没有 hover，hover-only 的细小命中区容易误触，统一交给 :active。 */
+html.mobile .chat-titlebar-pill {
+  min-height: 36px;
+}
+
+/* ===== 3. 安全区 ===== */
+
+html.mobile .chat-titlebar-strip {
+  height: calc(44px + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+html.mobile .chat-composer-shell {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ===== 4. 侧栏抽屉 ===== */
+
+/* 展开态：脱离文档流浮在内容之上。收起态沿用原有 .is-collapsed（宽度 0 + 透明）。 */
+html.mobile .chat-sidebar-shell:not(.is-collapsed) {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 60;
+  width: min(86vw, 320px);
+  max-width: 320px;
+  background: var(--theme-surface);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.32);
+}
+
+/* 抽屉遮罩：点它收起侧栏。由 Chat.tsx 仅在「移动端 + 侧栏展开」时渲染。 */
+html.mobile .chat-mobile-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgb(0 0 0 / 0.4);
+  animation: chat-mobile-scrim-in var(--kv-dur-normal, 160ms) var(--kv-ease-out, ease-out);
+}
+
+@keyframes chat-mobile-scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 抽屉里的内容要能滚到底：手势条高度已经从外壳扣掉，这里补到滚动容器上。 */
+html.mobile .chat-sidebar-shell:not(.is-collapsed) > * {
+  min-height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.mobile .chat-mobile-scrim {
+    animation: none;
+  }
+}

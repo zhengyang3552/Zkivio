@@ -1,6 +1,7 @@
 import { memo, type ReactNode } from 'react'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { WindowControls } from './WindowControls'
+import { isMobilePlatform } from './platform'
 
 type ChatTitlebarProps = {
   sidebarExpanded: boolean
@@ -67,7 +68,8 @@ export const ChatTitlebar = memo(function ChatTitlebar({
       >
         {children}
       </div>
-      <WindowControls />
+      {/* 移动端没有窗口三键：不渲染，而不是渲染了再藏起来。 */}
+      {!isMobilePlatform && <WindowControls />}
     </div>
   )
 })

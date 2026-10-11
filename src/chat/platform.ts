@@ -1,6 +1,6 @@
-import { isMac, isWindows, usesNativeTitlebar } from '../utils/windowPlatform'
+import { isAndroid, isMac, isMobilePlatform, isWindows, usesNativeTitlebar } from '../utils/windowPlatform'
 
-export { isMac, isWindows, usesNativeTitlebar }
+export { isAndroid, isMac, isMobilePlatform, isWindows, usesNativeTitlebar }
 
 /** 侧栏 / 主内容顶栏行高与垂直居中 */
 export const chatTitlebarRowClass = usesNativeTitlebar
