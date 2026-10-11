@@ -195,7 +195,10 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(autostart_plugin);
 
-    builder
+    // 这一链的返回值必须重新绑定回 builder：Android 把原来的单条链在
+    // `.setup(...)` 处截断成语句，若不接住，后面的 invoke_handler 就会
+    // 「移动后再用」（桌面分支同样如此）。
+    let builder = builder
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "chat" {
