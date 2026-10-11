@@ -7,6 +7,12 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, sync::OnceLock, time::Duration};
 use tokio::sync::Mutex;
 pub mod account;
+// Android 没有 keyring 支持的系统凭证库（Keychain / Credential Manager /
+// Secret Service 三选一无一是移动端后端），这里用同名桩模块顶上：读存储一律
+// 视为「没有条目」，写入一律报「凭证库不可用」——让 OAuth 走明确的失败路径，
+// 而不是假装写成功、重启后静默丢 token。接入 Android Keystore 是后续独立任务。
+#[cfg(target_os = "android")]
+use crate::android_keyring as keyring;
 pub mod antigravity;
 pub mod usage;
 

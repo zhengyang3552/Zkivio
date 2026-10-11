@@ -20,8 +20,9 @@ const CHAT_ROUTE: &str = "index.html#chat";
 
 /// 创建主窗口。Android 上只在 `setup` 里调用一次。
 pub(crate) fn create_chat_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    // 不带 .title()/.inner_size()：这些是桌面专属方法，Android 的窗口尺寸由
+    // Activity 决定，标题也不显示在移动端。
     WebviewWindowBuilder::new(app, CHAT_WINDOW_LABEL, WebviewUrl::App(CHAT_ROUTE.into()))
-        .title("Kivio")
         .build()
         .map_err(|error| error.to_string())
 }

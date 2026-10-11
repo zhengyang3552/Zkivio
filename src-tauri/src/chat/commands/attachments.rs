@@ -45,14 +45,34 @@ pub(crate) fn chat_open_generated_artifact(app: AppHandle, path: String) -> Resu
     app.shell().open(path_str, None).map_err(|e| e.to_string())
 }
 
+/// 在文件管理器中定位生成产物。Android 没有桌面文件管理器。
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn chat_reveal_generated_artifact(_path: String) -> Result<(), String> {
+    Err("此平台不支持在文件管理器中显示".to_string())
+}
+
 /// 在文件管理器中定位生成产物。
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) fn chat_reveal_generated_artifact(path: String) -> Result<(), String> {
     let full = crate::native_tools::resolve_sandbox_export_file_path(&path)?;
     crate::dock::fs::reveal_file_in_manager(&full)
 }
 
+/// 定位对话中持久化的附件；复用预览/打开附件的路径解析。Android 无文件管理器。
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn chat_reveal_attachment(
+    _app: AppHandle,
+    _conversation_id: Option<String>,
+    _path: String,
+) -> Result<(), String> {
+    Err("此平台不支持在文件管理器中显示".to_string())
+}
+
 /// 定位对话中持久化的附件；复用预览/打开附件的路径解析。
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) fn chat_reveal_attachment(
     app: AppHandle,
@@ -106,6 +126,14 @@ pub(crate) fn chat_save_pasted_attachment(
 }
 
 /// 读取系统剪贴板中的文件路径（Finder / 资源管理器复制文件）。
+/// 读取系统剪贴板中的文件路径。Android 没有 arboard 后端，返回空列表。
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn chat_read_clipboard_files() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({ "success": true, "files": [] }))
+}
+
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) fn chat_read_clipboard_files() -> Result<serde_json::Value, String> {
     use arboard::Clipboard;
@@ -158,6 +186,14 @@ fn has_spreadsheet_clipboard_text(text: &str, html: &str) -> bool {
 /// Explicit paste action in the desktop editor. Read through the OS clipboard,
 /// never through WebView clipboard permissions. File lists take priority; image
 /// results also carry text/HTML so the composer can prefer spreadsheet cells.
+/// 读取系统剪贴板内容。Android 侧读不到（无 arboard 后端），报「空」。
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) async fn chat_read_clipboard() -> Result<Value, String> {
+    Ok(serde_json::json!({ "kind": "empty" }))
+}
+
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) async fn chat_read_clipboard() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -210,6 +246,15 @@ pub(crate) async fn chat_read_clipboard() -> Result<Value, String> {
     }).await.map_err(|e| e.to_string())?
 }
 
+/// 写入系统剪贴板。Android 侧不可用——复制按钮会拿到一个明确错误，
+/// 而不是静默失败（移动端剪贴板应改用 tauri-plugin-clipboard-manager）。
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn chat_write_clipboard_text(_text: String) -> Result<(), String> {
+    Err("此平台暂不支持写入系统剪贴板".to_string())
+}
+
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) fn chat_write_clipboard_text(text: String) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;

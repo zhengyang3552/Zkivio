@@ -41,7 +41,7 @@ const DOWNLOAD_USER_AGENT: &str =
 pub const ONNX_RUNTIME_FILE_NAME: &str = "libonnxruntime.dylib";
 #[cfg(target_os = "windows")]
 pub const ONNX_RUNTIME_FILE_NAME: &str = "onnxruntime.dll";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub const ONNX_RUNTIME_FILE_NAME: &str = "libonnxruntime.so";
 #[cfg(target_os = "windows")]
 const PROVIDERS_SHARED_NAME: &str = "onnxruntime_providers_shared.dll";
@@ -281,11 +281,17 @@ const PROVIDERS_SHARED: ModelFile = ModelFile {
 };
 
 fn runtime_files() -> Vec<ModelFile> {
+    // Android：ONNX Runtime 与离线 OCR 整块不参与编译（lib.rs 模块声明），
+    // 这里没有需要校验/下载的运行时文件。
+    #[cfg(target_os = "android")]
+    {
+        Vec::new()
+    }
     #[cfg(target_os = "windows")]
     {
         vec![RUNTIME, PROVIDERS_SHARED]
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "android")))]
     {
         vec![RUNTIME]
     }
@@ -1182,7 +1188,7 @@ fn retry_delay(attempt: u8) -> Duration {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
 fn extract_archive_entry(
     archive_path: &Path,
     entry_suffix: &str,
@@ -1248,6 +1254,7 @@ pub async fn ensure_ort_init(manager: &OfflineModelManager) -> Result<(), String
 ///
 /// The GUI uses [`ensure_ort_init`] for its process-wide singleton. The one-shot RapidOCR worker
 /// calls this directly because it owns a fresh process and exits immediately after one inference.
+#[cfg(not(target_os = "android"))]
 pub fn init_ort_from_model_dir(dir: &Path) -> Result<(), String> {
     prepare_onnxruntime_dll_dir(dir)?;
     ort::init_from(dir.join(ONNX_RUNTIME_FILE_NAME))

@@ -531,6 +531,13 @@ async fn execute_delay(app: &AppHandle, run_id: &str, node: &FlowNode) -> Result
     }
 }
 
+// Android 没有 arboard 支持的系统剪贴板后端，自动化里的剪贴板节点明确报错。
+#[cfg(target_os = "android")]
+fn execute_clipboard(_node: &FlowNode, _prev: &NodeOutput) -> Result<NodeOutput, String> {
+    Err("剪贴板节点在移动端不可用".to_string())
+}
+
+#[cfg(not(target_os = "android"))]
 fn execute_clipboard(node: &FlowNode, prev: &NodeOutput) -> Result<NodeOutput, String> {
     let clipboard = node.data.get("clipboard").cloned().unwrap_or(Value::Null);
     let op = clipboard

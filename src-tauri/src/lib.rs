@@ -3,6 +3,8 @@
 pub mod agents;
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(target_os = "android")]
+mod android_keyring;
 pub mod api;
 pub mod app_data;
 pub mod automation;
@@ -554,7 +556,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             macos_hang_watchdog::start(app.handle());
             Ok(())
-        })
+        });
         // 桌面：完整命令表（含 dock / lens / windows / desktop_pet 等桌面模块）。
         #[cfg(not(target_os = "android"))]
         let builder = builder
@@ -936,7 +938,6 @@ pub fn run() {
             commands::open_settings_window,
             commands::close_translator_window,
             commands::translate_text,
-            commands::commit_translation,
             commands::open_external,
             commands::open_local_file,
             commands::open_data_url_file,
@@ -951,8 +952,6 @@ pub fn run() {
             updates::check_github_latest_release,
             updates::download_update_asset,
             updates::install_update_and_quit,
-            commands::rapidocr_status,
-            commands::rapidocr_install,
             commands::replace_translation_pack_status,
             commands::replace_translation_pack_install,
             usage::usage_get_stats,

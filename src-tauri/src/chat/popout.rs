@@ -93,10 +93,16 @@ pub fn sync_macos_activation_policy(app: &AppHandle) {
 }
 
 pub fn close_popout_for_conversation(app: &AppHandle, conversation_id: &str) {
-    let label = popout_label(conversation_id);
-    if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.destroy();
+    // Android 只有一块 WebView，没有可关闭的独立对话窗口。
+    #[cfg(not(target_os = "android"))]
+    {
+        let label = popout_label(conversation_id);
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.destroy();
+        }
     }
+    #[cfg(target_os = "android")]
+    let _ = (app, conversation_id);
 }
 
 /// 弹出窗以窗口 label 为协议过滤的权威来源。前端漏传 `conversationId` 时也不能订成 All，
@@ -121,9 +127,13 @@ fn reveal_popout(app: &AppHandle, window: &WebviewWindow) {
         crate::windows::apply_chat_window_chrome(window);
         crate::windows::normalize_chat_window_behavior(window);
     }
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_focus();
+    // unminimize / show / set_focus 是桌面窗口管理，移动端由 Activity 负责。
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
     #[cfg(target_os = "macos")]
     {
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -153,10 +163,21 @@ pub async fn chat_open_conversation_popout(
         reveal_popout(&app, &window);
         return Ok(());
     }
+    // 移动端没有多窗口形态的对话弹出窗，直接拒绝（桌面端行为不变）。
+    #[cfg(target_os = "android")]
+    return Err("独立对话窗口在移动端不可用".to_string());
+
+    #[cfg(not(target_os = "android"))]
     let open = list_popout_conversation_ids(&app);
     if open.len() >= MAX_POPOUT_WINDOWS {
         return Err(format!("最多同时打开 {MAX_POPOUT_WINDOWS} 个独立对话窗口"));
     }
+    // Android：不支持独立对话窗口，前面的早返回已经拦住这条路径。
+    #[cfg(target_os = "android")]
+    let window = {
+        unreachable!("popouts are not available on Android")
+    };
+    #[cfg(not(target_os = "android"))]
     let window = windows::ensure_chat_popout_window(&app, &label, &conversation_id)?;
     emit_popouts_changed(&app);
     #[cfg(not(target_os = "android"))]

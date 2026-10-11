@@ -2,9 +2,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[cfg(not(target_os = "android"))]
 use arboard::Clipboard;
 use base64::Engine as _;
 use tauri::{AppHandle, Manager, State};
+#[cfg(not(target_os = "android"))]
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_shell::ShellExt;
 
@@ -25,14 +27,53 @@ use crate::settings::{
 };
 #[cfg(target_os = "macos")]
 use crate::shortcuts::{check_accessibility, check_screen_recording_permission};
+#[cfg(not(target_os = "android"))]
 use crate::shortcuts::{
     open_chat_settings_window as open_settings_window_impl, register_hotkeys_for_settings,
     restore_runtime_settings, send_paste_shortcut, setup_tray,
 };
+
+// Android：设置独立窗 / 托盘 / 全局热键 / 粘贴快捷键在移动端都不存在，
+// 用同名空实现顶上，让 save_settings 等共用流程只保留一份调用点。
+#[cfg(target_os = "android")]
+fn open_settings_window_impl(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
+}
+#[cfg(target_os = "android")]
+fn register_hotkeys_for_settings(_app: &AppHandle, _settings: &Settings) -> Result<String, String> {
+    Ok(String::new())
+}
+#[cfg(target_os = "android")]
+fn restore_runtime_settings(_app: &AppHandle, _state: &State<'_, AppState>) {}
+#[cfg(target_os = "android")]
+fn send_paste_shortcut() {}
+#[cfg(target_os = "android")]
+fn setup_tray(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
+}
+/// 托盘是否存在。Android 没有托盘，永远视为「缺失」，语言切换等分支照常走。
+fn tray_missing(app: &AppHandle) -> bool {
+    #[cfg(not(target_os = "android"))]
+    {
+        app.tray_by_id("main").is_none()
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        true
+    }
+}
+/// GNOME 系统快捷键条目类型；非 Linux 平台没有门户，用 JSON 占位保持命令可注册。
+#[cfg(target_os = "linux")]
+pub(crate) type SystemShortcutEntry = crate::linux_portal::SystemShortcutInfo;
+#[cfg(not(target_os = "linux"))]
+pub(crate) type SystemShortcutEntry = serde_json::Value;
 use crate::state::AppState;
 use crate::utils::{language_name, resolve_target_lang};
+#[cfg(not(target_os = "android"))]
 use crate::windows::get_translator_window;
 
+#[cfg(not(target_os = "android"))]
 pub(crate) fn apply_launch_at_startup(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let auto_launch = app.autolaunch();
     let current = auto_launch.is_enabled().map_err(|e| e.to_string())?;
@@ -53,6 +94,21 @@ pub(crate) fn should_apply_launch_at_startup(previous: Option<bool>, enabled: bo
     !cfg!(target_os = "windows") || previous.is_some_and(|previous| previous != enabled)
 }
 
+// Android：应用生命周期由系统管理，没有「开机自启」这一项，保持设置原值。
+#[cfg(target_os = "android")]
+pub(crate) fn apply_launch_at_startup(_app: &AppHandle, _enabled: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn initialize_launch_at_startup(
+    _app: &AppHandle,
+    _settings: &mut Settings,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
 pub(crate) fn initialize_launch_at_startup(
     app: &AppHandle,
     settings: &mut Settings,
@@ -80,7 +136,7 @@ pub(crate) fn set_hotkeys_suspended(state: State<AppState>, suspended: bool) {
 /// GNOME 系统快捷键列表（Linux）；其他平台返回空。
 /// 供设置页把“系统占用”计入快捷键冲突检查。
 #[tauri::command]
-pub(crate) fn list_gnome_system_shortcuts() -> Vec<crate::linux_portal::SystemShortcutInfo> {
+pub(crate) fn list_gnome_system_shortcuts() -> Vec<SystemShortcutEntry> {
     #[cfg(target_os = "linux")]
     {
         crate::linux_portal::list_system_shortcuts()
@@ -229,6 +285,7 @@ async fn apply_settings(
         .sub_agents
         .set_concurrency(sanitized.chat_tools.sub_agent_concurrency);
 
+    #[cfg(not(target_os = "android"))]
     if crate::shortcuts::hotkey_bindings_changed(&previous_settings, &sanitized) {
         if let Err(err) = register_hotkeys_for_settings(app, &sanitized) {
             // 热键被系统/其他应用占用不该阻断保存——能注册的已注册,失败的作为警告推给前端,
@@ -292,12 +349,13 @@ async fn apply_settings(
         .provider_runtime()
         .sync_preferred_api_keys(&previous_settings, &committed.settings);
 
+    #[cfg(not(target_os = "android"))]
     if previous_settings.keep_chat_window_alive && !committed.settings.keep_chat_window_alive {
         crate::shortcuts::destroy_hidden_chat_window(app);
     }
 
     if previous_settings.settings_language != committed.settings.settings_language
-        || app.tray_by_id("main").is_none()
+        || tray_missing(app)
     {
         if let Err(err) = setup_tray(app) {
             eprintln!("Failed to update tray: {err}");
@@ -369,6 +427,11 @@ pub(crate) fn open_settings_window(app: AppHandle) -> Result<(), String> {
     open_settings_window_impl(&app)
 }
 
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub(crate) fn close_translator_window(_app: AppHandle, _state: State<'_, AppState>) {}
+
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) fn close_translator_window(app: AppHandle, _state: State<'_, AppState>) {
     if let Some(window) = get_translator_window(&app) {
@@ -431,6 +494,7 @@ pub(crate) async fn translate_text(
 
 /// 提交翻译结果
 /// 将翻译后的文本写入剪贴板，隐藏主窗口，如果启用了自动粘贴则发送粘贴快捷键到之前的应用
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) async fn commit_translation(
     app: AppHandle,
@@ -641,9 +705,18 @@ pub(crate) async fn open_local_file(
         let id = conversation_id
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        match crate::dock::dock_resolve_cwd(app.clone(), id, None).await {
-            Ok(dir) => Some(PathBuf::from(dir)),
-            Err(_) => None,
+        // Android：没有 Dock/工作区文件树，相对路径无处解析。
+        #[cfg(not(target_os = "android"))]
+        {
+            match crate::dock::dock_resolve_cwd(app.clone(), id, None).await {
+                Ok(dir) => Some(PathBuf::from(dir)),
+                Err(_) => None,
+            }
+        }
+        #[cfg(target_os = "android")]
+        {
+            let _ = id;
+            None
         }
     } else {
         None
@@ -726,6 +799,7 @@ pub(crate) fn open_html_preview(app: AppHandle, html: String) -> Result<(), Stri
 /// 查询 RapidOCR 模型 + dylib 是否就绪。
 /// async + spawn_blocking:validation_state 对未缓存文件做同步 SHA-256(~150MB),
 /// 同步 command 会在主线程上执行并冻结 UI(每次启动后首个调用都会全量校验)。
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) async fn rapidocr_status(
     state: State<'_, AppState>,
@@ -738,6 +812,7 @@ pub(crate) async fn rapidocr_status(
 
 /// 下载 RapidOCR 包(onnxruntime dylib + PP-OCRv6 medium 模型 + 字典)到 app data 目录。
 /// 阻塞到全部完成(成功或失败),前端转圈圈等返回。
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub(crate) async fn rapidocr_install(
     state: State<'_, AppState>,
