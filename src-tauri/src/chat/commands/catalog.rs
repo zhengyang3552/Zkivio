@@ -2,7 +2,6 @@ use std::path::Path;
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
-use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
 
 use crate::chat::agent::prepare as agent_prepare;
@@ -1172,9 +1171,7 @@ pub(crate) fn chat_project_open_folder(
     if !path.is_dir() {
         return Err("项目文件夹不存在或无法访问".to_string());
     }
-    app.shell()
-        .open(root_path.to_string(), None)
-        .map_err(|e| e.to_string())?;
+    crate::open_directory_externally(&app, root_path)?;
     Ok(serde_json::json!({
         "success": true,
         "path": root_path,

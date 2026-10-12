@@ -155,7 +155,8 @@ export function ChatImageContextMenu({
           {t.chatImageViewLarge}
         </button>
       ) : null}
-      {onRevealLocation && <button type="button" role="menuitem" className={itemClass} onClick={() => {
+      {/* 「显示位置」同样是桌面文件管理器语义，安卓不可用。 */}
+      {!isMobilePlatform && onRevealLocation && <button type="button" role="menuitem" className={itemClass} onClick={() => {
         setLocationError(false)
         void onRevealLocation().then(onClose).catch(() => setLocationError(true))
       }}>

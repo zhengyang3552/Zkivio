@@ -8,6 +8,7 @@ import {
 } from '../memoryLayers'
 import type { Lang } from '../../components/i18n'
 import type { ChatMemoryConfig } from '../../api/tauri'
+import { isMobilePlatform } from '../../utils/windowPlatform'
 
 /**
  * 单层记忆编辑器。原本在 SettingsShell 模块作用域，只被记忆标签页使用，
@@ -157,14 +158,18 @@ export function MemoryTab({
               <RefreshCw size={10} className={memoryLoading ? 'animate-spin' : ''} />
               {lang === 'zh' ? '刷新' : 'Refresh'}
             </Button>
-            <Button
-              size="sm"
-              onClick={onOpenFolder}
-              data-tauri-drag-region="false"
-            >
-              <FolderOpen size={11} />
-              {lang === 'zh' ? '打开文件夹' : 'Open folder'}
-            </Button>
+            {/* 打开文件夹依赖系统文件管理器；安卓的应用私有目录对外不可见，
+                点击只会得到 No Activity found，移动端不渲染这个按钮。 */}
+            {!isMobilePlatform && (
+              <Button
+                size="sm"
+                onClick={onOpenFolder}
+                data-tauri-drag-region="false"
+              >
+                <FolderOpen size={11} />
+                {lang === 'zh' ? '打开文件夹' : 'Open folder'}
+              </Button>
+            )}
             {memoryDir && <span className="kv-row-desc min-w-0 break-all">{memoryDir}</span>}
           </div>
         </SettingRow>

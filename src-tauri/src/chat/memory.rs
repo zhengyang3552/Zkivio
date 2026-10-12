@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_shell::ShellExt;
+
 
 use crate::mcp::types::McpToolCallResult;
 
@@ -205,9 +205,7 @@ pub(crate) fn chat_memory_save(
 pub(crate) fn chat_memory_open_folder(app: AppHandle) -> Result<serde_json::Value, String> {
     let dir = memory_dir(&app)?;
     let dir_str = dir.display().to_string();
-    app.shell()
-        .open(dir_str.clone(), None)
-        .map_err(|e| e.to_string())?;
+    crate::open_directory_externally(&app, &dir_str)?;
     Ok(serde_json::json!({
         "success": true,
         "path": dir_str,

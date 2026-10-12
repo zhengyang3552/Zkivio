@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
 
 use crate::skills::parse::split_frontmatter;
@@ -393,8 +392,7 @@ pub fn notes_dir_path(app: AppHandle) -> Result<String, String> {
 pub fn notes_open_folder(app: AppHandle) -> Result<String, String> {
     let dir = notes_dir(&app)?;
     let path = dir.display().to_string();
-    app.shell()
-        .open(&path, None)
+    crate::open_directory_externally(&app, &path)
         .map_err(|err| format!("open notes dir failed: {err}"))?;
     Ok(path)
 }

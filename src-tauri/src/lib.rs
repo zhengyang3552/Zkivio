@@ -128,6 +128,26 @@ pub(crate) fn sync_macos_activation_policy(app: &tauri::AppHandle) {
     }
 }
 
+/// 在系统文件管理器中打开本地目录。
+///
+/// Android 上应用私有目录（`/data/user/0/<id>/...`）对外部文件管理器不可见
+/// （scoped storage），`shell().open` 只会发出一个无人响应的 `ACTION_VIEW`
+/// Intent（报 `No Activity found`），因此直接拒绝，让前端走已有的错误提示。
+pub(crate) fn open_directory_externally(app: &tauri::AppHandle, path: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, path);
+        Err("移动端不支持在系统文件管理器中打开应用内部目录".to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_shell::ShellExt;
+        app.shell()
+            .open(path.to_string(), None)
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// Windows：让本进程退出 EcoQoS 执行速度节流，使其在无窗口/后台空闲时仍保持正常调度，
 /// 避免全局热键的 WM_HOTKEY 消息泵被饿死。ControlMask=EXECUTION_SPEED + StateMask=0 表示
 /// "由本进程接管该项节流并关闭它"。best-effort：失败静默忽略。

@@ -25,7 +25,6 @@ use std::{
 };
 
 use tauri::{AppHandle, State};
-use tauri_plugin_shell::ShellExt;
 
 use crate::state::AppState;
 
@@ -134,18 +133,17 @@ pub fn chat_skills_open_folder(app: AppHandle) -> SkillOpenFolderResult {
     match user_skills_dir(&app) {
         Ok(dir) => {
             let path = dir.display().to_string();
-            if let Err(err) = app.shell().open(&path, None) {
-                SkillOpenFolderResult {
-                    success: false,
-                    path: Some(path),
-                    error: Some(err.to_string()),
-                }
-            } else {
-                SkillOpenFolderResult {
+            match crate::open_directory_externally(&app, &path) {
+                Ok(()) => SkillOpenFolderResult {
                     success: true,
                     path: Some(path),
                     error: None,
-                }
+                },
+                Err(err) => SkillOpenFolderResult {
+                    success: false,
+                    path: Some(path),
+                    error: Some(err),
+                },
             }
         }
         Err(err) => SkillOpenFolderResult {
