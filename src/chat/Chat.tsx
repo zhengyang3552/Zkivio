@@ -2960,6 +2960,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           />
         )}
       </div>
+      </div>
     </Profiler>
     </AsyncQuestionsContext.Provider>
     <AppDialogHost />
