@@ -1585,11 +1585,6 @@ export const api = {
   providerOAuthAccount: (provider: ModelProvider) => invoke<ProviderOAuthAccount>('provider_oauth_account', { provider }),
   providerOAuthUsage: (provider: ModelProvider) => invoke<ProviderOAuthUsage>('provider_oauth_usage', { provider }),
   providerOAuthDisconnect: (credentialId: string) => invoke<void>('provider_oauth_disconnect', { credentialId }),
-  desktopPetGetEnabled: () => invoke<boolean>('desktop_pet_get_enabled'),
-  desktopPetSetEnabled: (enabled: boolean) =>
-    invoke<boolean>('desktop_pet_set_enabled', { enabled }),
-  onDesktopPetEnabledChanged: (listener: (enabled: boolean) => void) =>
-    on<boolean>('desktop-pet-enabled-changed', listener),
   // 设置相关
   getSettings: async () => normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('get_settings')),
   onKivioSettingsChanged: (listener: (event: SettingsChangedEvent) => void) =>

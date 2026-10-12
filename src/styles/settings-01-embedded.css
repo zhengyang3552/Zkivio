@@ -200,6 +200,68 @@
   flex-direction: column;
 }
 
+/*
+ * 网络搜索页在窄屏（手机）折成上下两段：左栏服务商导航改成顶部横向滚动条。
+ * 原双栏里 w-44 的侧栏会吃掉大半宽度，把右栏设置项挤到换行/截断，看起来是「乱」。
+ */
+@media (max-width: 640px) {
+  .websearch-panel-root {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .websearch-panel-root > nav {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding-right: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .websearch-panel-root > nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* 桌面端的竖直分隔线在横排里没有意义。 */
+  .websearch-panel-root > nav > div[aria-hidden] {
+    display: none;
+  }
+
+  .websearch-panel-root > nav > div {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+
+  /* space-y-0.5 的纵向间距横排后会顶偏按钮，清零。 */
+  .websearch-panel-root > nav > div > * + * {
+    margin-top: 0;
+  }
+
+  /* 分组标题「搜索 API」退化成行内分隔标签。 */
+  .websearch-panel-root > nav > div:nth-of-type(3) {
+    padding: 0 6px;
+    white-space: nowrap;
+  }
+
+  /* 列表项原本是 w-full 的竖排行，横排时必须自适应宽度。 */
+  .websearch-panel-root > nav button {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  /* 右栏自身已留出 12px 间距，去掉桌面端的左侧内边距。 */
+  .websearch-panel-root > div {
+    padding-left: 0;
+  }
+}
+
 .kv-providers-root {
   display: flex;
   flex: 1 1 auto;

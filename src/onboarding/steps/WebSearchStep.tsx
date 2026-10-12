@@ -70,7 +70,7 @@ export function WebSearchStep({ t, settings, onChange }: WebSearchStepProps) {
       <div className="onboarding-section">
         <div className="onboarding-section-label">{t.webSearchApiSection}</div>
         <div className="onboarding-card onboarding-card--rows">
-          <OnboardingFormRow label={t.lensWebSearchProvider}>
+          <OnboardingFormRow label={t.webSearchProvider}>
             <Select
               className="w-full max-w-[220px]"
               value={webSearch.provider}
@@ -80,7 +80,7 @@ export function WebSearchStep({ t, settings, onChange }: WebSearchStepProps) {
           </OnboardingFormRow>
           {keyField && (
             <OnboardingFormRow
-              label={t.lensWebSearchApiKey}
+              label={t.webSearchApiKey}
               hint={!hasApiKey ? t.onboardingWebSearchKeyRequired : undefined}
               stack
             >
@@ -105,15 +105,6 @@ export function WebSearchStep({ t, settings, onChange }: WebSearchStepProps) {
               onChange={(enabled) => {
                 if (!hasApiKey) return
                 updateChatWebSearch(enabled)
-              }}
-            />
-          </OnboardingFormRow>
-          <OnboardingFormRow label={t.webSearchLensSection} hint={t.lensWebSearchHint}>
-            <Toggle
-              checked={hasApiKey && webSearch.enabled}
-              onChange={(enabled) => {
-                if (!hasApiKey) return
-                updateWebSearch({ enabled })
               }}
             />
           </OnboardingFormRow>

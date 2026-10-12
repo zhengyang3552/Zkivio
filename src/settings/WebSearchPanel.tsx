@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Info, Loader2, Play, SlidersHorizontal } from 'lucide-react'
 import { api, type Settings, type WebSearchMcpAuth, type WebSearchProviderId } from '../api/tauri'
 import type { I18n, Lang } from '../components/i18n'
-import { Input, Select, SettingRow, SettingsGroup, TextArea, Toggle } from './components'
+import { Input, Select, SettingRow, SettingsGroup, TextArea } from './components'
 import { Button } from '../components/Button'
 import { isProviderConfigured, providerSupportsFetch, resolvedFetchProvider } from './webSearch'
 
@@ -639,7 +639,7 @@ function DefaultsPage({
         </SettingsGroup>
 
         <SettingsGroup title={t.webSearchGeneralSection}>
-          <SettingRow label={t.lensWebSearchMaxResults}>
+          <SettingRow label={t.webSearchMaxResults}>
             <Input
               type="number"
               min={1}
@@ -653,19 +653,10 @@ function DefaultsPage({
           </SettingRow>
         </SettingsGroup>
 
-        <SettingsGroup title={t.webSearchLensSection}>
-          <SettingRow label={t.enabled} description={t.lensWebSearchHint}>
-            <Toggle
-              checked={config.enabled === true}
-              onChange={(enabled) => onChange({ enabled })}
-            />
-          </SettingRow>
-        </SettingsGroup>
-
         <p className="kv-row-desc px-1">
           {lang === 'zh'
-            ? 'Chat 联网开关在 MCP → 内置工具。'
-            : 'Chat web toggles: MCP → Built-in tools.'}
+            ? '联网搜索开关在「MCP → 内置工具」。'
+            : 'Web search toggles: MCP → Built-in tools.'}
         </p>
       </div>
     </>
@@ -758,7 +749,7 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
         <div className="space-y-6">
           <SettingsGroup title={t.webSearchProviderSection}>
             {selected.keyField && (
-              <SettingRow label={t.lensWebSearchApiKey} stack>
+              <SettingRow label={t.webSearchApiKey} stack>
                 <div className="w-full space-y-1">
                   <ApiKeyField
                     value={keyValue}
@@ -856,7 +847,7 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
             )}
 
             {selected.supportsDepth && (
-              <SettingRow label={t.lensWebSearchDepth}>
+              <SettingRow label={t.webSearchDepth}>
                 <Select
                   className="w-44"
                   value={config.searchDepth || 'basic'}

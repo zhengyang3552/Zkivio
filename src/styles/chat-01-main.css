@@ -991,10 +991,8 @@ button.chat-composer-status-item:hover {
     display: none;
   }
 
-  /* 更窄时整块思考 pill 隐藏（避免只剩图标和模型图标糊在一起）。可从宽窗重新调档。 */
-  .chat-thinking-pill-wrap {
-    display: none;
-  }
+  /* 思考等级同样只留图标（标签已在 520 断点收起）。手机上缩窄后仍要能切档，
+     所以不像以前那样整块隐藏——图标与模型图标靠 Brain 形状区分。 */
 
   .chat-model-selector-menu {
     min-width: min(240px, calc(100cqw - 1rem));

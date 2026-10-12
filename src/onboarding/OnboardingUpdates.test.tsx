@@ -6,6 +6,7 @@ import { i18n } from '../components/i18n'
 import { makeProvider, makeSettings } from '../settings/tabs/testFixtures'
 import { ProviderSetupPanel } from './ProviderSetupPanel'
 import { DoneStep } from './steps/DoneStep'
+import { WebSearchStep } from './steps/WebSearchStep'
 
 vi.mock('../api/tauri', async () => {
   const actual = await vi.importActual<typeof import('../api/tauri')>('../api/tauri')
@@ -55,7 +56,15 @@ describe('onboarding matches current capabilities', () => {
     const { container } = render(<DoneStep t={i18n.zh} settings={settings} />)
     // 仅保留「模型与联网」一节，且只含 Chat 联网搜索一行。
     expect(container.querySelectorAll('.onboarding-summary-row')).toHaveLength(1)
-    expect(screen.queryByText(`${i18n.zh.webSearchLensSection} · ${i18n.zh.onboardingDoneWebSearch}`)).not.toBeInTheDocument()
+    expect(screen.queryByText('Lens')).not.toBeInTheDocument()
     expect(screen.queryByText('全局快捷键')).not.toBeInTheDocument()
+  })
+
+  it('only offers the chat web-search toggle during onboarding', () => {
+    render(<WebSearchStep t={i18n.zh} settings={makeSettings()} onChange={() => {}} />)
+    const enableSection = screen.getByText(i18n.zh.onboardingWebSearchEnableSection).parentElement as HTMLElement
+    expect(within(enableSection).getByText(i18n.zh.webSearchChatSection)).toBeInTheDocument()
+    // Lens 已删除：不再有以它命名的开关行。
+    expect(within(enableSection).queryByText('Lens')).not.toBeInTheDocument()
   })
 })

@@ -227,11 +227,11 @@
   }
 }
 
-/* 全宽标题栏在 chat-main 容器之外，极窄窗口需按整窗宽度启用同一套紧凑控件。 */
+/* 全宽标题栏在 chat-main 容器之外，极窄窗口需按整窗宽度启用同一套紧凑控件。
+   思考等级 pill 不在隐藏之列：手机上它是唯一能切档的入口，只留图标即可。 */
 @container chat-window (max-width: 480px) {
   .chat-titlebar-strip .chat-model-selector-label,
-  .chat-titlebar-strip .chat-model-selector-caret,
-  .chat-titlebar-strip .chat-thinking-pill-wrap {
+  .chat-titlebar-strip .chat-model-selector-caret {
     display: none;
   }
 }
