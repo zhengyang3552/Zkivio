@@ -600,7 +600,7 @@ function DefaultsPage({
         <SettingsGroup title={t.webSearchDefaultsSection}>
           <SettingRow label={t.webSearchSearchProvider}>
             <Select
-              className="w-52"
+              className="w-52 max-w-full"
               value={config.provider}
               onChange={(value) => onChange({
                 provider: value as ProviderId,
@@ -621,7 +621,7 @@ function DefaultsPage({
             description={!resolvedFetch ? t.webSearchFetchDirectHint : undefined}
           >
             <Select
-              className="w-52"
+              className="w-52 max-w-full"
               value={fetchValue}
               onChange={(value) => {
                 if (value === FETCH_FOLLOW || value === config.provider) {
@@ -849,7 +849,7 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
             {selected.supportsDepth && (
               <SettingRow label={t.webSearchDepth}>
                 <Select
-                  className="w-44"
+                  className="w-44 max-w-full"
                   value={config.searchDepth || 'basic'}
                   onChange={(v) => onChange({ searchDepth: v as WebSearchConfig['searchDepth'] })}
                   options={[

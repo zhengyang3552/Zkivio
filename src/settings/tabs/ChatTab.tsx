@@ -181,7 +181,7 @@ export function ChatTab({
 
         <SettingRow label={t.chatDefaultLanguage}>
           <Select
-            className="w-44"
+            className="w-44 max-w-full"
             value={chatConfig.defaultLanguage || ''}
             onChange={(defaultLanguage) => onUpdateChat({ defaultLanguage })}
             options={[

@@ -105,7 +105,7 @@ export function DocumentProcessingPanel({
             >
               <Input
                 type="password"
-                className={`w-64 ${needsKey ? '!border-amber-400' : ''}`}
+                className={`w-64 max-w-full ${needsKey ? '!border-amber-400' : ''}`}
                 value={key}
                 onChange={(v) => setProviderKey(s.kind, s.name, v)}
                 placeholder={t('粘贴密钥…', 'Paste key…')}
@@ -136,7 +136,7 @@ export function DocumentProcessingPanel({
           label={t('OCR 引擎', 'OCR engine')}
         >
           <Select
-            className="w-52"
+            className="w-52 max-w-full"
             value={cfg.ocrEngine}
             onChange={(v) => patch({ ocrEngine: v as OcrEngine })}
             options={[
@@ -167,7 +167,7 @@ export function DocumentProcessingPanel({
           label={t('PDF 处理策略', 'PDF strategy')}
         >
           <Select
-            className="w-52"
+            className="w-52 max-w-full"
             value={cfg.pdfStrategy}
             onChange={(v) => patch({ pdfStrategy: v as PdfStrategy })}
             options={[
@@ -231,7 +231,7 @@ function RapidOcrWidget({
             { value: 'standard', label: t('标准（快）', 'Standard (fast)') },
             { value: 'high', label: t('高精度（PP-OCRv6，约 139MB）', 'High precision (PP-OCRv6, ~139MB)') },
           ]}
-          className="w-56"
+          className="w-56 max-w-full"
         />
       </div>
       <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">

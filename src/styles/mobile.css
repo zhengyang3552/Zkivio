@@ -111,3 +111,13 @@ html.mobile .chat-sidebar-shell:not(.is-collapsed) > * {
     animation: none;
   }
 }
+
+/* ===== 6. 固定宽度控件兜底 =====
+ * 设置页不少 select/input 由调用方传入固定宽度（w-44/w-52/w-56/w-64），而 Select
+ * 内置 max-w-none 会与调用方的 max-w-full 形成不可控的 utilities 优先级竞争。
+ * 手机内容区（360px 屏约 276px）容不下 256px 的 w-64，这里用 html.mobile 前缀
+ * （0-2-0，必赢 utilities）统一压回可视宽内；桌面端不受影响。 */
+html.mobile .kv-select,
+html.mobile .kv-input {
+  max-width: 100%;
+}

@@ -28,7 +28,7 @@ function FontPicker({ value, systemFonts, placeholder, defaultLabel, emptyText, 
     setQuery('')
   }
   return (
-    <div className="relative w-56">
+    <div className="relative w-56 max-w-full">
       <Input
         value={open ? query : (value || defaultLabel)}
         onChange={(v) => { setQuery(v); if (!open) setOpen(true) }}

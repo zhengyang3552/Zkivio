@@ -110,7 +110,7 @@ export function RetrievalPanel({
           description={t('留空关闭；失败时降级为融合顺序', 'Blank = off; failures use fused order')}
         >
           <Select
-            className="w-52"
+            className="w-52 max-w-full"
             value={cfg.rerankProviderId}
             onChange={(pid) => patch({ rerankProviderId: pid, rerankModel: '' })}
             options={[
@@ -123,7 +123,7 @@ export function RetrievalPanel({
         {cfg.rerankProviderId && (
           <SettingRow label={t('Rerank 模型', 'Rerank model')}>
             <Select
-              className="w-64"
+              className="w-64 max-w-full"
               value={cfg.rerankModel}
               onChange={(m) => patch({ rerankModel: m })}
               options={[

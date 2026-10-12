@@ -183,7 +183,7 @@ export function ProviderRequestPanel({
         }
       >
         <Select
-          className="w-48"
+          className="w-48 max-w-full"
           value={cachingSupported ? retention : 'none'}
           disabled={!cachingSupported}
           onChange={(promptCacheRetention) =>

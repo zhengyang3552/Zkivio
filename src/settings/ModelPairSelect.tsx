@@ -21,7 +21,7 @@ export function ModelPairSelect({
   onChange,
   inheritLabel,
   offOption,
-  className = 'w-52',
+  className = 'w-52 max-w-full',
   filterModel,
 }: ModelPairSelectProps) {
   const filtered = buildModelPairOptions(providers, filterModel)
