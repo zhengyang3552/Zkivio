@@ -11,7 +11,6 @@ import {
   type ChatMcpServer,
   type ChatNativeToolsConfig,
   type ChatToolsConfig,
-  type CliImportScan,
   type McpServerState,
   type McpOAuthClient,
   type Settings,
@@ -84,10 +83,6 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
   const [oauthClients, setOauthClients] = useState<Record<string, OAuthClientDraft>>({})
   const [oauthAppOpen, setOauthAppOpen] = useState<Record<string, boolean>>({})
   const [testFeedback, setTestFeedback] = useState<Record<string, TestFeedback>>({})
-  const [cliScan, setCliScan] = useState<CliImportScan | null>(null)
-  const [cliScanning, setCliScanning] = useState(false)
-  const [cliSelected, setCliSelected] = useState<Set<string>>(new Set())
-  const [cliImportDone, setCliImportDone] = useState('')
   const [query, setQuery] = useState('')
   const settingsRef = useRef<Settings | null>(null)
 
@@ -256,45 +251,6 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
       setError(err instanceof Error ? err.message : String(err))
     }
   }, [mutateServers, t])
-
-  // 从本地 CLI（Claude Code / Codex / OpenCode / Pi）扫描已配置的 MCP 服务器。
-  const handleCliScan = useCallback(async () => {
-    setCliScanning(true)
-    setCliImportDone('')
-    setError('')
-    try {
-      const scan = await api.chatCliImportScan()
-      setCliScan(scan)
-      // 默认不勾，由用户自己选。
-      setCliSelected(new Set())
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setCliScanning(false)
-    }
-  }, [])
-
-  const toggleCliSelected = useCallback((id: string) => {
-    setCliSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }, [])
-
-  // 导入选中项 = 复制成 Kivio 自己的 ChatMcpServer（enabled:false，走现有安装流程）。
-  const handleCliImportSelected = useCallback(async () => {
-    if (!cliScan) return
-    const all = [...cliScan.claude.servers, ...cliScan.codex.servers, ...cliScan.opencode.servers, ...cliScan.pi.servers]
-    const chosen = all.filter((server) => cliSelected.has(server.id))
-    if (chosen.length === 0) return
-    await mutateServers((list) => [...list, ...chosen])
-    setCliImportDone(t.chatMcpCliImportDone.replace('{n}', String(chosen.length)))
-    setCliScan(null)
-    setCliSelected(new Set())
-    setView('installed')
-  }, [cliScan, cliSelected, mutateServers, t])
 
   const handleTest = useCallback(async (server: ChatMcpServer) => {
     if (!chatTools) return
@@ -645,80 +601,6 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
                   <FolderOpen size={14} />
                   {t.chatMcpImportJsonPick}
                 </Button>
-              </div>
-
-              <div className="rounded-md border border-neutral-200 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="mb-1.5 text-[13px] font-medium text-neutral-800">{t.chatMcpImportCliTitle}</div>
-                    <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
-                      {t.chatMcpImportCliDesc}
-                    </p>
-                  </div>
-                  <Button onClick={() => void handleCliScan()} disabled={cliScanning} data-tauri-drag-region="false">
-                    {cliScanning ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
-                    {t.chatMcpScan}
-                  </Button>
-                </div>
-
-                {cliScan && (
-                  <div className="mt-3 space-y-3">
-                    {([['claude', 'Claude Code'], ['codex', 'Codex'], ['opencode', 'OpenCode'], ['pi', 'Pi']] as const).map(([key, label]) => {
-                      const group = cliScan[key]
-                      return (
-                        <div key={key}>
-                          <div className="mb-1.5 flex items-center gap-2 text-[12px] font-medium text-neutral-600">
-                            {label}
-                            {!group.available && <span className="text-[11px] font-normal text-neutral-400">{t.chatMcpCliNotDetected}</span>}
-                          </div>
-                          {group.available && (
-                            group.servers.length === 0 ? (
-                              <div className="rounded-md border border-dashed border-neutral-200 px-3 py-2 text-[11.5px] text-neutral-400">
-                                {t.chatMcpCliNoServers}
-                              </div>
-                            ) : (
-                              <div className="overflow-hidden rounded-md border border-neutral-200 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
-                                {group.servers.map((server) => {
-                                  const isHttp = server.transport === 'streamable_http'
-                                  return (
-                                    <label
-                                      key={server.id}
-                                      className="flex cursor-pointer items-center gap-2.5 px-3 py-2"
-                                      data-tauri-drag-region="false"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={cliSelected.has(server.id)}
-                                        onChange={() => toggleCliSelected(server.id)}
-                                        className="size-3.5 shrink-0 accent-[var(--accent)]"
-                                      />
-                                      <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-2">
-                                          <span className="truncate text-[12.5px] font-medium text-neutral-800">{server.name}</span>
-                                          <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">{isHttp ? 'http' : 'stdio'}</span>
-                                        </div>
-                                        <div className="truncate font-mono text-[10.5px] text-neutral-400">
-                                          {isHttp ? server.url : [server.command, ...server.args].filter(Boolean).join(' ')}
-                                        </div>
-                                      </div>
-                                    </label>
-                                  )
-                                })}
-                              </div>
-                            )
-                          )}
-                        </div>
-                      )
-                    })}
-                    <Button onClick={() => void handleCliImportSelected()} disabled={cliSelected.size === 0} data-tauri-drag-region="false">
-                      {t.chatMcpCliImportSelected.replace('{n}', String(cliSelected.size))}
-                    </Button>
-                  </div>
-                )}
-
-                {cliImportDone && (
-                  <div className="mt-2 text-[12px] text-emerald-600 dark:text-emerald-400">{cliImportDone}</div>
-                )}
               </div>
             </div>
           ) : view === 'advanced' ? (

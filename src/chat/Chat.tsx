@@ -488,8 +488,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const [hookWarning, setHookWarning] = useState<ChatHookPayload | null>(null)
   const [protocolVersionMismatch, setProtocolVersionMismatch] = useState(false)
   const [imageViewerItem, setImageViewerItem] = useState<ChatImageViewerItem | null>(null)
-  // 导入的对话：CLI 那边是否已经有新内容（ADR-0002）。只提示，不同步。
-  const [importedHistoryStale, setImportedHistoryStale] = useState(false)
   const currentConversationIdRef = useRef<string | null>(null)
   // 始终指向最新 currentConversation。消息操作 handler（编辑/删除/重发）借此读取最新会话，
   // 而无需把 currentConversation 列进 useCallback 依赖——否则每次切模型/思考等级（currentConversation
@@ -520,26 +518,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     ? compactingConversationIds.has(currentConversation.id)
     : false
 
-  useEffect(() => {
-    const id = currentConversation?.id
-    if (!id) {
-      setImportedHistoryStale(false)
-      return
-    }
-    let cancelled = false
-    void chatApi
-      .importedHistoryStale(id)
-      .then((stale) => {
-        if (!cancelled) setImportedHistoryStale(stale)
-      })
-      // 检查不了就当没过期——这只是个提示，不该因为它报错打断打开对话。
-      .catch(() => {
-        if (!cancelled) setImportedHistoryStale(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [currentConversation?.id])
   const streamErrorsRef = useRef<Record<string, string>>({})
   const settingsRef = useRef<SettingsShellHandle>(null)
   // A 合帧（render coalescing）：高频 stream/tool/subagent/userprompt 事件不再每条都同步
@@ -3050,7 +3028,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onDismissHookWarning={handleDismissHookWarning}
             forkOrigin={forkOrigin}
             onSelectConversation={handleSelectConversation}
-            importedHistoryStale={importedHistoryStale}
             pendingSlot={pendingSlot}
             subAgentSlot={currentConversation?.id && <SubAgentIndicator key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} onOpen={handleOpenDockTasks} />}
             goalSlot={visibleGoal ? (

@@ -28,43 +28,6 @@ import type { ThemeDefinition } from '../theme/types'
 /** 是否运行在 Tauri 运行时(而非纯浏览器/SSR) */
 export const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
-export type LensWebSearchResult = {
-  title: string
-  url: string
-  content: string
-  publishedDate?: string | null
-  score?: number | null
-}
-
-export type LensWebSearchState = {
-  status: 'searching' | 'done' | 'skipped' | 'error'
-  query?: string
-  reason?: string
-  results?: LensWebSearchResult[]
-  error?: string
-}
-
-// Lens 多轮对话消息类型（视觉模型）
-// reasoning：推理模型（DeepSeek-R1 等）的思维链文本，仅本地展示，不回传后端
-export type ExplainMessage = {
-  role: 'user' | 'assistant'
-  content: string
-  reasoning?: string
-  webSearch?: LensWebSearchState
-}
-
-// Lens 流式输出负载（事件名 lens-stream）
-// reasoningDelta：思维链增量（推理模型才会有）
-export type LensStreamPayload = {
-  imageId: string
-  kind: 'answer'
-  delta: string
-  reasoningDelta?: string
-  done?: boolean
-  reason?: 'done' | 'cancelled' | 'error'
-  full?: string
-}
-
 export type ChatStreamSegment = GeneratedChatSegmentPayload
 
 export type ChatStreamPayload = Extract<
@@ -451,20 +414,6 @@ export type ChatMcpServer = {
   }
 }
 
-/** 单个 CLI 的 MCP 扫描分组。available = 该 CLI 配置文件存在（与是否解析出 server 无关）。 */
-export type CliMcpGroup = {
-  available: boolean
-  servers: ChatMcpServer[]
-}
-
-/** 从本地 CLI 导入 MCP 的扫描结果（Claude Code / Codex / OpenCode / Pi 四组）。 */
-export type CliImportScan = {
-  claude: CliMcpGroup
-  codex: CliMcpGroup
-  opencode: CliMcpGroup
-  pi: CliMcpGroup
-}
-
 /** MCP 持久连接状态，与后端 McpServerState（serde tag="kind"）一一对应。 */
 export type McpServerState =
   | { kind: 'connecting' }
@@ -726,195 +675,6 @@ export type BackgroundTaskInfo = {
   /** 仅 running 有展示意义（终态不显示时长）。 */
   elapsedSecs: number
   startedAtMs: number
-}
-
-// Lens 联网搜索状态/结果负载（事件名 lens-web-search）
-export type LensWebSearchPayload = {
-  imageId: string
-  status: 'searching' | 'done' | 'skipped' | 'error'
-  query?: string
-  reason?: string
-  results?: LensWebSearchResult[]
-  error?: string
-}
-
-// 截图翻译流式负载（事件名 lens-translate-stream）
-// kind: 'original' = OCR 阶段；'translated' = 翻译阶段
-export type LensTranslateStreamPayload = {
-  imageId: string
-  kind?: 'original' | 'translated'
-  delta?: string
-  done?: boolean
-  success?: boolean
-  error?: string | null
-}
-
-export type LensReplaceGroup = {
-  id: string
-  leafIds: string[]
-  sourceText: string
-  translated: string
-}
-
-export type LensReplaceRenderSlot = {
-  id: string
-  groupId: string
-  leafIds: string[]
-  bounds: { x: number; y: number; width: number; height: number }
-  anchor: { x: number; y: number; baselineY: number }
-  flow: 'exact_line' | 'paragraph_flow' | 'cell_flow' | 'scene_patch'
-  kind: 'cell' | 'line' | 'paragraph' | 'heading'
-  align: 'left' | 'center' | 'right'
-  verticalAlign: 'top' | 'center'
-  sourceFontPx: number
-  sourceColor: string
-}
-
-export type LensReplaceStreamPayload = {
-  version: 2
-  imageId: string
-  phase: 'ocr' | 'processing' | 'done' | 'error'
-  groups: LensReplaceGroup[]
-  slots: LensReplaceRenderSlot[]
-  cleanedImage?: string | null
-  // 硬失败（整张替换翻译不可用）才带 error；局部降级（如个别区域缺少译文回退原文）只带 warning。
-  error?: string | null
-  warning?: string | null
-}
-
-function isReplacePayloadRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function replacePayloadNumber(record: Record<string, unknown>, key: string): number {
-  const value = record[key]
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error(`lens-replace-stream.${key} must be a finite number`)
-  }
-  return value
-}
-
-function parseReplaceBounds(value: unknown): LensReplaceRenderSlot['bounds'] {
-  if (!isReplacePayloadRecord(value)) throw new Error('lens-replace-stream slot bounds are invalid')
-  const bounds = {
-    x: replacePayloadNumber(value, 'x'),
-    y: replacePayloadNumber(value, 'y'),
-    width: replacePayloadNumber(value, 'width'),
-    height: replacePayloadNumber(value, 'height'),
-  }
-  if (bounds.width <= 0 || bounds.height <= 0) throw new Error('lens-replace-stream slot bounds must be positive')
-  return bounds
-}
-
-function parseReplaceStringArray(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) {
-    throw new Error(`lens-replace-stream ${label} must be a string array`)
-  }
-  return value
-}
-
-function parseReplaceOptionalString(record: Record<string, unknown>, key: string): string | null | undefined {
-  const value = record[key]
-  if (value === undefined || value === null || typeof value === 'string') return value
-  throw new Error(`lens-replace-stream.${key} must be a string or null`)
-}
-
-export function parseLensReplaceStreamPayload(value: unknown): LensReplaceStreamPayload {
-  if (!isReplacePayloadRecord(value) || value.version !== 2) {
-    throw new Error('lens-replace-stream requires protocol version 2')
-  }
-  if (typeof value.imageId !== 'string' || !value.imageId) throw new Error('lens-replace-stream.imageId is invalid')
-  if (!['ocr', 'processing', 'done', 'error'].includes(String(value.phase))) {
-    throw new Error('lens-replace-stream.phase is invalid')
-  }
-  if (!Array.isArray(value.groups) || !Array.isArray(value.slots)) {
-    throw new Error('lens-replace-stream groups and slots must be arrays')
-  }
-  const groupIds = new Set<string>()
-  const groups = value.groups.map((item, index): LensReplaceGroup => {
-    if (!isReplacePayloadRecord(item)) throw new Error(`lens-replace-stream.groups[${index}] is invalid`)
-    if (typeof item.id !== 'string' || !item.id || groupIds.has(item.id)) {
-      throw new Error(`lens-replace-stream.groups[${index}].id is invalid or duplicate`)
-    }
-    if (typeof item.sourceText !== 'string' || typeof item.translated !== 'string') {
-      throw new Error(`lens-replace-stream.groups[${index}] text is invalid`)
-    }
-    groupIds.add(item.id)
-    return {
-      id: item.id,
-      leafIds: parseReplaceStringArray(item.leafIds, `groups[${index}].leafIds`),
-      sourceText: item.sourceText,
-      translated: item.translated,
-    }
-  })
-  const slotIds = new Set<string>()
-  const slots = value.slots.map((item, index): LensReplaceRenderSlot => {
-    if (!isReplacePayloadRecord(item)) throw new Error(`lens-replace-stream.slots[${index}] is invalid`)
-    if (typeof item.id !== 'string' || !item.id || slotIds.has(item.id)) {
-      throw new Error(`lens-replace-stream.slots[${index}].id is invalid or duplicate`)
-    }
-    if (typeof item.groupId !== 'string' || !groupIds.has(item.groupId)) {
-      throw new Error(`lens-replace-stream.slots[${index}].groupId is unknown`)
-    }
-    if (!isReplacePayloadRecord(item.anchor)) throw new Error(`lens-replace-stream.slots[${index}].anchor is invalid`)
-    if (!['exact_line', 'paragraph_flow', 'cell_flow', 'scene_patch'].includes(String(item.flow))) {
-      throw new Error(`lens-replace-stream.slots[${index}].flow is invalid`)
-    }
-    if (!['cell', 'line', 'paragraph', 'heading'].includes(String(item.kind))) {
-      throw new Error(`lens-replace-stream.slots[${index}].kind is invalid`)
-    }
-    if (!['left', 'center', 'right'].includes(String(item.align))) {
-      throw new Error(`lens-replace-stream.slots[${index}].align is invalid`)
-    }
-    if (!['top', 'center'].includes(String(item.verticalAlign))) {
-      throw new Error(`lens-replace-stream.slots[${index}].verticalAlign is invalid`)
-    }
-    if (typeof item.sourceColor !== 'string' || typeof item.sourceFontPx !== 'number' || item.sourceFontPx <= 0) {
-      throw new Error(`lens-replace-stream.slots[${index}] style is invalid`)
-    }
-    slotIds.add(item.id)
-    return {
-      id: item.id,
-      groupId: item.groupId,
-      leafIds: parseReplaceStringArray(item.leafIds, `slots[${index}].leafIds`),
-      bounds: parseReplaceBounds(item.bounds),
-      anchor: {
-        x: replacePayloadNumber(item.anchor, 'x'),
-        y: replacePayloadNumber(item.anchor, 'y'),
-        baselineY: replacePayloadNumber(item.anchor, 'baselineY'),
-      },
-      flow: item.flow as LensReplaceRenderSlot['flow'],
-      kind: item.kind as LensReplaceRenderSlot['kind'],
-      align: item.align as LensReplaceRenderSlot['align'],
-      verticalAlign: item.verticalAlign as LensReplaceRenderSlot['verticalAlign'],
-      sourceFontPx: item.sourceFontPx,
-      sourceColor: item.sourceColor,
-    }
-  })
-  if (value.phase === 'done' && (groups.length === 0 || slots.length === 0)) {
-    throw new Error('lens-replace-stream done payload requires groups and slots')
-  }
-  return {
-    version: 2,
-    imageId: value.imageId,
-    phase: value.phase as LensReplaceStreamPayload['phase'],
-    groups,
-    slots,
-    cleanedImage: parseReplaceOptionalString(value, 'cleanedImage'),
-    error: parseReplaceOptionalString(value, 'error'),
-    warning: parseReplaceOptionalString(value, 'warning'),
-  }
-}
-
-// Lens 屏幕窗口元信息（macOS 实际数据；Windows 空数组）
-export type LensWindowInfo = {
-  id: number
-  owner: string
-  title: string
-  x: number
-  y: number
-  width: number
-  height: number
 }
 
 // 模型能力与定价信息（来自内置数据库或用户自定义）
@@ -1352,12 +1112,6 @@ export type PluginActionResult = {
   ok: boolean
   message: string
   status: PluginStatus
-}
-
-export type ControlToolStatus = {
-  currentVersion: string
-  latestVersion: string | null
-  updateAvailable: boolean
 }
 
 /** 笔记元信息（列表用） */
@@ -2044,13 +1798,6 @@ export const api = {
   // 事件监听
   onOpenSettings: (listener: () => void) => on('open-settings', () => listener()),
 
-  // 读取截图（lens ready 态拉缩略图用）
-  explainReadImage: (imageId: string) =>
-    invoke<{ success: boolean; data?: string; error?: string }>('explain_read_image', { imageId }),
-
-  // Lens 模式
-  onLensStream: (listener: (payload: LensStreamPayload) => void) =>
-    on<LensStreamPayload>('lens-stream', (payload) => listener(payload)),
   onChatStream: (listener: (payload: ChatStreamPayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return onChatProtocol((event, delivery) => {
@@ -2300,14 +2047,6 @@ export const api = {
       : Promise.resolve({ success: true }),
   chatMcpListTools: (cachedOnly = false) =>
     invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null; discoveryPending?: boolean }>('chat_mcp_list_tools', { cachedOnly }),
-  computerControlCheck: (tool: 'cua' | 'playwright') =>
-    invoke<string>('computer_control_check', { tool }),
-  computerControlStatus: (tool: 'cua' | 'playwright') =>
-    invoke<ControlToolStatus>('computer_control_status', { tool }),
-  computerControlInstall: (tool: 'cua' | 'playwright') =>
-    invoke<SkillMeta>('computer_control_install', { tool }),
-  computerControlUpdate: (tool: 'cua' | 'playwright') =>
-    invoke<SkillMeta>('computer_control_update', { tool }),
   chatMcpTestServer: (server: ChatMcpServer, timeoutMs?: number) =>
     invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null }>(
       'chat_mcp_test_server',
@@ -2319,7 +2058,6 @@ export const api = {
       { path },
     ),
   /** 扫描本机已安装 CLI（Claude Code / Codex / OpenCode）的 MCP 配置，按 CLI 分组返回可导入项。 */
-  chatCliImportScan: () => invoke<CliImportScan>('chat_cli_import_scan'),
   chatPiAgentDir: () => {
     if (!isTauriRuntime()) return Promise.resolve(null)
     return invoke<string | null>('chat_external_cli_pi_agent_dir')
@@ -2390,6 +2128,12 @@ export const api = {
     invoke<ChatClipboardFilesResult>('chat_read_clipboard_files'),
   chatReadClipboard: () => invoke<ChatClipboardContent>('chat_read_clipboard'),
   chatWriteClipboardText: (text: string) => invoke<void>('chat_write_clipboard_text', { text }),
+  // 聊天图片查看器的「复制图片 / 另存为」。命令名沿用 lens_* 历史前缀，
+  // 但服务的是对话内图片，与已移除的 Lens 浮窗无关。
+  lensCopyImageToClipboard: (base64Png: string) =>
+    invoke<{ success: boolean; error?: string }>('lens_copy_image_to_clipboard', { base64Png }),
+  lensSaveAnnotatedPng: (base64Png: string, path: string) =>
+    invoke<{ success: boolean; error?: string }>('lens_save_annotated_png', { base64Png, path }),
   // permissionMode 只有计划批准卡会传（三选一里用户选的那一档），决定批准后把 CLI 切到
   // 哪个权限模式。普通审批传 null。
   chatConfirmToolCall: (
@@ -2411,116 +2155,6 @@ export const api = {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<string>('chat-assistants-changed', (payload) => listener(payload))
   },
-  onLensWebSearch: (listener: (payload: LensWebSearchPayload) => void) =>
-    on<LensWebSearchPayload>('lens-web-search', (payload) => listener(payload)),
-  onLensTranslateStream: (listener: (payload: LensTranslateStreamPayload) => void) =>
-    on<LensTranslateStreamPayload>('lens-translate-stream', (payload) => listener(payload)),
-  onLensReplaceStream: (listener: (payload: LensReplaceStreamPayload) => void) =>
-    on<unknown>('lens-replace-stream', (payload) => {
-      try {
-        listener(parseLensReplaceStreamPayload(payload))
-      } catch (error) {
-        console.error('Invalid lens-replace-stream payload', error)
-      }
-    }),
-  onLensCloseRequest: (listener: () => void) =>
-    on('lens-close-request', () => listener()),
-  lensListWindows: () => invoke<LensWindowInfo[]>('lens_list_windows'),
-  // Tauri's binary IPC uses ArrayBuffer; its fallback transport returns byte arrays.
-  lensReadFreezeFrame: (imageId: string) =>
-    invoke<ArrayBuffer | number[]>('lens_read_freeze_frame', { imageId }),
-  lensReadImage: (imageId: string) =>
-    invoke<ArrayBuffer | number[]>('lens_read_image', { imageId }),
-  lensCaptureWindow: (
-    windowId: number,
-    geometry?: {
-      absoluteX: number
-      absoluteY: number
-      x: number
-      y: number
-      width: number
-      height: number
-      scaleFactor: number
-      freezeFrameImageId?: string
-    },
-  ) =>
-    invoke<{ success: boolean; imageId?: string; error?: string }>('lens_capture_window', {
-      windowId,
-      absoluteX: geometry?.absoluteX,
-      absoluteY: geometry?.absoluteY,
-      x: geometry?.x,
-      y: geometry?.y,
-      width: geometry?.width,
-      height: geometry?.height,
-      scaleFactor: geometry?.scaleFactor,
-      freezeFrameImageId: geometry?.freezeFrameImageId,
-    }),
-  lensCaptureRegion: (params: {
-    absoluteX: number
-    absoluteY: number
-    x: number
-    y: number
-    width: number
-    height: number
-    scaleFactor: number
-    freezeFrameImageId?: string
-  }) => invoke<{ success: boolean; imageId?: string; error?: string }>('lens_capture_region', params),
-  lensRegisterAnnotatedImage: (base64Png: string) =>
-    invoke<{ success: boolean; imageId?: string; error?: string }>(
-      'lens_register_annotated_image', { base64Png }
-    ),
-  lensCopyImageToClipboard: (base64Png: string) =>
-    invoke<{ success: boolean; error?: string }>('lens_copy_image_to_clipboard', { base64Png }),
-  lensSaveAnnotatedPng: (base64Png: string, path: string) =>
-    invoke<{ success: boolean; error?: string }>('lens_save_annotated_png', { base64Png, path }),
-  lensTranslate: (imageId: string) =>
-    invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
-      'lens_translate', { imageId }
-    ),
-  lensTranslateText: (text: string, requestId: string) =>
-    invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
-      'lens_translate_text', { text, requestId }
-    ),
-  lensReplaceTranslate: (imageId: string) =>
-    invoke<{ success: boolean; regionCount?: number; missingBytes?: number; warning?: string; error?: string }>(
-      'lens_replace_translate', { imageId }
-    ),
-  lensAsk: (imageId: string, messages: ExplainMessage[], options?: { webSearch?: boolean }) =>
-    invoke<{ success: boolean; response?: string; error?: string; webSearchResults?: LensWebSearchResult[] }>('lens_ask', {
-      imageId,
-      messages,
-      webSearch: options?.webSearch,
-    }),
-  lensSendToChat: (imageId: string, question: string) =>
-    invoke<{ success: boolean; requestId?: string; error?: string }>('lens_send_to_chat', {
-      imageId,
-      question,
-    }),
-  // 把 Lens 完整多轮历史 + 截图同步到 AI 客户端，预置成一个新会话（不触发回复，落地末尾可续聊）。
-  lensSendHistoryToChat: (imageId: string, messages: ExplainMessage[]) =>
-    invoke<{ success: boolean; requestId?: string; error?: string }>('lens_send_history_to_chat', {
-      imageId,
-      messages,
-    }),
-  lensCancelStream: () => invoke<void>('lens_cancel_stream'),
-  // 让原生把 lens 浮窗内部 WKWebView 设为 first responder（修复复用窗口第二次打开偶尔不聚焦）。
-  lensFocusWebview: () => invoke<void>('lens_focus_webview'),
-  lensClose: () => invoke<void>('lens_close'),
-  // 全局 Esc 兜底开关：select 全屏阶段由后端全局快捷键保证 Esc 必能退出（webview 未拿到
-  // 键盘焦点/挂死时 JS keydown 收不到）；chat 模式离开 select 后关掉，把 Esc 语义交还 JS。
-  lensSetEscapeGuard: (active: boolean) => invoke<void>('lens_set_escape_guard', { active }),
-  // 取走 select 态复位载荷（frame + freezeFrameImageId 的 JSON）。冷挂载兜底用：lens:reset
-  // 事件可能早于监听注册被丢，前端挂载时主动拉一次，丢事件也不丢冻结帧。无 pending 返回 null。
-  lensTakeResetPayload: () => invoke<string | null>('lens_take_reset_payload'),
-  // 把当前活跃 image 拷贝到 lens-history 持久目录，让重启后历史能继续提问
-  lensCommitImageToHistory: (imageId: string) =>
-    invoke<void>('lens_commit_image_to_history', { imageId }),
-  // 历史淘汰一条记录时调用，删除 lens-history 中对应 PNG 防止目录无限增长
-  lensDeleteHistoryImage: (imageId: string) =>
-    invoke<void>('lens_delete_history_image', { imageId }),
-  lensSetFloating: (rect: { x?: number; y?: number; width: number; height: number }) =>
-    invoke<void>('lens_set_floating', { rect }),
-  // macOS 走 AppKit 原生 NSAnimationContext + animator setFrame,一次 IPC 触发,Core Animation
   // ========== 自动更新（仅检查 + 跳转，不做自动下载安装） ==========
 
   /** 调后端 GitHub Releases API 检查最新版本 */

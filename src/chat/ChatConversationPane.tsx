@@ -92,7 +92,6 @@ export interface ChatConversationPaneProps {
   onDismissHookWarning: () => void
   forkOrigin: { sourceId: string; title: string } | null
   onSelectConversation: (id: string) => void
-  importedHistoryStale: boolean
   pendingSlot: ReactNode
   goalSlot?: ReactNode
   subAgentSlot?: ReactNode
@@ -133,7 +132,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   onDismissHookWarning,
   forkOrigin,
   onSelectConversation,
-  importedHistoryStale,
   pendingSlot,
   goalSlot,
   subAgentSlot,
@@ -232,17 +230,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
                   <GitBranch size={12} strokeWidth={2} className="shrink-0" />
                   <span className="truncate">分叉自 {forkOrigin.title}</span>
                 </button>
-              </div>
-            )}
-
-            {importedHistoryStale && (
-              <div className="flex justify-center px-4 pt-2">
-                <span
-                  className="inline-flex max-w-full items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
-                  title="这条会话在 CLI 那边继续聊过。Kivio 里的历史是导入时的快照，不会自动同步；续聊时 CLI 用的仍是它自己那份完整上下文。"
-                >
-                  <span className="truncate">这条会话在 CLI 那边有新内容，此处显示的历史不完整</span>
-                </span>
               </div>
             )}
 

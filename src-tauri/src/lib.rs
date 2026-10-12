@@ -1059,8 +1059,13 @@ pub fn run() {
             chat::commands::mutations::chat_rewind_to_message,
             chat::commands::mutations::chat_fork_conversation,
             // 本地 CLI 外部智能体在手机端无用（只有 rootfs 当工作区），
-            // 仅保留 runtime 切换所需的最小命令面。
+            // 只保留 runtime 切换所需的最小命令面，外加三个共享聊天 UI 会调用的
+            // 只读探针（斜杠命令 / 原生会话 id / Pi 目录）——它们被
+            // InputBar、会话列表与 Skills 扫描引用，注册缺失会在这些路径上报错。
             external_agents::commands::chat_set_agent_runtime,
+            external_agents::commands::chat_list_external_cli_slash_commands,
+            external_agents::commands::chat_external_native_session_id,
+            external_agents::commands::chat_external_cli_pi_agent_dir,
             chat::memory::chat_memory_get,
             chat::memory::chat_memory_save,
             chat::memory::chat_memory_open_folder,
