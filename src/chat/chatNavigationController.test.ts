@@ -35,7 +35,6 @@ function setup(withWindow = false) {
   const ownership = deferred<ReadonlySet<string>>()
   const shown: string[] = []
   const errors: string[] = []
-  const occupyPopout = vi.fn()
   const prepareNewConversation = vi.fn()
   const clearEmptyChat = vi.fn()
   const requestClearChat = vi.fn((): 'busy' | 'cancelled' | 'confirmed' => 'confirmed')
@@ -52,7 +51,6 @@ function setup(withWindow = false) {
   const controller = createChatNavigationController({
     currentConversation: () => current,
     currentConversationId: () => current?.id ?? null,
-    listPopouts: () => ownership.promise,
     readHistoryPage: () => {
       const pending = deferred<ConversationHistoryPage>()
       pages.push(pending)
@@ -79,8 +77,6 @@ function setup(withWindow = false) {
     cancelDeletedRun,
     finalizeDeletedChat,
     reportClearError,
-    focusPopout: vi.fn(),
-    occupyPopout,
     prepareSelection: vi.fn(),
     showHistoryTarget,
     reportHistoryError,
@@ -92,7 +88,7 @@ function setup(withWindow = false) {
     discardConversation: (_id, error) => { errors.push(error.message) },
   })
   return {
-    controller, ownership, reads, readStarted, windowReads, windowStarted, shown, errors, occupyPopout,
+    controller, ownership, reads, readStarted, windowReads, windowStarted, shown, errors,
     prepareNewConversation, clearEmptyChat, requestClearChat, deleteConversation,
     cancelDeletedRun, finalizeDeletedChat, reportClearError,
     showHistoryTarget, reportHistoryError,
@@ -398,15 +394,6 @@ describe('chat navigation controller', () => {
     expect(shown).toEqual([])
     expect(reads.has('a')).toBe(false)
     expect(window.location.hash).toBe('#chat/a')
-  })
-
-  it('reconciles popout entry by replacing the main-window conversation without reading its messages', async () => {
-    const { controller, reads, occupyPopout, setCurrent } = setup()
-    setCurrent(conversation('a'))
-    await controller.reconcilePopouts(new Set(), new Set(['a']))
-
-    expect(occupyPopout).toHaveBeenCalledWith('a')
-    expect(reads.size).toBe(0)
   })
 
   it('opens a different conversation by route and does not start a duplicate read', async () => {

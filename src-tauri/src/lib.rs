@@ -111,7 +111,21 @@ fn first_visible_user_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWin
             app.get_webview_window(label)
                 .filter(|window| window.is_visible().ok().unwrap_or(false))
         })
-        .or_else(|| crate::chat::popout::first_visible_popout(app))
+}
+
+/// macOS：有可见用户窗口时切回 Regular 激活策略，否则退回 Accessory，
+/// 让无窗口的后台进程不霸占 Dock/Cmd-Tab。
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_macos_activation_policy(app: &tauri::AppHandle) {
+    let chat_visible = app
+        .get_webview_window("chat")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if chat_visible {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    } else {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
 }
 
 /// Windows：让本进程退出 EcoQoS 执行速度节流，使其在无窗口/后台空闲时仍保持正常调度，
@@ -216,10 +230,6 @@ pub fn run() {
                     }
                     return;
                 }
-                if crate::chat::popout::is_popout_label(window.label()) {
-                    // 弹出窗关即销毁，不走主聊天窗 keep-alive。
-                    return;
-                }
                 // Lens / 翻译浮层只在桌面端存在（Android 没有 overlay 面板）。
                 #[cfg(not(target_os = "android"))]
                 if window.label() == "lens" || window.label() == "translate" {
@@ -263,17 +273,15 @@ pub fn run() {
                     flows.cancel_window(label);
                 }
                 chat::notification_viewing::clear_window(label);
-                if crate::chat::popout::is_popout_label(label) {
-                    crate::chat::popout::on_popout_destroyed(window.app_handle(), label);
-                } else if label == "chat" {
+                if label == "chat" {
                     crate::chat::protocol::unsubscribe_label(
                         &window.app_handle().state::<AppState>(),
                         "chat",
                     );
                 }
                 #[cfg(target_os = "macos")]
-                if label == "chat" || crate::chat::popout::is_popout_label(label) {
-                    crate::chat::popout::sync_macos_activation_policy(window.app_handle());
+                if label == "chat" {
+                    crate::sync_macos_activation_policy(window.app_handle());
                 }
             }
             _ => {}
@@ -655,10 +663,6 @@ pub fn run() {
             chat::commands::interaction::clear_request_debug_records,
             chat::protocol::chat_sync_state,
             chat::protocol::chat_protocol_subscribe,
-            chat::popout::chat_open_conversation_popout,
-            chat::popout::chat_focus_conversation_popout,
-            chat::popout::chat_close_conversation_popout,
-            chat::popout::chat_list_conversation_popouts,
             // Chat 模块命令
             chat::commands::catalog::chat_get_conversations,
             chat::commands::interaction::chat_list_background_tasks,
@@ -966,10 +970,6 @@ pub fn run() {
             chat::commands::interaction::clear_request_debug_records,
             chat::protocol::chat_sync_state,
             chat::protocol::chat_protocol_subscribe,
-            chat::popout::chat_open_conversation_popout,
-            chat::popout::chat_focus_conversation_popout,
-            chat::popout::chat_close_conversation_popout,
-            chat::popout::chat_list_conversation_popouts,
             // Chat 模块命令
             chat::commands::catalog::chat_get_conversations,
             chat::commands::interaction::chat_list_background_tasks,

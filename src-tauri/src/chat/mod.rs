@@ -25,7 +25,6 @@ pub mod model_metadata;
 pub(crate) mod notification_viewing;
 pub mod plan;
 pub mod plan_document;
-pub mod popout;
 #[cfg(debug_assertions)]
 pub mod probe;
 pub mod protocol;

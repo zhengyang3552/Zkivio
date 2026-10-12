@@ -16,12 +16,10 @@ import {
   restoreChatWindowGeometry,
   snapshotChatWindowGeometry,
 } from './chat/persistence'
-import { isChatPopoutPath } from './chat/popout/popoutRoutes'
 import { ChatErrorBoundary } from './chat/ChatErrorBoundary'
 import './styles/app.css'
 
 const Chat = lazy(() => import('./chat/Chat'))
-const ChatPopout = lazy(() => import('./chat/popout/ChatPopout'))
 
 /**
  * 应用根组件
@@ -40,10 +38,6 @@ function App() {
     const hash = window.location.hash.replace('#', '')
     const path = urlParams.get('mode') || hash.split('?')[0] || ''
 
-    // 弹出窗必须走独立瘦壳，不能落入主窗 Chat.tsx（会把侧栏/设置/中心页一起打进来）。
-    if (isChatPopoutPath(path)) {
-      return 'chat-popout'
-    }
     // 支持 #chat 或 #chat/conversation-id
     if (isChatPath(path)) {
       return 'chat'
@@ -187,7 +181,6 @@ function App() {
 
   const persistChatWindowGeometry = useCallback(async () => {
     if (!isTauriRuntime()) return
-    if (isChatPopoutPath(hashPath())) return
     try {
       const win = (await import('@tauri-apps/api/window')).getCurrentWindow()
       const geometry = await snapshotChatWindowGeometry(win)
@@ -209,9 +202,7 @@ function App() {
         if (minimized) {
           await win.unminimize()
         }
-        if (!isChatPopoutPath(hashPath())) {
-          await restoreChatWindowGeometry(win)
-        }
+        await restoreChatWindowGeometry(win)
         await api.showWindow()
         await api.focusWindow()
       }
@@ -236,7 +227,7 @@ function App() {
   }, [revealChatWindow])
 
   useLayoutEffect(() => {
-    if (mode !== 'chat' && mode !== 'chat-popout') return
+    if (mode !== 'chat') return
     if (!isTauriRuntime()) return
     // 不变量：chat 是专用窗口，其 hash 恒为 #chat（含子路由），mode 一旦为 'chat' 便不再变。
     // 本兜底据此成立——若未来 chat 窗允许 mode 离开 'chat'，cleanup 会清掉未触发的兜底 timer
@@ -317,17 +308,6 @@ function App() {
       <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--theme-surface-border)] border-t-[var(--text)]" />
     </div>
   )
-  if (mode === 'chat-popout') {
-    return (
-      <ChatWindowHost translucentSidebar={translucentSidebar}>
-        <Suspense fallback={chatSuspenseFallback}>
-          <ChatErrorBoundary>
-            <ChatPopout onContentReady={revealChatWindowNow} />
-          </ChatErrorBoundary>
-        </Suspense>
-      </ChatWindowHost>
-    )
-  }
   if (mode === 'chat') {
     return (
       <ChatWindowHost translucentSidebar={translucentSidebar}>

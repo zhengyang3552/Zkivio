@@ -179,7 +179,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
         </div>
       )}
 
-      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 flex-1 flex-col pb-[var(--kb-inset,0px)]">
         {showEmptyHero ? (
           <div className="chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-10">
             <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl">

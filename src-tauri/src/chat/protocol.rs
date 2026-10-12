@@ -1953,7 +1953,10 @@ pub fn chat_protocol_subscribe(
     channel: tauri::ipc::Channel<ChatProtocolEvent>,
     conversation_id: Option<String>,
 ) {
-    let filter = crate::chat::popout::protocol_filter_for_window(window.label(), conversation_id);
+    let filter = match conversation_id {
+        Some(id) if !id.trim().is_empty() => ChatProtocolFilter::Conversation(id),
+        _ => ChatProtocolFilter::All,
+    };
     state.chat_protocol().subscribers().insert(
         window.label().to_string(),
         ChatProtocolSubscriber { filter, channel },

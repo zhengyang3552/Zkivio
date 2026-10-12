@@ -32,7 +32,6 @@ const base = {
   onModelChange: vi.fn(),
   onThinkingLevelChange: vi.fn(),
   onApprovalPolicyChange: vi.fn(),
-  onOpenPopout: vi.fn(),
   onOpenDockTasks: vi.fn(),
   onToggleDock: vi.fn(),
 }

@@ -12,6 +12,7 @@ import type { MarketPlugin } from '../api/market'
 import { useChatRouting } from './hooks/useChatRouting'
 import { useSettingsExit } from './hooks/useSettingsExit'
 import { useSidebarLayout } from './hooks/useSidebarLayout'
+import { useKeyboardInset } from './hooks/useKeyboardInset'
 import { useAssistantActions } from './hooks/useAssistantActions'
 import { createChatNavigationController } from './chatNavigationController'
 import { createConversationWarmCache } from './conversationWarmCache'
@@ -21,7 +22,6 @@ import { keepNewerContextMeasurement } from './contextPanel'
 import { forgetChatReadingPosition, recallChatReadingPosition } from './chatReadingPosition'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
-import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
 import { createRunInteractionInbox } from './runInteractionInbox'
 import { createChatSendController, type SendPresentationEvent } from './chatSendController'
 import { createChatRunCommands, type RunCommandPresentationEvent } from './chatRunCommands'
@@ -126,7 +126,6 @@ import {
   type ChatHookPayload,
 } from '../api/tauri'
 import { getSettingsCached, subscribeSettings, updateSettingsCached } from '../api/settingsCache'
-import { setExclusiveConversationIds } from '../api/chatProtocol'
 import { OnboardingShell } from '../onboarding/public/shell'
 import type { SettingsShellHandle, SettingsTab } from '../settings/public/shell'
 import { AppDialogHost } from '../components/AppDialog'
@@ -156,8 +155,6 @@ import { ChatRouteKeepAlive } from './ChatRouteKeepAlive'
 import { ChatConversationPane } from './ChatConversationPane'
 import { GoalCard } from './GoalCard'
 import { composerGoal, setGoalDraftMode, useGoalDraft } from './goalPresentation'
-import { PopoutOccupiedPlaceholder } from './popout/PopoutOccupiedPlaceholder'
-import { emptyPopoutConversation, stripConversationMessages } from './popout/conversationStub'
 import {
   findSubagentToolIndex,
   isStreamTerminal,
@@ -331,6 +328,7 @@ const NO_QUEUED_MESSAGES: QueuedMessage[] = []
 export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   useChatPerfRenderProbe('Chat', { view: hashPath() })
   useChatPerfLongTaskProbe()
+  useKeyboardInset()
   const [chatView, setChatView] = useState<ChatView>(() => {
     const path = hashPath()
     if (isChatOnboardingRoute(path)) return 'onboarding'
@@ -426,10 +424,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const [generatingConversationIds, setGeneratingConversationIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   )
-  const [popoutOwner] = useState(createChatPopoutOwnershipOwner)
-  const popoutConversationIds = useSyncExternalStore(popoutOwner.subscribe, popoutOwner.membership)
-  const [popoutNotice, setPopoutNotice] = useState<string | null>(null)
-  useEffect(() => { setExclusiveConversationIds(popoutConversationIds) }, [popoutConversationIds])
   const [sidebarProfileRefreshKey, setSidebarProfileRefreshKey] = useState(0)
   // 欢迎页的输入上下文由一个 owner 管理；首次发送时统一落到新会话。
   const {
@@ -665,24 +659,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       return null
     }
   }, [setStreamErrorForConversation])
-
-  const occupyConversationInMain = useCallback((
-    conversationId: string,
-    source?: Conversation | ConversationListItem | null,
-  ) => {
-    invalidateConversationTransition()
-    currentConversationIdRef.current = conversationId
-    const current = currentConversationRef.current
-    const next = current?.id === conversationId
-      ? stripConversationMessages(current)
-      : emptyPopoutConversation(conversationId, source ?? (current?.id === conversationId ? current : null))
-    applyConversation(next)
-    previewOwner.drop(conversationId)
-    if (getStreamCoarse().streaming) {
-      setStreamCoarse({ streaming: false, streamFrozen: false, cancelling: false })
-    }
-    setHash(conversationHash(conversationId))
-  }, [applyConversation, previewOwner])
 
   /** 后台异步结果只能更新它发起时所属的会话，不能把用户后来打开的会话顶掉。 */
   const applyConversationIfCurrent = useCallback((expectedId: string, conversation: Conversation) => {
@@ -932,7 +908,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const navigation = useMemo(() => createChatNavigationController({
     currentConversation: () => currentConversationRef.current,
     currentConversationId: () => currentConversationIdRef.current,
-    listPopouts: popoutOwner.list,
     readConversation: async (conversationId) => {
       const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
         .catch(() => null)
@@ -996,8 +971,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     reportHistoryError: (conversationId, message) => {
       setHistoryLoadError(message ? { conversationId, message } : null)
     },
-    focusPopout: (conversationId) => { void chatApi.focusConversationPopout(conversationId) },
-    occupyPopout: (conversationId) => occupyConversationInMain(conversationId, currentConversationRef.current),
     prepareSelection: (focusMessageId, fresh) => {
       if (fresh) {
         const leaving = currentConversationRef.current
@@ -1034,7 +1007,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     },
   }), [
     applyConversation, clearDisplayedConversation,
-    dropConversationLocally, executionOwner, occupyConversationInMain, popoutOwner,
+    dropConversationLocally, executionOwner,
     previewOwner, refreshSidebar, resetComposerDraftContext, resetContext, restoreStreamingPreview,
     setStreamErrorForConversation, warmConversationCache,
   ])
@@ -1197,22 +1170,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setSidebarRefreshKey((key) => key + 1)
   }, [loadDefaultModel, loadSkills, onSettingsChange, refreshToolIndicator])
 
-  useEffect(() => {
-    void popoutOwner.list().catch((err) => console.error('Failed to list conversation popouts:', err))
-  }, [popoutOwner])
-
-  useTauriEvent(api.onConversationPopoutsChanged, (payload) => {
-    const change = popoutOwner.changed(payload.conversationIds)
-    setExclusiveConversationIds(change.next)
-    void navigation.reconcilePopouts(change.previous, change.next)
-  }, [navigation, popoutOwner])
-
-  useEffect(() => {
-    if (!popoutNotice) return
-    const timer = window.setTimeout(() => setPopoutNotice(null), 4000)
-    return () => window.clearTimeout(timer)
-  }, [popoutNotice])
-
   const finishStreamingRun = useCallback(
     async (payload: { reason?: string; conversationId?: string; runId?: string | null; turnEpoch?: number }) => {
       const conversationId = payload.conversationId ?? currentConversationIdRef.current
@@ -1260,7 +1217,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const navigationLease = captureConversationNavigation()
     const canPresent = () => isCurrentConversationNavigation(navigationLease)
       && currentConversationIdRef.current === conversationId
-      && !popoutOwner.owns(conversationId)
     void streamLifecycleOwner.settleExternalTerminal(
       ready.permit,
       // Reading is side-effect-free. A stale terminal must not call the
@@ -1304,7 +1260,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     )
   }, [
     applyConversation, clearStreamSnapshot, freezeStreamSnapshot, markConversationCompacting,
-    popoutOwner, refreshSidebar, setStreamErrorForConversation, settleStreamingPreview,
+    refreshSidebar, setStreamErrorForConversation, settleStreamingPreview,
     streamLifecycleOwner, syncGeneratingConversationIds,
   ])
 
@@ -1345,7 +1301,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       issue === 'resync_required'
       && conversationId
       && conversationId === currentConversationIdRef.current
-      && !popoutOwner.owns(conversationId)
     ) {
       void reloadConversation(conversationId)
     }
@@ -1359,23 +1314,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       run.status === 'running'
       && conversationId
       && conversationId === currentConversationIdRef.current
-      && !popoutOwner.owns(conversationId)
     ) {
       void reloadConversation(conversationId)
     }
-  }, [popoutOwner, refreshSidebar, reloadConversation])
+  }, [refreshSidebar, reloadConversation])
 
   useTauriEvent(api.onChatStream, (payload) => {
-      const popout = popoutOwner.observeRun(payload)
-      // Popout ownership hides main-window display only. Execution identity
-      // still observes every arm, including terminals arriving after close.
-      const result = streamLifecycleOwner.receive(payload, { project: !popout.suppressMainProjection })
+      const result = streamLifecycleOwner.receive(payload, { project: true })
       if (result.kind === 'ignored') return
-      if (popout.suppressMainProjection) {
-        syncGeneratingConversationIds()
-        if (result.kind === 'ready') finishExternalStreamingRun(result)
-        return
-      }
       if (isStreamTerminal(payload)) {
         interactionInbox.observe({
           kind: 'runTerminal', conversationId: payload.conversationId, runId: payload.runId,
@@ -1390,7 +1336,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       syncGeneratingConversationIds()
       if (result.kind === 'ready') finishExternalStreamingRun(result)
-  }, [finishExternalStreamingRun, interactionInbox, popoutOwner, streamLifecycleOwner, syncGeneratingConversationIds])
+  }, [finishExternalStreamingRun, interactionInbox, streamLifecycleOwner, syncGeneratingConversationIds])
 
   useTauriEvent(api.onChatTodo, (payload) => {
     const currentConversationId = currentConversationIdRef.current
@@ -1433,7 +1379,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useTauriEvent(api.onChatTool, (payload) => {
       if (['agent', 'agent_control', 'native__agent', 'native__agent_control'].includes(payload.name) && payload.status === 'success') refreshSubAgents(payload.conversationId)
-      if (popoutOwner.owns(payload.conversationId)) return
       if (!executionOwner.allowsStreamPayload(payload)) return
       // 忽略 invoke 结束后的迟到 tool 事件，否则会重新 setStreaming(true) 卡死输入栏。
       if (!executionOwner.snapshot(payload.conversationId).inFlight) return
@@ -1487,7 +1432,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [executionOwner, previewOwner])
 
   useTauriEvent(api.onChatUserPrompt, (payload) => {
-      if (popoutOwner.owns(payload.conversationId)) return
       if (!executionOwner.allowsStreamPayload(payload)) return
       if (!executionOwner.snapshot(payload.conversationId).inFlight) return
       if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
@@ -1504,8 +1448,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [interactionInbox])
 
   useTauriEvent(api.onChatToolConfirm, (payload) => {
-    if (popoutOwner.owns(payload.conversationId)) return
-    if (!executionOwner.allowsStreamPayload(payload)) return
+      if (!executionOwner.allowsStreamPayload(payload)) return
     if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
     // 排队而不是覆盖：一条消息里并行调多个工具时，后端会同时挂着多条询问等答复
     // （按 request_id 路由）。覆盖会让用户没看见的那条静默超时 ⇒ 模型收到「用户拒绝」。
@@ -1519,8 +1462,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [executionOwner, interactionInbox])
 
   useTauriEvent(api.onChatToolConfirmWithdraw, (payload) => {
-    if (popoutOwner.owns(payload.conversationId)) return
-    // 旧适配器只暴露 conversationId + toolCallId，没有 runId；撤销是清理事件，
+      // 旧适配器只暴露 conversationId + toolCallId，没有 runId；撤销是清理事件，
     // 取消栅栏不能阻断它，否则已经超时的卡片会留在界面。run 身份由 inbox 的
     // request_id 队列定位；协议迁移时应补回 runId。
     interactionInbox.observe({ kind: 'toolWithdrawn', ...payload })
@@ -1533,8 +1475,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   ): Promise<boolean> => interactionInbox.respondTool({ approved, always, permissionMode }), [interactionInbox])
 
   useTauriEvent(api.onChatSessionConsent, (payload) => {
-    if (popoutOwner.owns(payload.conversationId)) return
-    if (!executionOwner.allowsStreamPayload(payload)) return
+      if (!executionOwner.allowsStreamPayload(payload)) return
     if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
     interactionInbox.observe({ kind: 'consentRequested', payload })
   }, [executionOwner, interactionInbox])
@@ -1548,11 +1489,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (!conversationId) return
     // 已弹出的会话:主窗只渲染占位卡、不渲染消息,run 边沿事件足够;
     // sync 会把该会话的运行快照(可能数百 KB)白拉到主窗协议状态里。
-    if (popoutOwner.owns(conversationId)) return
     void api.chatSyncState(conversationId).catch((error) => {
       console.error('Failed to synchronize chat protocol state:', error)
     })
-  }, [currentConversation?.id, popoutConversationIds, popoutOwner])
+  }, [currentConversation?.id])
 
   useEffect(() => {
     currentConversationIdRef.current = currentConversation?.id ?? null
@@ -2246,11 +2186,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     currentConversation?.messages ?? [],
   )
 
-  const conversationOccupied = Boolean(
-    currentConversation?.id && popoutConversationIds.has(currentConversation.id),
-  )
   const showEmptyHero = chatView === 'conversation'
-    && !conversationOccupied
     && !goalDraft && !goalActive
     && isEmptyChatPresentation(displayMessages.length, streamCoarse)
 
@@ -2387,17 +2323,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         setSelectedProject(scope.project)
         setSelectedSet(scope.set)
       }
-      if (popoutOwner.owns(id)) {
-        void chatApi.focusConversationPopout(id)
-        occupyConversationInMain(id, conversation ?? currentConversationRef.current)
-        return
-      }
       void handleSelectConversation(id, {
         messageCount: conversation?.message_count,
         focusMessageId: focusMessageId || undefined,
       })
     }, { restoreCurrentRoute: false })
-  }, [handleSelectConversation, occupyConversationInMain, popoutOwner, runAfterLeavingEditors])
+  }, [handleSelectConversation, runAfterLeavingEditors])
 
   const handleSidebarNewConversation = useCallback(() => {
     runAfterLeavingEditors(() => void handleNewConversation())
@@ -2535,27 +2466,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const centerPageClass = `chat-motion-view-in chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col ${centerPagePadTop}`
   const worksPageClass = `chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col ${centerPagePadTop}`
 
-  const handleOpenConversationPopout = useCallback(async (conversationId: string) => {
-    try {
-      const change = await popoutOwner.open(conversationId)
-      setExclusiveConversationIds(change.next)
-      await navigation.reconcilePopouts(change.previous, change.next)
-    } catch (err) {
-      const message = typeof err === 'string' ? err : (err as Error).message || i18n[uiLang].chatPopoutLimit
-      setPopoutNotice(message)
-    }
-  }, [navigation, popoutOwner, uiLang])
-
-  const handleDockConversationPopout = useCallback(async (conversationId: string) => {
-    try {
-      const change = await popoutOwner.close(conversationId)
-      setExclusiveConversationIds(change.next)
-      await navigation.reconcilePopouts(change.previous, change.next)
-    } catch (err) {
-      setPopoutNotice(typeof err === 'string' ? err : (err as Error).message || '无法收回独立窗口')
-    }
-  }, [navigation, popoutOwner])
-
   // 会话页顶栏控件。非 mac 渲染进全宽标题栏带（单行 chrome），mac 仍留在主区 52px 顶栏。
   const conversationTitlebarControls = useMemo(() => (
     <ConversationTitlebarControls
@@ -2563,11 +2473,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       conversationId={currentConversation?.id ?? null}
       runtimeLocked={
         // 一 agent 一对话：有消息后锁死 kind/agent（内置 Kivio 与本地 CLI 一律）。
-        // 拉出独立窗口后主窗卸掉了消息，仍按「已有对话」锁死。
-        !!currentConversation && (
-          (currentConversation.messages?.length ?? 0) > 0
-          || popoutConversationIds.has(currentConversation.id)
-        )
+        !!currentConversation && (currentConversation.messages?.length ?? 0) > 0
       }
       usesChatRuntime={usesChatRuntime}
       activeProviderId={activeProviderId}
@@ -2586,7 +2492,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       onModelChange={handleModelChange}
       onThinkingLevelChange={handleThinkingLevelChange}
       onApprovalPolicyChange={handleApprovalPolicyChange}
-      onOpenPopout={(conversationId) => { void handleOpenConversationPopout(conversationId) }}
       onOpenDockTasks={handleOpenDockTasks}
       onToggleDock={handleToggleDock}
     />
@@ -2600,12 +2505,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     draftThinkingLevel,
     handleApprovalPolicyChange,
     handleModelChange,
-    handleOpenConversationPopout,
     handleOpenDockTasks,
     handleRuntimeChange,
     handleThinkingLevelChange,
     handleToggleDock,
-    popoutConversationIds,
     uiLang,
     usesChatRuntime,
   ])
@@ -2857,7 +2760,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onSelectSet={handleSidebarSelectSet}
           onSelectConversation={handleSidebarSelectConversation}
           onNewConversation={handleSidebarNewConversation}
-          onOpenInPopout={handleOpenConversationPopout}
           onConversationDeleted={handleSidebarConversationDeleted}
           onForceDropConversation={handleSidebarForceDropConversation}
           onConversationsLoaded={handleSidebarConversationsLoaded}
@@ -2993,20 +2895,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               )}
             </Suspense>
           </div>
-        ) : conversationOccupied ? (
-          <PopoutOccupiedPlaceholder
-            lang={uiLang}
-            onFocus={() => {
-              if (currentConversation?.id) void chatApi.focusConversationPopout(currentConversation.id)
-            }}
-            onDock={() => {
-              if (currentConversation?.id) void handleDockConversationPopout(currentConversation.id)
-            }}
-            sidebarCollapsed={sidebarCollapsed}
-            titlebarControls={conversationTitlebarControls}
-            onToggleSidebar={handleTitlebarToggleSidebar}
-            onNewConversation={handleTitlebarNewConversation}
-          />
         ) : (
           <ChatConversationPane
             titlebarControls={conversationTitlebarControls}
@@ -3051,7 +2939,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           />
         )}
         </ChatRouteKeepAlive>
-        {chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && (
+        {chatView === 'conversation' && !usesChatRuntime && (
           <RightDock
             subAgentRequest={dock.subAgentRequest}
             open={dockOpen}
@@ -3071,12 +2959,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onRevealInTree={dock.revealInTree}
           />
         )}
-      </div>
-      {popoutNotice && (
-        <div className="pointer-events-none absolute bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-neutral-900/90 px-3 py-1.5 text-[12px] text-neutral-50 shadow-lg">
-          {popoutNotice}
-        </div>
-      )}
       </div>
     </Profiler>
     </AsyncQuestionsContext.Provider>

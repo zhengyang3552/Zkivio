@@ -22,7 +22,6 @@ pub(crate) struct ChatRuntimeState {
     /// Signalled whenever a conversation's last reply slot is retired, so a
     /// queued send can retry its atomic reservation instead of polling.
     reply_idle: tokio::sync::Notify,
-    popout_create_lock: tokio::sync::Mutex<()>,
     conversation_create_lock: tokio::sync::Mutex<()>,
 }
 
@@ -398,10 +397,6 @@ impl ChatRuntimeState {
             }
             notified.await;
         }
-    }
-
-    pub(crate) async fn lock_popout_creation(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.popout_create_lock.lock().await
     }
 
     pub(crate) async fn lock_conversation_creation(&self) -> tokio::sync::MutexGuard<'_, ()> {

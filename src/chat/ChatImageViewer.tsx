@@ -8,6 +8,7 @@ import { api } from '../api/tauri'
 import { IconButton } from '../components/Button'
 import { alertDialog } from '../components/dialogQueue'
 import { useT } from '../components/i18n'
+import { isMobilePlatform } from './platform'
 
 type ChatImageViewerProps = {
   item: ChatImageViewerItem
@@ -105,21 +106,25 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
           </div>
         </div>
         {originalFailed ? <IconButton size="sm" label="重试加载原图" onClick={() => setRetryOriginal((value) => value + 1)}><RotateCcw size={15} /></IconButton> : null}
-        <div
-          className="flex items-center gap-1"
-          data-tauri-drag-region="false"
-        >
-          <IconButton size="md" onClick={() => void handleCopy()} disabled={!base64} label="复制图片">
-            {copied ? (
-              <Check size={17} strokeWidth={2} className="chat-motion-pop" />
-            ) : (
-              <Clipboard size={17} strokeWidth={1.85} />
-            )}
-          </IconButton>
-          <IconButton size="md" onClick={() => void handleSave()} disabled={!base64} label="图片另存为">
-            <Download size={17} strokeWidth={1.85} />
-          </IconButton>
-        </div>
+        {/* 复制/另存依赖 arboard 剪贴板与桌面保存对话框，安卓不可用；移动端改用系统长按图片
+            的「保存 / 分享」手势，故这里不渲染这两个会报错的按钮。 */}
+        {!isMobilePlatform && (
+          <div
+            className="flex items-center gap-1"
+            data-tauri-drag-region="false"
+          >
+            <IconButton size="md" onClick={() => void handleCopy()} disabled={!base64} label="复制图片">
+              {copied ? (
+                <Check size={17} strokeWidth={2} className="chat-motion-pop" />
+              ) : (
+                <Clipboard size={17} strokeWidth={1.85} />
+              )}
+            </IconButton>
+            <IconButton size="md" onClick={() => void handleSave()} disabled={!base64} label="图片另存为">
+              <Download size={17} strokeWidth={1.85} />
+            </IconButton>
+          </div>
+        )}
         <div
           className="flex items-center gap-1 rounded-full border border-neutral-200 bg-neutral-50 p-1"
           data-tauri-drag-region="false"

@@ -8,6 +8,7 @@ import { alertDialog } from '../components/dialogQueue'
 import { useCloseAnimation } from './useCloseAnimation'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
 import { base64FromDataUrl, imageExtension } from './imageData'
+import { isMobilePlatform } from './platform'
 
 export interface ChatImageMenuAnchor {
   left: number
@@ -111,30 +112,35 @@ export function ChatImageContextMenu({
       role="menu"
       onAnimationEnd={onAnimationEnd}
     >
-      <button
-        type="button"
-        role="menuitem"
-        className={itemClass}
-        disabled={!base64}
-        onClick={() => void handleCopy()}
-      >
-        {copied ? (
-          <Check size={16} strokeWidth={2} className="shrink-0 text-neutral-500 chat-motion-pop" />
-        ) : (
-          <Clipboard size={16} strokeWidth={1.75} className={iconClass} />
-        )}
-        {copied ? t.chatImageCopied : t.chatImageCopy}
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        className={itemClass}
-        disabled={!base64}
-        onClick={() => void handleSave()}
-      >
-        <Download size={16} strokeWidth={1.75} className={iconClass} />
-        {t.chatImageSaveAs}
-      </button>
+      {/* 复制/另存依赖 arboard 与桌面保存对话框，安卓不可用，移动端不渲染。 */}
+      {!isMobilePlatform && (
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClass}
+          disabled={!base64}
+          onClick={() => void handleCopy()}
+        >
+          {copied ? (
+            <Check size={16} strokeWidth={2} className="shrink-0 text-neutral-500 chat-motion-pop" />
+          ) : (
+            <Clipboard size={16} strokeWidth={1.75} className={iconClass} />
+          )}
+          {copied ? t.chatImageCopied : t.chatImageCopy}
+        </button>
+      )}
+      {!isMobilePlatform && (
+        <button
+          type="button"
+          role="menuitem"
+          className={itemClass}
+          disabled={!base64}
+          onClick={() => void handleSave()}
+        >
+          <Download size={16} strokeWidth={1.75} className={iconClass} />
+          {t.chatImageSaveAs}
+        </button>
+      )}
       {onOpenViewer ? (
         <button
           type="button"

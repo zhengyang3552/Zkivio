@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { PanelRight, SquareArrowOutUpRight } from 'lucide-react'
+import { PanelRight } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { i18n, type Lang } from '../components/i18n'
 import { BackgroundJobsIndicator } from './BackgroundJobsIndicator'
@@ -25,7 +25,6 @@ export interface ConversationTitlebarControlsProps {
   onModelChange: (providerId: string, model: string) => void | Promise<void>
   onThinkingLevelChange: (level: ThinkingLevel | null) => void | Promise<void>
   onApprovalPolicyChange: (policy: string) => void
-  onOpenPopout: (conversationId: string) => void
   onOpenDockTasks: () => void
   onToggleDock: () => void
 }
@@ -46,7 +45,6 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   onModelChange,
   onThinkingLevelChange,
   onApprovalPolicyChange,
-  onOpenPopout,
   onOpenDockTasks,
   onToggleDock,
 }: ConversationTitlebarControlsProps) {
@@ -94,18 +92,6 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
       </div>
       <div className="min-w-5 flex-1" data-tauri-drag-region />
       <div className="flex min-w-0 shrink items-center justify-end gap-1">
-        {conversationId && (
-          <div className="shrink-0" data-tauri-drag-region="false">
-            <IconButton
-              label={i18n[uiLang].chatOpenInNewWindow}
-              size="sm"
-              variant="ghost"
-              onClick={() => onOpenPopout(conversationId)}
-            >
-              <SquareArrowOutUpRight size={15} />
-            </IconButton>
-          </div>
-        )}
         {!usesChatRuntime && (
           <div className="shrink-0" data-tauri-drag-region="false">
             <IconButton

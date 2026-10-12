@@ -204,7 +204,6 @@ export interface SidebarProps {
     scope?: ConversationSelectionScope,
   ) => void
   onNewConversation: () => void
-  onOpenInPopout?: (conversationId: string) => void | Promise<void>
   onConversationDeleted?: (id: string) => void
   onForceDropConversation?: (id: string) => void
   /** 真实会话列表 refetch 落地后回调（父组件据此剪枝乐观条目，见 visibleConversations 注释）。 */
@@ -619,7 +618,6 @@ export const Sidebar = memo(function Sidebar({
   onSelectSet,
   onSelectConversation,
   onNewConversation,
-  onOpenInPopout,
   onConversationDeleted,
   onForceDropConversation,
   onConversationsLoaded,
@@ -1829,7 +1827,6 @@ export const Sidebar = memo(function Sidebar({
                           onSelectConversation={(id, conversation) => {
                             onSelectConversation(id, conversation, { project, set: null })
                           }}
-                          onOpenInPopout={onOpenInPopout}
                           onRenameConversation={handleRenameConversation}
                           onRegenerateConversationTitle={handleRegenerateConversationTitle}
                           onTogglePinConversation={handleTogglePinConversation}
@@ -1982,7 +1979,6 @@ export const Sidebar = memo(function Sidebar({
                               onSelectConversation={(id, conversation) => {
                                 onSelectConversation(id, conversation, { project: null, set })
                               }}
-                              onOpenInPopout={onOpenInPopout}
                               onRenameConversation={handleRenameConversation}
                               onRegenerateConversationTitle={handleRegenerateConversationTitle}
                               onTogglePinConversation={handleTogglePinConversation}
@@ -2056,7 +2052,6 @@ export const Sidebar = memo(function Sidebar({
                           set: sets.find(set => set.id === setId) ?? null,
                         } : { project: null, set: null })
                       }}
-                      onOpenInPopout={onOpenInPopout}
                       onRenameConversation={handleRenameConversation}
                       onRegenerateConversationTitle={handleRegenerateConversationTitle}
                       onTogglePinConversation={handleTogglePinConversation}

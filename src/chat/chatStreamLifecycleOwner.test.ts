@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatStreamPayload } from '../api/tauri'
 import { createChatExecutionOwner } from './chatExecutionOwner'
-import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
 import { createChatStreamLifecycleOwner } from './chatStreamLifecycleOwner'
 import { beginConversationTransition, captureConversationNavigation, isCurrentConversationNavigation } from './conversationTransitionStore'
 import { getActiveGroup, resetGroups } from './groupStreamingStore'
@@ -102,31 +101,6 @@ describe('chat stream lifecycle owner', () => {
     expect(await owner.settleExternalTerminal(final.permit, async () => null, () => {})).toBe(true)
     expect(execution.snapshot('a').inFlight).toBe(false)
     expect(preview.summary('a')).toBeNull()
-    preview.dispose()
-  })
-
-  it('keeps a popped-out group hidden and unsettled when it docks before its first terminal', async () => {
-    const execution = createChatExecutionOwner()
-    const preview = createStreamPreviewOwner()
-    const lifecycle = createChatStreamLifecycleOwner(execution, preview)
-    const popout = createChatPopoutOwnershipOwner({
-      listConversationPopouts: vi.fn(), openConversationPopout: vi.fn(), closeConversationPopout: vi.fn(),
-    })
-    popout.changed(['a'])
-    const receive = (event: ChatStreamPayload) => {
-      const ownership = popout.observeRun(event)
-      return lifecycle.receive(event, { project: !ownership.suppressMainProjection })
-    }
-    receive(packet('one', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 0 }))
-    receive(packet('two', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 1 }))
-    popout.changed([])
-    expect(receive(packet('one', 'run_completed')).kind).toBe('pending')
-    expect(execution.snapshot('a').inFlight).toBe(true)
-    const last = receive(packet('two', 'run_completed'))
-    if (last.kind !== 'ready') throw new Error('Expected last arm to settle')
-    expect(await lifecycle.settleExternalTerminal(last.permit, async () => null, () => {})).toBe(true)
-    expect(execution.snapshot('a').inFlight).toBe(false)
-    expect(getActiveGroup('a')).toBeUndefined()
     preview.dispose()
   })
 

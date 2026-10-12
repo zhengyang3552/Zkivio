@@ -17,8 +17,7 @@ impl ViewingWindows {
                 .next()
                 .and_then(|path| path.strip_prefix("chat/"))
         } else {
-            // A popout may only claim the conversation bound to its own label.
-            super::popout::conversation_id_from_label(label)
+            None
         };
         let id = id.filter(|id| {
             id.starts_with("conv_")
@@ -87,17 +86,6 @@ mod tests {
         windows.update("chat", "#chat/conv_second", true);
         windows.0.remove("chat");
         assert!(!windows.contains("conv_second"));
-    }
-
-    #[test]
-    fn popout_identity_is_independent_of_main_window_and_reported_route() {
-        let mut windows = ViewingWindows::default();
-        windows.update("chat-popout-conv_pop", "#chat/conv_spoof", true);
-        windows.update("chat", "#chat/settings", true);
-        assert!(windows.contains("conv_pop"));
-        assert!(!windows.contains("conv_spoof"));
-        windows.update("chat-popout-conv_pop", "", false);
-        assert!(!windows.contains("conv_pop"));
     }
 
     #[test]

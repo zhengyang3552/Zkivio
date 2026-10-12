@@ -21,7 +21,6 @@ type ClearChatDecision = 'busy' | 'cancelled' | 'confirmed'
 interface NavigationPorts {
   currentConversation: () => Conversation | null
   currentConversationId: () => string | null
-  listPopouts: () => Promise<ReadonlySet<string>>
   readConversation: (conversationId: string) => Promise<Conversation>
   readConversationWindow?: (conversationId: string) => Promise<Conversation>
   readHistoryPage: (conversationId: string, before: number) => Promise<ConversationHistoryPage>
@@ -39,8 +38,6 @@ interface NavigationPorts {
   /** Synchronously drop local execution state, optionally clear this view, and refresh the list. */
   finalizeDeletedChat: (conversationId: string, clearCurrentView: boolean) => void
   reportClearError: (conversationId: string, message: string) => void
-  focusPopout: (conversationId: string) => void
-  occupyPopout: (conversationId: string) => void
   prepareSelection: (focusMessageId: string | null, fresh: boolean) => void
   showHistoryTarget: (conversation: Conversation, messageId: string) => void
   reportHistoryError: (conversationId: string, message: string | null) => void
@@ -55,7 +52,6 @@ interface NavigationPorts {
 interface ReloadOptions {
   force?: boolean
   transitionRequestId?: number
-  loadPoppedOut?: boolean
   initialWindow?: boolean
   /** An execution permit may expire while the read is pending. */
   canCommit?: () => boolean
@@ -223,18 +219,10 @@ export function createChatNavigationController(ports: NavigationPorts) {
         && ports.currentConversationId() === conversationId
         && startingConversationId === conversationId
     }
-    const ownership = await awaitCurrentConversationNavigation(
-      options?.loadPoppedOut ? Promise.resolve(new Set<string>()) : ports.listPopouts(),
-      canCommitResult,
-    )
-    if (ownership.status === 'stale') return
-    if (ownership.value.has(conversationId)) {
-      ports.occupyPopout(conversationId)
-      if (transitionRequestId !== undefined) {
-        completeConversationTransition(conversationId, transitionRequestId)
-      }
-      return
-    }
+    // Yield once before committing so a navigation superseded during the same
+    // tick (e.g. a second selectConversation) is rejected before any read starts.
+    const lease = await awaitCurrentConversationNavigation(Promise.resolve(new Set<string>()), canCommitResult)
+    if (lease.status === 'stale') return
     if (ports.isConversationInFlight(conversationId) && !options?.force) return
     try {
       const conversation = await (options?.initialWindow && !ports.isConversationInFlight(conversationId)
@@ -285,31 +273,21 @@ export function createChatNavigationController(ports: NavigationPorts) {
       const inFlight = getConversationTransitionSnapshot()
       if (inFlight.loading && inFlight.targetConversationId !== conversationId) leaveConversation()
       const navigationLease = captureConversationNavigation()
-      const ownership = await awaitCurrentConversationNavigation(
-        ports.listPopouts(),
+      const lease = await awaitCurrentConversationNavigation(
+        Promise.resolve(new Set<string>()),
         () => isCurrentConversationNavigation(navigationLease),
       )
-      if (ownership.status === 'stale') return
-      if (ownership.value.has(conversationId)) {
-        ports.focusPopout(conversationId)
-        ports.occupyPopout(conversationId)
-        return
-      }
+      if (lease.status === 'stale') return
       ports.prepareSelection(hint?.focusMessageId ?? null, false)
       syncConversationRoute(conversationId)
       return
     }
     const requestId = beginConversationTransition(conversationId, hint)
-    const ownership = await awaitCurrentConversationNavigation(
-      ports.listPopouts(),
+    const lease = await awaitCurrentConversationNavigation(
+      Promise.resolve(new Set<string>()),
       () => isCurrentConversationTransition(requestId, conversationId),
     )
-    if (ownership.status === 'stale') return
-    if (ownership.value.has(conversationId)) {
-      ports.focusPopout(conversationId)
-      ports.occupyPopout(conversationId)
-      return
-    }
+    if (lease.status === 'stale') return
     ports.prepareSelection(hint?.focusMessageId ?? null, true)
     try {
       const conversation = await ((hint?.focusMessageId || ports.isConversationInFlight(conversationId))
@@ -330,16 +308,6 @@ export function createChatNavigationController(ports: NavigationPorts) {
     }
   }
 
-  const reconcilePopouts = async (previous: ReadonlySet<string>, next: ReadonlySet<string>) => {
-    const currentId = ports.currentConversationId()
-    if (!currentId) return
-    if (next.has(currentId) && !previous.has(currentId)) {
-      ports.occupyPopout(currentId)
-    } else if (previous.has(currentId) && !next.has(currentId)) {
-      await reloadConversation(currentId, { force: true, loadPoppedOut: true })
-    }
-  }
-
   return {
     loadOlderHistory,
     focusHistoryMessage,
@@ -354,7 +322,6 @@ export function createChatNavigationController(ports: NavigationPorts) {
     openConversation,
     reloadConversation,
     selectConversation,
-    reconcilePopouts,
     syncConversationRoute,
   }
 }
