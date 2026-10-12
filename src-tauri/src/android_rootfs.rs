@@ -192,6 +192,9 @@ fn prepare_runtime(layout: &RootfsLayout) -> Result<(), String> {
     if let Some(parent) = layout.loader.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create loader dir: {e}"))?;
     }
+    if let Some(parent) = layout.proot.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create proot bin dir: {e}"))?;
+    }
     fs::create_dir_all(&layout.lib_dir).map_err(|e| format!("create lib dir: {e}"))?;
     write_executable(&layout.proot, PROOT_BIN)?;
     write_executable(&layout.loader, PROOT_LOADER)?;
