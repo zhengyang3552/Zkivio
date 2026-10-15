@@ -154,6 +154,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [editorController])
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
+  // 移动端（Android）二级菜单：null = 一级设置列表；否则为已进入的子页。
+  // 桌面端不使用（桌面是常驻侧栏 + 内容区的双栏形态）。
+  const [mobilePane, setMobilePane] = useState<SettingsTab | null>(null)
   const [themeDraft, setThemeDraft] = useState<ThemeDefinition | null>(null)
   // 使用统计页内的视图：应用用量 / 调用明细 / 请求调试
   const [usageView, setUsageView] = useState<'app' | 'calls' | 'debug'>('app')
@@ -760,7 +763,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  setActiveTab(item.id)
+                  // 移动端进入二级页；桌面端只切内容区。
+                  if (isMobilePlatform) setMobilePane(item.id)
+                }}
                 className={`settings-embedded-nav-item ${activeTab === item.id ? 'active' : ''}`}
                 data-tauri-drag-region="false"
               >
@@ -820,6 +827,18 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           >
             <div key={activeTab} className={`settings-section-title-enter${activeTab === 'usage' ? ' settings-usage-title' : ''}`}>
               <div className="flex items-center gap-3">
+                {/* 移动端二级页返回：回到一级设置列表。 */}
+                {variant === 'embedded' && isMobilePlatform && mobilePane !== null && (
+                  <button
+                    type="button"
+                    className="settings-mobile-back"
+                    onClick={() => setMobilePane(null)}
+                    aria-label={lang === 'zh' ? '返回设置' : 'Back to settings'}
+                    data-tauri-drag-region="false"
+                  >
+                    <ArrowLeft size={18} strokeWidth={2} />
+                  </button>
+                )}
                 <div className="kv-page-title">{pageMeta[activeTab].title}</div>
                 {activeTab === 'usage' && (
                   <div className="inline-flex items-center gap-0.5 rounded-full bg-[var(--bg-input-subtle)] p-0.5" data-tauri-drag-region="false">
@@ -1245,13 +1264,16 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }
 
   if (variant === 'embedded') {
+    // 移动端二级菜单：未选子页时只显示一级设置列表（导航列占满整屏），
+    // 进入子页后隐藏导航、内容区占满，靠页头返回按钮回到一级。
+    const mobileDetail = isMobilePlatform && !hideNav && mobilePane !== null
     return (
       <div
         className={`settings-embedded kv flex min-h-0 min-w-0 flex-1 ${
           reserveTrafficLightSpace ? 'settings-embedded--traffic-safe' : ''
         }`}
       >
-        {!hideNav && (
+        {!hideNav && !mobileDetail && (
           <aside className="settings-embedded-nav">
             <h2 className="settings-embedded-nav-title" onMouseDown={handleSettingsDragMouseDown}>
               {t.settings}
@@ -1259,7 +1281,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {categoryNav}
           </aside>
         )}
-        {settingsMain}
+        {(!isMobilePlatform || hideNav || mobileDetail) && settingsMain}
         {settingsModals}
       </div>
     )

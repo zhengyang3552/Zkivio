@@ -121,3 +121,110 @@ html.mobile .kv-select,
 html.mobile .kv-input {
   max-width: 100%;
 }
+
+/* ===== 7. 设置页移动端二级菜单 =====
+ * 桌面设置是「常驻导航列 + 内容区」双栏；手机上 52px 图标轨 + 内容区仍然挤。
+ * 这里改成标准二级菜单（SettingsShell 的 mobilePane 状态驱动）：
+ *   - 一级：导航列占满整屏，13 个分类排成带分隔线的列表行（≥48px 触摸命中）；
+ *   - 二级：内容区占满整屏，页头左侧有返回按钮回到一级。
+ * 全部规则挂在 html.mobile 下（0-2-0），可盖掉 settings CSS 里容器查询内的窄栏规则；
+ * 桌面端一行都不受影响。 */
+html.mobile .settings-embedded-nav {
+  width: 100%;
+  border-right: none;
+  /* 顶部让出状态栏/挖孔；移动端没有 traffic-safe 分支，保持自己的安全区。 */
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
+  padding-bottom: 0;
+}
+
+/* 一级页头「设置」：覆盖 ≤820px 的 display:none，恢复成页面大标题。 */
+html.mobile .settings-embedded-nav-title {
+  display: block;
+  margin: 0 8px 12px;
+  padding-top: 0;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+html.mobile .settings-embedded-nav-list {
+  padding: 0 16px;
+  gap: 0;
+}
+
+html.mobile .settings-embedded-nav-item {
+  justify-content: flex-start;
+  gap: 14px;
+  padding: 0 4px;
+  min-height: 48px;
+  border-radius: 0;
+  font-size: 15px;
+}
+
+/* 列表行的分隔线（最后一行「关于」之后不加）。 */
+html.mobile .settings-embedded-nav-item + .settings-embedded-nav-item {
+  border-top: 1px solid var(--divider, rgba(0, 0, 0, 0.06));
+}
+
+html.mobile .settings-embedded-nav-item:active {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+html.mobile .settings-embedded-nav-item > span:not(.settings-embedded-nav-icon) {
+  display: inline;
+}
+
+html.mobile .settings-embedded-nav-icon {
+  height: 22px;
+  width: 22px;
+}
+
+/* 右侧指示箭头（不改 TSX，纯 CSS 画 chevron）。 */
+html.mobile .settings-embedded-nav-item::after {
+  content: '';
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: rotate(-45deg);
+}
+
+/* 底部「返回对话」：恢复文字 + 通栏。 */
+html.mobile .settings-embedded-back {
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 20px;
+  min-height: 52px;
+  font-size: 15px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html.mobile .settings-embedded-back > span:not(.settings-embedded-nav-icon) {
+  display: inline;
+}
+
+/* 二级页页头返回按钮。 */
+html.mobile .settings-mobile-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-left: -6px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--text);
+  cursor: default;
+}
+
+html.mobile .settings-mobile-back:active {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+/* 二级页内容区顶部让出状态栏。 */
+html.mobile .settings-embedded-main .settings-embedded-header {
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+}
