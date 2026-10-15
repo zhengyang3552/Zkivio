@@ -214,6 +214,8 @@ export interface SidebarProps {
   onOpenUsage: () => void
   /** 打开设置「工作区」页（仅 Android）。 */
   onOpenWorkspace?: () => void
+  /** 打开设置「记忆」页（应用内查看 / 编辑记忆）。 */
+  onOpenMemory?: () => void
   settingsActive?: boolean
   extensionsActive?: ExtensionsNavItem | null
   collapsed: boolean
@@ -235,6 +237,7 @@ function SidebarUserFooter({
   onSelectLang,
   onOpenUsage,
   onOpenWorkspace,
+  onOpenMemory,
 }: {
   profile: ChatUserProfile
   lang: Lang
@@ -243,6 +246,7 @@ function SidebarUserFooter({
   onSelectLang: (lang: Lang) => void
   onOpenUsage: () => void
   onOpenWorkspace?: () => void
+  onOpenMemory?: () => void
 }) {
   const [menuRect, setMenuRect] = useState<{ left: number; top: number; width: number } | null>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -305,6 +309,7 @@ function SidebarUserFooter({
           onSelectLang={onSelectLang}
           onOpenUsage={onOpenUsage}
           onOpenWorkspace={onOpenWorkspace}
+          onOpenMemory={onOpenMemory}
           onClose={() => setMenuRect(null)}
         />
       )}
@@ -626,6 +631,7 @@ export const Sidebar = memo(function Sidebar({
   onSelectLang,
   onOpenUsage,
   onOpenWorkspace,
+  onOpenMemory,
   settingsActive = false,
   extensionsActive = null,
   collapsed,
@@ -2080,6 +2086,7 @@ export const Sidebar = memo(function Sidebar({
         onSelectLang={onSelectLang}
         onOpenUsage={onOpenUsage}
         onOpenWorkspace={onOpenWorkspace}
+        onOpenMemory={onOpenMemory}
       />
 
       {projectMenuState && menuProject && (

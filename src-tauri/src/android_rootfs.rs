@@ -47,11 +47,23 @@ pub const ROOTFS_VERSION: &str = "3.24.2";
 const ROOTFS_SIZE: u64 = 4_028_030;
 const ROOTFS_SHA256: &str = "9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773";
 const ROOTFS_FILE: &str = "alpine-minirootfs-3.24.2-aarch64.tar.gz";
-/// 官方源在前，镜像在后：国内网络下官方 CDN 常慢或不通，失败即换。
+/// 官方源在前，国内镜像在后：国内网络下官方 CDN 常慢或不通，失败即换。
+/// 多个镜像互为备份（清华 / 中科大 / 阿里云），手机网络下总有一个能通。
 const ROOTFS_SOURCES: &[&str] = &[
     "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
     "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+    "https://mirrors.ustc.edu.cn/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+    "https://mirrors.aliyun.com/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
 ];
+
+/// 从下载 URL 取主机名，用于失败信息（完整 URL 太长，前端展示不下）。
+fn source_host(url: &str) -> String {
+    url.split("//")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or(url)
+        .to_string()
+}
 
 const ROOT_DIR: &str = "rootfs";
 const RUNTIME_DIR: &str = "rootfs-runtime";
@@ -266,8 +278,9 @@ pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, Strin
         state.message = None;
     });
 
-    // 下载：逐源尝试，边下边算 sha256，下完立即校验。
-    let mut last_error = String::new();
+    // 下载：逐源尝试，边下边算 sha256，下完立即校验。失败原因全部累积，
+    // 便于区分「网络不通」还是「校验失败」。
+    let mut failures: Vec<String> = Vec::new();
     let mut verified = false;
     for source in ROOTFS_SOURCES {
         match download(&app, &layout, source).await {
@@ -276,20 +289,21 @@ pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, Strin
                 break;
             }
             Err(err) => {
-                last_error = err;
+                failures.push(err);
                 update(&app, |state| {
-                    state.message = Some(last_error.clone());
+                    state.message = Some(format!("下载失败，正在换源重试…\n{}", failures.join("；")));
                 });
             }
         }
     }
     if !verified {
         let _ = fs::remove_file(&layout.download);
+        let summary = format!("下载失败：{}", failures.join("；"));
         update(&app, |state| {
             state.status = "failed".to_string();
-            state.message = Some(format!("下载失败：{last_error}"));
+            state.message = Some(summary.clone());
         });
-        return Err(last_error);
+        return Err(summary);
     }
 
     update(&app, |state| {
@@ -363,6 +377,7 @@ pub async fn android_rootfs_uninstall(app: AppHandle) -> Result<RootfsState, Str
 async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
 
+    let host = source_host(source);
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(20))
         .timeout(std::time::Duration::from_secs(900))
@@ -372,9 +387,9 @@ async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Resul
         .get(source)
         .send()
         .await
-        .map_err(|e| format!("{source}: {e}"))?;
+        .map_err(|e| format!("{host}: 连接失败（{e}）"))?;
     if !response.status().is_success() {
-        return Err(format!("{source}: HTTP {}", response.status()));
+        return Err(format!("{host}: HTTP {}", response.status()));
     }
     let total = response.content_length().unwrap_or(ROOTFS_SIZE);
 
@@ -387,7 +402,7 @@ async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Resul
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| format!("下载中断: {e}"))?
+        .map_err(|e| format!("{host}: 下载中断（{e}）"))?
     {
         hasher.update(&chunk);
         file.write_all(&chunk)
@@ -410,7 +425,7 @@ async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Resul
     let digest = heap_hex(hasher.finalize().as_slice());
     if digest != ROOTFS_SHA256 {
         return Err(format!(
-            "{source}: 校验不通过（期望 {}，实际 {digest}）",
+            "{host}: 校验不通过（期望 {}，实际 {digest}）",
             &ROOTFS_SHA256[..16]
         ));
     }

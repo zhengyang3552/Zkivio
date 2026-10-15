@@ -2425,6 +2425,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     })
   }, [openEmbeddedSettings, runAfterLeavingEditors])
 
+  const handleSidebarOpenMemory = useCallback(() => {
+    runAfterLeavingEditors(() => {
+      setExtensionsNavItem(null)
+      openEmbeddedSettings('memory')
+    })
+  }, [openEmbeddedSettings, runAfterLeavingEditors])
+
   const handleSidebarSearchOpenChange = useCallback((open: boolean) => {
     if (open) {
       runAfterLeavingSettings(() => setSearchOpen(true))
@@ -2770,6 +2777,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onSelectLang={handleSidebarSelectLang}
           onOpenUsage={handleSidebarOpenUsage}
           onOpenWorkspace={isMobilePlatform ? handleSidebarOpenWorkspace : undefined}
+          onOpenMemory={handleSidebarOpenMemory}
           settingsActive={settingsPanelActive}
           extensionsActive={extensionsActive}
           collapsed={sidebarCollapsed || settingsPanelActive}

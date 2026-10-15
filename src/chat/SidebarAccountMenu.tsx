@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { BarChart3, Globe, HardDrive } from 'lucide-react'
+import { BarChart3, Brain, Globe, HardDrive } from 'lucide-react'
 import { isMobilePlatform } from './platform'
 import { useCloseAnimation } from './useCloseAnimation'
 import { i18n, type Lang } from '../components/i18n'
@@ -16,6 +16,8 @@ interface SidebarAccountMenuProps {
   onOpenUsage: () => void
   /** 打开设置「工作区」页（仅 Android：自带 rootfs 的按需下载 / 卸载）。 */
   onOpenWorkspace?: () => void
+  /** 打开设置「记忆」页（在应用内查看 / 编辑 L1、L2 记忆）。 */
+  onOpenMemory?: () => void
   onClose: () => void
 }
 
@@ -25,6 +27,7 @@ export function SidebarAccountMenu({
   onSelectLang,
   onOpenUsage,
   onOpenWorkspace,
+  onOpenMemory,
   onClose: onCloseProp,
 }: SidebarAccountMenuProps) {
   const t = i18n[lang]
@@ -96,6 +99,21 @@ export function SidebarAccountMenu({
           {todayTokens == null ? '' : formatTokensCompact(todayTokens)}
         </span>
       </button>
+
+      {onOpenMemory && (
+        <button
+          type="button"
+          role="menuitem"
+          className="kv-menu-item"
+          onClick={() => {
+            onOpenMemory()
+            onClose()
+          }}
+        >
+          <Brain strokeWidth={1.75} />
+          {t.memory}
+        </button>
+      )}
 
       {isMobilePlatform && onOpenWorkspace && (
         <button
