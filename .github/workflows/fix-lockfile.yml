@@ -1,0 +1,40 @@
+name: Fix lockfile
+
+# 手动触发：当上游同步/手动改 Cargo.toml 后 Cargo.lock 与 manifest 脱节
+# （cargo test --locked 会报 "cannot update the lock file"），用本工作流在
+# CI 环境重新生成 lock 并自动提交回当前分支。generate-lockfile 只做依赖
+# 解析，不编译，无需 Tauri 系统库。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate Cargo.lock
+        working-directory: src-tauri
+        run: cargo generate-lockfile
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet src-tauri/Cargo.lock; then
+            echo "Cargo.lock already in sync with Cargo.toml"
+          else
+            git add src-tauri/Cargo.lock
+            git commit -m "chore(deps): regenerate Cargo.lock to match Cargo.toml"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
