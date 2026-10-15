@@ -11,6 +11,9 @@ on:
   pull_request:
     branches: [Linux]
     paths: ['src-tauri/**', '.github/workflows/rust-check.yml']
+  # GITHUB_TOKEN 的 push 不触发其他工作流（防递归），fix-lockfile 提交回的
+  # Cargo.lock 无法自动唤起本门禁——补一个手动入口。
+  workflow_dispatch:
 
 jobs:
   cargo-check:
