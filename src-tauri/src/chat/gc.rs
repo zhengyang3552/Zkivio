@@ -144,7 +144,7 @@ fn alive_conversation_ids(conversations_dir: &Path) -> HashSet<String> {
     alive
 }
 
-/// 扫一个工作区根：删空目录；会话已删且目录为空 ⇒ 孤儿。
+/// 扫一个工作区根：仅删除会话已不存在的空目录。
 ///
 /// **非空的孤儿一律保留**：里面是用户/模型产出的真实文件（实测残留里有 `hello.py`、
 /// `jilin-weather-tomorrow.html` 这种），删掉就是数据丢失。只记数，让用户自己处置。
@@ -171,13 +171,12 @@ fn sweep_workspace_root(root: &Path, alive: &HashSet<String>, report: &mut GcRep
             }
             continue;
         }
-        // 空目录：无论会话还在不在都可以删——真要用时 `ensure_effective_cwd` 会重建。
+        // 活会话的旧目录是目录绑定的依据，删掉会导致下次解析切到共享根。
+        if !orphan {
+            continue;
+        }
         if fs::remove_dir(&path).is_ok() {
-            if orphan {
-                report.orphan_workspaces += 1;
-            } else {
-                report.empty_workspaces += 1;
-            }
+            report.orphan_workspaces += 1;
         }
     }
 }
@@ -457,13 +456,13 @@ mod tests {
         assert!(!is_conversation_dir_name("my-project"));
     }
 
-    /// 空目录删掉；非空的孤儿保留（里面是用户产物）；`__global__` 绝不碰。
+    /// 仅删除空孤儿；活会话的目录绑定、非空孤儿和 `__global__` 均保留。
     #[test]
     fn sweep_workspace_root_removes_empty_keeps_nonempty_orphans() {
         let root = temp_root("ws");
         let alive: HashSet<String> = ["conv_alive".to_string()].into_iter().collect();
 
-        fs::create_dir_all(root.join("conv_alive")).unwrap(); // 活会话，空 → 删
+        fs::create_dir_all(root.join("conv_alive")).unwrap(); // 活会话，空目录也保留
         fs::create_dir_all(root.join("conv_dead_empty")).unwrap(); // 孤儿，空 → 删
         fs::create_dir_all(root.join("conv_dead_full")).unwrap();
         fs::write(root.join("conv_dead_full/hello.py"), "print(1)").unwrap(); // 孤儿，非空 → 留
@@ -472,10 +471,15 @@ mod tests {
         let mut report = GcReport::default();
         sweep_workspace_root(&root, &alive, &mut report);
 
-        assert_eq!(report.empty_workspaces, 1);
+        assert_eq!(report.empty_workspaces, 0);
         assert_eq!(report.orphan_workspaces, 1);
         assert_eq!(report.kept_orphan_workspaces, 1);
-        assert!(!root.join("conv_alive").exists());
+        assert!(root.join("conv_alive").is_dir());
+        assert_eq!(
+            crate::native_tools::ordinary_workspace_directory(root.to_str().unwrap(), "conv_alive")
+                .unwrap(),
+            fs::canonicalize(root.join("conv_alive")).unwrap()
+        );
         assert!(!root.join("conv_dead_empty").exists());
         assert!(
             root.join("conv_dead_full/hello.py").exists(),
@@ -527,7 +531,8 @@ mod tests {
         let referenced: HashSet<String> =
             ["msgimg-referenced.png".to_string()].into_iter().collect();
 
-        let mut orphans = unreferenced_attachment_names(Path::new("attachments"), &files, &referenced);
+        let mut orphans =
+            unreferenced_attachment_names(Path::new("attachments"), &files, &referenced);
         orphans.sort();
         assert_eq!(orphans, vec!["artifact-orphan.png", "msgimg-orphan.png"]);
     }
@@ -537,12 +542,10 @@ mod tests {
     #[test]
     fn unreferenced_returns_nothing_when_reference_set_is_empty() {
         let files = vec!["msgimg-a.png".to_string(), "artifact-b.png".to_string()];
-        assert!(unreferenced_attachment_names(
-            Path::new("attachments"),
-            &files,
-            &HashSet::new(),
-        )
-        .is_empty());
+        assert!(
+            unreferenced_attachment_names(Path::new("attachments"), &files, &HashSet::new(),)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -551,7 +554,11 @@ mod tests {
         let dir = root.join("conv_alive_attachments");
         let retained = "artifact-retained.pdf";
         let orphan = "artifact-orphan.pdf";
-        let files = vec![retained.to_string(), orphan.to_string(), "att_user.pdf".to_string()];
+        let files = vec![
+            retained.to_string(),
+            orphan.to_string(),
+            "att_user.pdf".to_string(),
+        ];
         for reference in [
             retained.to_string(),
             format!("./{retained}"),
@@ -559,12 +566,18 @@ mod tests {
             dir.join(".").join(retained).to_string_lossy().into_owned(),
         ] {
             let references = HashSet::from([reference]);
-            assert_eq!(unreferenced_attachment_names(&dir, &files, &references), vec![orphan]);
+            assert_eq!(
+                unreferenced_attachment_names(&dir, &files, &references),
+                vec![orphan]
+            );
         }
         for reference in [
             root.join(orphan).to_string_lossy().into_owned(),
             dir.join("..").join(orphan).to_string_lossy().into_owned(),
-            dir.join("nested").join(orphan).to_string_lossy().into_owned(),
+            dir.join("nested")
+                .join(orphan)
+                .to_string_lossy()
+                .into_owned(),
             format!("../{orphan}"),
             format!("C:\\outside\\{orphan}"),
             format!("\\\\server\\outside\\{orphan}"),
@@ -574,7 +587,10 @@ mod tests {
             assert!(unreferenced_attachment_names(&dir, &files, &references).is_empty());
             // Nor may its basename protect a different, genuinely orphaned managed file.
             let references = HashSet::from([retained.to_string(), reference]);
-            assert_eq!(unreferenced_attachment_names(&dir, &files, &references), vec![orphan]);
+            assert_eq!(
+                unreferenced_attachment_names(&dir, &files, &references),
+                vec![orphan]
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -583,12 +599,27 @@ mod tests {
     #[test]
     fn attachment_lookup_accepts_windows_drive_unc_and_forward_slash_paths() {
         for (dir, reference) in [
-            (r"C:\data\conv_a_attachments", r"C:\data\conv_a_attachments\artifact-a.pdf"),
-            (r"C:\data\conv_a_attachments", "C:/data/conv_a_attachments/artifact-a.pdf"),
-            (r"\\server\data\conv_a_attachments", r"\\server\data\conv_a_attachments\artifact-a.pdf"),
-            (r"\\?\C:\data\conv_a_attachments", r"\\?\C:\data\conv_a_attachments\artifact-a.pdf"),
+            (
+                r"C:\data\conv_a_attachments",
+                r"C:\data\conv_a_attachments\artifact-a.pdf",
+            ),
+            (
+                r"C:\data\conv_a_attachments",
+                "C:/data/conv_a_attachments/artifact-a.pdf",
+            ),
+            (
+                r"\\server\data\conv_a_attachments",
+                r"\\server\data\conv_a_attachments\artifact-a.pdf",
+            ),
+            (
+                r"\\?\C:\data\conv_a_attachments",
+                r"\\?\C:\data\conv_a_attachments\artifact-a.pdf",
+            ),
         ] {
-            let files = vec!["artifact-a.pdf".to_string(), "artifact-orphan.pdf".to_string()];
+            let files = vec![
+                "artifact-a.pdf".to_string(),
+                "artifact-orphan.pdf".to_string(),
+            ];
             let references = HashSet::from([reference.to_string()]);
             assert_eq!(
                 unreferenced_attachment_names(Path::new(dir), &files, &references),

@@ -21,6 +21,7 @@ pub mod desktop_pet;
 pub mod dock;
 pub mod external_agents;
 pub mod fonts;
+mod html_preview;
 pub mod lens;
 #[cfg(not(target_os = "android"))]
 pub mod lens_commands;
@@ -218,7 +219,8 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol("kivio-preview", |_context, request| html_preview::serve(request));
     // 单实例 / 全局热键 / 开机自启都是桌面概念（多实例、系统级热键、登录项），
     // Android 上不注册这三个插件，其余流程共用。
     #[cfg(not(target_os = "android"))]
@@ -444,18 +446,19 @@ pub fn run() {
                     .app_data_dir()
                     .map_err(|err| format!("app_data_dir unavailable: {err}"))?
                     .join("scheduled_tasks"),
-            ));
+            )?);
             app.manage(chat::media_station::MediaStation::default());
             app.manage(connectors::OAuthFlows::default());
 
             // 崩溃残留的中断草稿日志:按每个 message_id 的最后一行合并回会话文件后删除。
-            // setup 阶段不可能有活跃 run,没有并发写冲突。
+            // setup 返回前完成草稿恢复，确保 UI run 不与日志恢复/删除并发。
             // 必须放在 ConversationRepository manage 之后：恢复路径要取仓库状态，
             // 曾在 manage 之前 spawn，有草稿残留且调度赶巧时直接 state() panic、启动即崩。
             {
                 let handle = app.handle().clone();
+                // Recovery only awaits filesystem/repository work, never the UI event loop.
+                tauri::async_runtime::block_on(chat::draft_journal::recover_orphan_drafts(&handle));
                 tauri::async_runtime::spawn(async move {
-                    chat::draft_journal::recover_orphan_drafts(&handle).await;
                     if let Err(error) = chat::goal::pause_unfinished_after_restart(&handle).await {
                         eprintln!("Failed to pause unfinished Goals after restart: {error}");
                     }
@@ -599,6 +602,8 @@ pub fn run() {
         #[cfg(not(target_os = "android"))]
         let builder = builder
         .invoke_handler(tauri::generate_handler![
+            html_preview::create_html_preview,
+            html_preview::release_html_preview,
             desktop_pet::desktop_pet_get_enabled,
             desktop_pet::desktop_pet_set_enabled,
             provider_oauth::provider_oauth_start,
@@ -632,6 +637,7 @@ pub fn run() {
             commands::import_settings,
             commands::open_settings_window,
             commands::close_translator_window,
+            commands::resolve_translation_target_lang,
             commands::translate_text,
             commands::commit_translation,
             commands::open_external,
@@ -763,7 +769,7 @@ pub fn run() {
             chat::commands::prompt_optimize::chat_optimize_prompt,
             chat::commands::mutations::chat_bulk_update_conversations,
             chat::commands::mutations::chat_bulk_delete_conversations,
-            chat::commands::reasoning::chat_reasoning_efforts_for_model,
+            chat::commands::reasoning::chat_thinking_capabilities_for_model,
             chat::commands::mutations::chat_update_message,
             chat::commands::mutations::chat_delete_message,
             chat::commands::mutations::chat_set_group_selection,
@@ -876,7 +882,7 @@ pub fn run() {
             automation::commands::automation_import,
             automation::commands::automation_runs_list,
             automation::commands::automation_run_get,
-            scheduled_tasks::commands::scheduled_tasks_list,
+            scheduled_tasks::commands::scheduled_tasks_snapshot,
             scheduled_tasks::commands::scheduled_task_save,
             scheduled_tasks::commands::scheduled_task_delete,
             scheduled_tasks::commands::scheduled_task_set_enabled,

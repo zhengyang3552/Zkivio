@@ -41,9 +41,10 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -282,7 +283,10 @@ impl DshJsonRpcSession {
             .stderr(std::process::Stdio::piped())
             .no_console_window()
             .kill_on_drop(true);
-        let mut child = command.spawn().map_err(|e| format!("spawn dsh: {e}"))?;
+        let mut child = command
+            .spawn()
+            .map(crate::external_agents::spawn::AgentChild::from)
+            .map_err(|e| format!("spawn dsh: {e}"))?;
         let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
         let mut stdin = match child.stdin.take() {
             Some(stdin) => stdin,
@@ -2529,6 +2533,7 @@ fn parse_usage(value: Option<&Value>, context_window: Option<u64>) -> Option<Mod
         cache_creation_input_tokens: (cache_write > 0).then_some(cache_write),
         reasoning_tokens: (reasoning > 0).then_some(reasoning),
         context_window_tokens: context_window,
+        context_tokens: None,
     })
 }
 

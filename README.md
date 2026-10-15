@@ -70,7 +70,7 @@
 
 ## 功能
 
-完整记录见 [Releases](https://github.com/zhengyang3552/kivio-linux/releases) · 当前版本说明：[v3.1.1](docs/releases/v3.1.1.md)
+完整记录见 [Releases](https://github.com/zhengyang3552/kivio-linux/releases) · 当前版本说明：[v3.1.2](docs/releases/v3.1.2.md)
 
 ### 聊天与 Agent
 
@@ -197,7 +197,7 @@ Wayland 下首次使用全局热键或截图时，会请求 xdg-desktop-portal �
 <details>
 <summary><strong>环境与命令</strong></summary>
 
-需要 Node.js、npm、Rust，以及 Tauri 2 的 Linux 依赖（webkit2gtk-4.1 等）。
+需要 Node.js 20.19+（且版本须受 ESLint 支持）、npm、Rust，以及 Tauri 2 的 Linux 依赖（webkit2gtk-4.1 等）。macOS 上 OCR sidecar 还需要 Swift。
 
 ```bash
 npm install
@@ -207,6 +207,8 @@ npm run lint
 npm run typecheck
 npm test
 ```
+
+Lint 配置位于 [`eslint.config.mjs`](eslint.config.mjs)。`@shadcn/lint` 已注册，尚未启用新规则；需要时在其中的 `rules` 对象添加所选的 `shadcn/*` 规则。参见[可用规则](https://github.com/shadcn-ui/lint#rules)和[配置示例](https://github.com/shadcn-ui/lint/blob/main/docs/design-systems.md)。
 
 Rust 测试：
 

@@ -50,6 +50,7 @@ src-tauri/swift/kivio-ocr-helper/.build/
 .codex/
 .cursor/
 .opencode/
+.omp/
 .trellis/
 
 # AI 助手项目记忆（本地维护，不入库）
@@ -66,3 +67,10 @@ MEMORY.md
 
 # Android rootfs 素材：由 scripts/fetch-android-rootfs.sh 在构建前拉取，不入库。
 src-tauri/android-assets/
+
+# Impeccable platform executables and local review/session artifacts
+/.github/skills/impeccable/scripts/bin/
+/.impeccable/live/
+/.impeccable/review/
+/.impeccable/critique/
+/.impeccable/*-brief.md

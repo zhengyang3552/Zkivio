@@ -1,7 +1,7 @@
 # Kivio Rust 后端 Cargo 配置
 [package]
 name = "kivio"
-version = "3.1.1"
+version = "3.1.2"
 description = "Kivio Desktop - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 license = "GPL-3.0-or-later"
@@ -61,7 +61,7 @@ parking_lot = "0.12"
 # MCP 官方 Rust SDK：唯一的 MCP wire 实现（stdio 子进程 + Streamable HTTP）。
 # 版本写死不用 caret —— 3.x 仍在破坏性演进，升版本当独立任务做。
 # 关掉 default features（含 server，我们只做 client）。
-rmcp = { version = "3.0.1", default-features = false, features = [
+rmcp = { version = "=3.5.1", default-features = false, features = [
   "client",
   "client-side-sse",
   "reqwest",
@@ -70,6 +70,9 @@ rmcp = { version = "3.0.1", default-features = false, features = [
   "transport-streamable-http-client-reqwest",
   "which-command",
 ] }
+
+# MCP 子进程生命周期：独立进程组 / Windows Job，复用 SDK 同一包装器。
+process-wrap = { version = "10.0.1", features = ["tokio1"] }
 
 # HTTP 客户端与异步运行时
 reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form"] }
@@ -103,9 +106,9 @@ url = "2.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # 知识库 PDF 文本抽取（纯文本，扫描件留待 OCR fallback）。
-pdf-extract = "0.7"
+pdf-extract = "0.12.1"
 # 知识库 xlsx 解析（docx 复用已有 zip + 手写 w:t 抽取；html 复用 native_tools::fetch 的 scraper）。
-calamine = "0.26"
+calamine = "0.36.1"
 # 知识库存储：SQLite 单文件（bundled 自带 FTS5）+ sqlite-vec 向量扩展（编译期静态链接，无 native 库分发）。
 rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
@@ -195,6 +198,8 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
 tempfile = "3"
+# Named DST zones keep schedule regressions independent of the process timezone.
+chrono-tz = "0.10"
 # 测试用：test-util 提供 tokio 暂停时钟（start_paused），让重试退避 sleep 在单测中瞬时跳过。
 tokio = { version = "1", features = ["test-util", "macros", "rt", "rt-multi-thread", "time"] }
 # 测试用：构造 reqwest::Response（不走网络）以驱动 retry/failover 单测。与 reqwest 传递依赖同版本。

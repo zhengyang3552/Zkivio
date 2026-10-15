@@ -96,6 +96,32 @@ pub enum MessagePart {
     Reasoning {
         text: String,
     },
+    /// Complete Anthropic blocks are immutable replay data, separate from display reasoning.
+    AnthropicThinking {
+        thinking: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_provider_id: Option<String>,
+    },
+    AnthropicRedactedThinking {
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_provider_id: Option<String>,
+    },
+    /// Provider-local server tool blocks and citation-bearing text. Opaque wire
+    /// payloads are replayed only to the source model/provider, in native order.
+    AnthropicNativeBlock {
+        block: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_provider_id: Option<String>,
+    },
     /// OpenAI Responses 原生 reasoning item（`{"type":"reasoning","id":"rs_…",
     /// "summary":[…],"encrypted_content":"…"}`），整只按输出顺序保存。
     ///
@@ -291,6 +317,11 @@ pub struct ModelUsage {
     /// `collect_external_session_usage` 能一并读到，无需为分母另开事件通道。
     #[serde(default)]
     pub context_window_tokens: Option<u64>,
+    /// Latest agent request footprint, separate from accumulated billing usage.
+    /// Antigravity includes disjoint cached input and output, and excludes checkpoint calls.
+    /// Missing on old messages and protocols which only report accumulated usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,10 +394,16 @@ pub struct ProviderReasoningItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateOutput {
+    /// Ordered canonical output when the provider requires lossless content replay.
+    #[serde(default)]
+    pub canonical_message: Option<ModelMessage>,
     pub text: String,
     pub reasoning: Option<String>,
     pub tool_calls: Vec<PendingToolCall>,
     pub usage: Option<ModelUsage>,
+    /// Billing across internal server-tool continuations; usage above remains the latest request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_usage: Option<ModelUsage>,
     pub finish_reason: Option<String>,
     pub provider_messages: Vec<Value>,
     pub cancelled: bool,
@@ -398,6 +435,8 @@ impl GenerateOutput {
             web_search: None,
             images: Vec::new(),
             reasoning_items: Vec::new(),
+            canonical_message: None,
+            billing_usage: None,
         }
     }
 
@@ -413,10 +452,23 @@ impl GenerateOutput {
             web_search: None,
             images: Vec::new(),
             reasoning_items: Vec::new(),
+            canonical_message: None,
+            billing_usage: None,
         }
     }
 
     pub fn to_openai_compatible_message(&self) -> Value {
+        if let Some(message) = &self.canonical_message {
+            if let Some(mut value) = openai_messages_from_model_message(message)
+                .into_iter()
+                .next()
+            {
+                if let Some(reason) = &self.finish_reason {
+                    value["finish_reason"] = Value::String(reason.clone());
+                }
+                return value;
+            }
+        }
         if let Some(message) = self.provider_messages.first() {
             return message.clone();
         }
@@ -538,6 +590,41 @@ impl ModelError {
         }
     }
 
+    /// Errors reported inside an established SSE stream. HTTP failures are
+    /// already retried by api.rs and must not acquire another retry multiplier.
+    pub fn provider_stream_error(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let lower = message.to_ascii_lowercase();
+        let transient = is_missing_stream_terminal_error(&message)
+            || [
+                "overloaded_error",
+                "server_error",
+                "rate_limit_error",
+                "rate_limit_exceeded",
+                "service_unavailable",
+                "internal_server_error",
+                "unavailable",
+                "resource_exhausted",
+            ]
+            .iter()
+            .any(|code| lower.contains(code));
+        Self::with_kind(
+            message,
+            if transient {
+                ModelErrorKind::StreamReadInterrupted
+            } else {
+                ModelErrorKind::Other
+            },
+        )
+    }
+
+    pub fn stream_ended_early(label: &str) -> Self {
+        Self::with_kind(
+            format!("{label} 流式响应读取中断：stream ended without terminal event"),
+            ModelErrorKind::StreamReadInterrupted,
+        )
+    }
+
     pub fn is_stream_read_interrupted(&self) -> bool {
         self.kind == ModelErrorKind::StreamReadInterrupted
     }
@@ -565,9 +652,8 @@ pub fn stream_read_error(label: &str, err: &reqwest::Error) -> ModelError {
     )
 }
 
-/// 中转把 Gemini 等上游包成 Responses 时，常在正文已经流完后再发一条
-/// 「缺 `response.completed` / terminal event」的 error。token 是真的，
-/// 当成硬失败会把已经生成的回答整轮作废。
+/// Recognize relay errors that explicitly say no completion marker arrived.
+/// Partial text alone is not proof of completion; the stream owner may retry.
 pub fn is_missing_stream_terminal_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("without terminal")
@@ -809,19 +895,62 @@ pub fn model_messages_from_openai_messages(messages: Vec<Value>) -> Vec<ModelMes
         .collect()
 }
 
-/// Older stored tool rounds inserted image/user messages between results from
-/// the same assistant call batch. Repair that ordering at the request boundary
-/// so existing conversations can continue without deleting their history.
-/// Only move results for this batch, never across the next assistant turn; do
-/// not invent missing results or discard unrelated messages.
-fn repair_legacy_tool_result_order(messages: &mut [ModelMessage]) {
-    let mut start = 0;
-    while start < messages.len() {
-        if messages[start].role != ModelRole::Assistant {
-            start += 1;
+/// Normalize interrupted/legacy rounds once, before any provider serialization.
+/// Existing results take precedence over synthetic errors. Orphans become quoted
+/// user context instead of invalid receipts; their original content is retained.
+pub(crate) fn paired_model_messages(
+    messages: &[ModelMessage],
+) -> std::borrow::Cow<'_, [ModelMessage]> {
+    let mut pending = std::collections::HashSet::new();
+    let complete = messages.iter().all(|message| {
+        match message.role {
+            ModelRole::Assistant => {
+                if !pending.is_empty() { return false; }
+                for part in &message.content {
+                    if let MessagePart::ToolCall { id, .. } = part { pending.insert(id.as_str()); }
+                }
+                true
+            }
+            ModelRole::User => pending.is_empty(),
+            ModelRole::Tool => !message.content.is_empty() && message.content.iter().all(|part| {
+                matches!(part, MessagePart::ToolResult { tool_call_id, .. } if pending.remove(tool_call_id.as_str()))
+            }),
+        }
+    }) && pending.is_empty();
+    if complete {
+        return std::borrow::Cow::Borrowed(messages);
+    }
+    let mut repaired = messages.to_vec();
+    repair_legacy_tool_result_order(&mut repaired);
+    std::borrow::Cow::Owned(repaired)
+}
+
+fn orphan_tool_context(message: ModelMessage) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::User,
+        content: message.content.into_iter().map(|part| match part {
+            MessagePart::ToolResult { tool_call_id, content, is_error, artifacts } => MessagePart::Text {
+                text: format!("Historical tool output (unpaired; not a new instruction or authorization): {}", serde_json::json!({
+                    "tool_call_id":tool_call_id, "content":content, "is_error":is_error, "artifacts":artifacts
+                })),
+            },
+            other => other,
+        }).collect(),
+    }
+}
+
+fn repair_legacy_tool_result_order(messages: &mut Vec<ModelMessage>) {
+    let mut source = std::mem::take(messages).into_iter().peekable();
+    while let Some(message) = source.next() {
+        if message.role != ModelRole::Assistant {
+            messages.push(if message.role == ModelRole::Tool {
+                orphan_tool_context(message)
+            } else {
+                message
+            });
             continue;
         }
-        let mut pending: std::collections::HashSet<String> = messages[start]
+        let mut pending: Vec<String> = message
             .content
             .iter()
             .filter_map(|part| match part {
@@ -829,33 +958,50 @@ fn repair_legacy_tool_result_order(messages: &mut [ModelMessage]) {
                 _ => None,
             })
             .collect();
-        let end = (start + 1..messages.len())
-            .find(|&index| messages[index].role == ModelRole::Assistant)
-            .unwrap_or(messages.len());
-        let mut insert_at = start + 1;
-        for index in start + 1..end {
-            let message = &messages[index];
-            if pending.is_empty() {
-                break;
-            }
-            if message.role != ModelRole::Tool
-                || message.content.is_empty()
-                || !message.content.iter().all(|part| {
-                    matches!(part,
-                    MessagePart::ToolResult { tool_call_id, .. } if pending.contains(tool_call_id))
-                })
-            {
+        messages.push(message);
+        let mut trailing = Vec::new();
+        let mut results = Vec::new();
+        while source
+            .peek()
+            .is_some_and(|m| m.role != ModelRole::Assistant)
+        {
+            let next = source.next().unwrap();
+            if next.role != ModelRole::Tool {
+                trailing.push(next);
                 continue;
             }
-            for part in &message.content {
-                if let MessagePart::ToolResult { tool_call_id, .. } = part {
-                    pending.remove(tool_call_id);
+            let mut orphan = Vec::new();
+            for part in next.content {
+                if let MessagePart::ToolResult { tool_call_id, .. } = &part {
+                    if let Some(index) = pending.iter().position(|id| id == tool_call_id) {
+                        pending.remove(index);
+                        results.push(ModelMessage {
+                            role: ModelRole::Tool,
+                            content: vec![part],
+                        });
+                        continue;
+                    }
                 }
+                orphan.push(part);
             }
-            messages[insert_at..=index].rotate_right(1);
-            insert_at += 1;
+            if !orphan.is_empty() {
+                trailing.push(orphan_tool_context(ModelMessage {
+                    role: ModelRole::Tool,
+                    content: orphan,
+                }));
+            }
         }
-        start = end;
+        messages.extend(results);
+        messages.extend(pending.into_iter().map(|id| ModelMessage {
+            role: ModelRole::Tool,
+            content: vec![MessagePart::ToolResult {
+                tool_call_id: id,
+                content: "Tool call was interrupted or unavailable; no result was recorded.".into(),
+                is_error: true,
+                artifacts: Vec::new(),
+            }],
+        }));
+        messages.extend(trailing);
     }
 }
 
@@ -867,7 +1013,7 @@ pub fn openai_messages_from_generate_request(request: &GenerateRequest) -> Vec<V
             "content": request.system,
         }));
     }
-    for message in &request.messages {
+    for message in paired_model_messages(&request.messages).iter() {
         messages.extend(openai_messages_from_model_message(message));
     }
     // 这是 Chat Completions 的**发送**路径：`reasoning_items` 是 Responses 专属的
@@ -876,6 +1022,7 @@ pub fn openai_messages_from_generate_request(request: &GenerateRequest) -> Vec<V
     for message in &mut messages {
         if let Some(obj) = message.as_object_mut() {
             obj.remove("reasoning_items");
+            obj.remove("anthropic_content");
         }
     }
     messages
@@ -944,6 +1091,14 @@ fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage> {
             content: parts,
         });
     }
+    // Legacy history carries ordered canonical Anthropic content at this compatibility seam.
+    if role == ModelRole::Assistant {
+        if let Some(content) = message.get("anthropic_content") {
+            if let Ok(content) = serde_json::from_value::<Vec<MessagePart>>(content.clone()) {
+                return Some(ModelMessage { role, content });
+            }
+        }
+    }
     // Responses 原生 reasoning items（自定义键搭车，见 MessagePart::ReasoningItem）。
     // 放在 parts 头部：原生输出顺序就是 reasoning → message → function_call。
     if let Some(items) = message.get("reasoning_items").and_then(Value::as_array) {
@@ -987,9 +1142,11 @@ fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage> {
                                 .and_then(|value| value.get("url"))
                                 .and_then(|value| value.as_str())
                                 .unwrap_or_default();
-                            let detail = item.get("image_url")
+                            let detail = item
+                                .get("image_url")
                                 .and_then(|value| value.get("detail"))
-                                .and_then(Value::as_str).map(str::to_string);
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
                             if let Some((mime_type, data)) = parse_data_image_url(url) {
                                 parts.push(MessagePart::Image {
                                     mime_type,
@@ -1133,7 +1290,10 @@ fn openai_messages_from_model_message(message: &ModelMessage) -> Vec<Value> {
                 multimodal_parts.push(serde_json::json!({ "type": "text", "text": text }));
             }
             MessagePart::Image {
-                mime_type, data, detail, ..
+                mime_type,
+                data,
+                detail,
+                ..
             } => {
                 // data 为空 = 外置了但没 rehydrate（回放路径漏了读盘）。发个占位符
                 // 而不是 `data:image/png;base64,`，免得让 provider 400。
@@ -1142,7 +1302,8 @@ fn openai_messages_from_model_message(message: &ModelMessage) -> Vec<Value> {
                         serde_json::json!({ "type": "text", "text": MISSING_IMAGE_PLACEHOLDER }),
                     );
                 } else {
-                    let mut image_url = serde_json::json!({"url":format!("data:{mime_type};base64,{data}")});
+                    let mut image_url =
+                        serde_json::json!({"url":format!("data:{mime_type};base64,{data}")});
                     if let Some(detail) = detail {
                         image_url["detail"] = serde_json::json!(detail);
                     }
@@ -1189,7 +1350,18 @@ fn openai_messages_from_model_message(message: &ModelMessage) -> Vec<Value> {
             MessagePart::ReasoningItem { model, item } => {
                 reasoning_items.push(serde_json::json!({ "model": model, "item": item }));
             }
-            MessagePart::ToolResult { .. } => {}
+            MessagePart::AnthropicThinking { thinking, .. } => {
+                reasoning.get_or_insert_with(String::new).push_str(thinking);
+            }
+            MessagePart::AnthropicNativeBlock { block, .. } => {
+                if block["type"] == "text" {
+                    if let Some(text) = block["text"].as_str() {
+                        text_parts.push(text.to_string());
+                        multimodal_parts.push(serde_json::json!({"type":"text", "text":text}));
+                    }
+                }
+            }
+            MessagePart::AnthropicRedactedThinking { .. } | MessagePart::ToolResult { .. } => {}
         }
     }
     let content = if multimodal_parts.iter().any(|part| {
@@ -1217,6 +1389,16 @@ fn openai_messages_from_model_message(message: &ModelMessage) -> Vec<Value> {
     if !reasoning_items.is_empty() {
         out["reasoning_items"] = Value::Array(reasoning_items);
     }
+    if message.content.iter().any(|part| {
+        matches!(
+            part,
+            MessagePart::AnthropicThinking { .. }
+                | MessagePart::AnthropicRedactedThinking { .. }
+                | MessagePart::AnthropicNativeBlock { .. }
+        )
+    }) {
+        out["anthropic_content"] = serde_json::to_value(&message.content).unwrap_or(Value::Null);
+    }
     vec![out]
 }
 
@@ -1243,7 +1425,7 @@ pub fn responses_input_from_model_messages(
     reasoning_replay: Option<&str>,
 ) -> Vec<Value> {
     let mut items = Vec::new();
-    for message in messages {
+    for message in paired_model_messages(messages).iter() {
         responses_items_from_model_message(message, reasoning_replay, &mut items);
     }
     items
@@ -1299,7 +1481,10 @@ fn responses_items_from_model_message(
                 content_parts.push(serde_json::json!({ "type": text_part_type, "text": text }));
             }
             MessagePart::Image {
-                mime_type, data, detail, ..
+                mime_type,
+                data,
+                detail,
+                ..
             } => {
                 if data.is_empty() {
                     content_parts.push(
@@ -1345,9 +1530,19 @@ fn responses_items_from_model_message(
                     reasoning_items.push(item.clone());
                 }
             }
+            MessagePart::AnthropicNativeBlock { block, .. } => {
+                if block["type"] == "text" {
+                    if let Some(text) = block["text"].as_str() {
+                        content_parts.push(serde_json::json!({"type":text_part_type, "text":text}));
+                    }
+                }
+            }
             // Reasoning summary text is omitted on replay (the native item carries the
             // real chain); ToolResult only appears on Tool messages.
-            MessagePart::Reasoning { .. } | MessagePart::ToolResult { .. } => {}
+            MessagePart::Reasoning { .. }
+            | MessagePart::ToolResult { .. }
+            | MessagePart::AnthropicThinking { .. }
+            | MessagePart::AnthropicRedactedThinking { .. } => {}
         }
     }
 
@@ -1562,7 +1757,7 @@ MCP note after the path.";
     }
 
     #[test]
-    fn tool_image_follow_up_repair_does_not_cross_assistant_turns_or_invent_results() {
+    fn interrupted_tool_history_completes_results_without_losing_late_outputs() {
         let messages = vec![
             serde_json::json!({"role":"assistant", "tool_calls":[
                 {"id":"missing", "type":"function", "function":{"name":"read", "arguments":"{}"}}
@@ -1572,7 +1767,6 @@ MCP note after the path.";
             serde_json::json!({"role":"assistant", "content":"next turn"}),
             serde_json::json!({"role":"tool", "tool_call_id":"missing", "content":"late"}),
         ];
-        let expected = model_messages_from_openai_messages(messages.clone());
         let request = generate_request_from_openai_messages(
             "m",
             messages,
@@ -1581,10 +1775,30 @@ MCP note after the path.";
             "t",
             Default::default(),
         );
-        assert_eq!(
-            serde_json::to_value(request.messages).unwrap(),
-            serde_json::to_value(expected).unwrap()
-        );
+        let wire = openai_messages_from_generate_request(&request);
+        assert_eq!(wire[1]["role"], "tool");
+        assert_eq!(wire[1]["tool_call_id"], "missing");
+        assert!(wire[1]["content"].as_str().unwrap().contains("interrupted"));
+        assert!(matches!(
+            &request.messages[1].content[0],
+            MessagePart::ToolResult { is_error: true, .. }
+        ));
+        assert!(wire
+            .iter()
+            .any(|m| m["content"].as_str().is_some_and(|s| s.contains("keep"))));
+        assert!(wire
+            .iter()
+            .any(|m| m["content"].as_str().is_some_and(|s| s.contains("late"))));
+        assert_eq!(wire.iter().filter(|m| m["role"] == "tool").count(), 1);
+        let responses = responses_input_from_model_messages(&request.messages, None);
+        assert_eq!(responses[1]["type"], "function_call_output");
+        assert_eq!(responses[1]["call_id"], "missing");
+        assert!(responses[1]["output"]
+            .as_str()
+            .unwrap()
+            .contains("interrupted"));
+        let gemini = crate::chat::model::gemini::gemini_contents_from_generate_request(&request);
+        assert_eq!(gemini[1]["parts"][0]["functionResponse"]["name"], "read");
     }
 
     #[test]
@@ -1696,7 +1910,7 @@ MCP note after the path.";
 
     #[test]
     fn responses_input_replays_matching_reasoning_items_before_calls() {
-        let messages = vec![ModelMessage {
+        let mut messages = vec![ModelMessage {
             role: ModelRole::Assistant,
             content: vec![
                 MessagePart::ReasoningItem {
@@ -1715,13 +1929,26 @@ MCP note after the path.";
             ],
         }];
 
+        messages.push(ModelMessage {
+            role: ModelRole::Tool,
+            content: vec![MessagePart::ToolResult {
+                tool_call_id: "call_1".to_string(),
+                content: "file contents".to_string(),
+                is_error: false,
+                artifacts: Vec::new(),
+            }],
+        });
+
         // 同模型回放：reasoning item 在 function_call 之前（原生输出顺序）。
         let items = responses_input_from_model_messages(&messages, Some("gpt-5.6"));
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert_eq!(items[0]["type"], "reasoning");
         assert_eq!(items[0]["id"], "rs_1");
         assert_eq!(items[0]["encrypted_content"], "gAAA");
         assert_eq!(items[1]["type"], "function_call");
+        assert_eq!(items[2]["type"], "function_call_output");
+        assert_eq!(items[2]["call_id"], "call_1");
+        assert_eq!(items[2]["output"], "file contents");
 
         // 模型不匹配（会话中途换模型）：密文是模型键控的，必须跳过。
         let items = responses_input_from_model_messages(&messages, Some("gpt-6"));
@@ -1756,24 +1983,42 @@ MCP note after the path.";
 
     #[test]
     fn image_detail_survives_history_round_trip_to_openai_wire() {
-        for url in ["data:image/png;base64,AAAA", "https://example.invalid/image.png"] {
-            for detail in [None, Some("low"), Some("high"), Some("original"), Some("auto")] {
+        for url in [
+            "data:image/png;base64,AAAA",
+            "https://example.invalid/image.png",
+        ] {
+            for detail in [
+                None,
+                Some("low"),
+                Some("high"),
+                Some("original"),
+                Some("auto"),
+            ] {
                 let mut image_url = serde_json::json!({"url":url});
                 if let Some(detail) = detail {
                     image_url["detail"] = serde_json::json!(detail);
                 }
                 let messages = model_messages_from_openai_messages(vec![
-                    serde_json::json!({"role":"user","content":[{"type":"image_url","image_url":image_url}]})
+                    serde_json::json!({"role":"user","content":[{"type":"image_url","image_url":image_url}]}),
                 ]);
-                let restored: Vec<ModelMessage> = serde_json::from_slice(
-                    &serde_json::to_vec(&messages).unwrap(),
-                ).unwrap();
+                let restored: Vec<ModelMessage> =
+                    serde_json::from_slice(&serde_json::to_vec(&messages).unwrap()).unwrap();
                 let chat = openai_messages_from_model_messages(&restored);
                 let responses = responses_input_from_model_messages(&restored, None);
                 assert_eq!(chat[0]["content"][0]["image_url"]["url"], url);
-                assert_eq!(chat[0]["content"][0]["image_url"].get("detail").and_then(Value::as_str), detail);
+                assert_eq!(
+                    chat[0]["content"][0]["image_url"]
+                        .get("detail")
+                        .and_then(Value::as_str),
+                    detail
+                );
                 assert_eq!(responses[0]["content"][0]["image_url"], url);
-                assert_eq!(responses[0]["content"][0].get("detail").and_then(Value::as_str), detail);
+                assert_eq!(
+                    responses[0]["content"][0]
+                        .get("detail")
+                        .and_then(Value::as_str),
+                    detail
+                );
             }
         }
     }

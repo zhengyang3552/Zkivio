@@ -9,6 +9,11 @@ use super::execute::ToolExecutionContext;
 pub type AgentHostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait AgentHost: Send + Sync {
+    /// Parallel answer arms cannot share an interactive approval mailbox safely.
+    fn supports_interactive_approval(&self) -> bool {
+        true
+    }
+
     /// A managed worker must not claim cleanup merely because a tool future was
     /// dropped. Keep ownership until the operation itself returns.
     fn requires_tool_completion(&self) -> bool {
@@ -55,6 +60,19 @@ pub trait AgentHost: Send + Sync {
         segment: Option<&ChatMessageSegment>,
     );
 
+    /// Only the current model attempt is rolled back; completed tool rounds stay intact.
+    fn discard_stream_attempt(
+        &self,
+        _run_id: &str,
+        _text_chars: u32,
+        _reasoning_chars: u32,
+        _segment_ids: Vec<String>,
+        _tool_ids: Vec<String>,
+    ) {
+    }
+
+    fn emit_status_note(&self, _run_id: &str, _note: Option<String>) {}
+
     fn emit_tool_record(
         &self,
         conversation_id: &str,
@@ -91,7 +109,8 @@ pub trait AgentHost: Send + Sync {
         _model: &str,
         _messages: &[serde_json::Value],
         _tools: &[crate::mcp::ChatToolDefinition],
-    ) {}
+    ) {
+    }
 
     fn note_context_cache(&self, _conversation_id: &str, _cache: Option<(u64, u64)>) {}
 
@@ -113,7 +132,6 @@ pub trait AgentHost: Send + Sync {
         _cache_usage: Option<(u64, u64)>,
     ) {
     }
-
 
     /// Persist a best-effort snapshot of the in-progress assistant message to
     /// durable storage after a completed tool round. The full assistant message
