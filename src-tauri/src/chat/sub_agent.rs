@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
@@ -291,6 +291,22 @@ impl AgentHost for SubAgentHost {
         self.emit_progress("running", false);
     }
 
+    fn discard_stream_attempt(
+        &self,
+        _run_id: &str,
+        text_chars: u32,
+        _reasoning_chars: u32,
+        _segment_ids: Vec<String>,
+        tool_ids: Vec<String>,
+    ) {
+        {
+            let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+            crate::chat::protocol::truncate_stream_tail(&mut progress.text, text_chars);
+            progress.tools.retain(|tool| !tool_ids.contains(&tool.id));
+        }
+        self.emit_progress("running", true);
+    }
+
     fn emit_tool_record(
         &self,
         _conversation_id: &str,
@@ -379,11 +395,17 @@ impl AgentHost for SubAgentHost {
         generation: u64,
     ) -> AgentHostFuture<'a, ()> {
         Box::pin(async move {
-            loop {
-                if !self.is_generation_active(conversation_id, generation) {
-                    return;
+            let state = self.app.state::<AppState>();
+            if let Some((runtime, run)) = &self.managed {
+                tokio::select! {
+                    _ = runtime.wait_running_inactive(&self.parent_conversation_id, &self.task_id, run) => {}
+                    _ = state.chat_runtime().wait_for_generation_inactive(conversation_id, generation) => {}
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            } else {
+                tokio::select! {
+                    _ = state.chat_runtime().wait_for_generation_inactive(conversation_id, generation) => {}
+                    _ = state.chat_runtime().wait_for_generation_inactive(&self.parent_conversation_id, self.parent_generation) => {}
+                }
             }
         })
     }
@@ -984,7 +1006,7 @@ pub fn handle_agent_spawn<'a>(
                 settings.chat.thinking_enabled,
                 Some(&provider),
                 &model,
-            ),
+            )?,
             None => (settings.chat.thinking_enabled, None),
         };
         if !provider.authentication_ready() {

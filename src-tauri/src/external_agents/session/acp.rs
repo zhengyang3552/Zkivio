@@ -2,9 +2,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -567,6 +568,7 @@ pub async fn detect_acp_models(
         .no_console_window()
         .kill_on_drop(true)
         .spawn()
+        .map(crate::external_agents::spawn::AgentChild::from)
         .ok()?;
 
     let mut stdin = child.stdin.take()?;
@@ -745,6 +747,7 @@ pub async fn detect_acp_commands(
         .no_console_window()
         .kill_on_drop(true)
         .spawn()
+        .map(crate::external_agents::spawn::AgentChild::from)
         .ok()?;
 
     let mut stdin = child.stdin.take()?;
@@ -954,6 +957,7 @@ fn usage_from_prompt_result(result: &Value) -> Option<crate::chat::model::ModelU
         reasoning_tokens: field("reasoningTokens").filter(|v| *v > 0),
         // 窗口不在这里给（grok 在 session/new 的 `_meta.totalContextTokens`，已由模型探测读走）。
         context_window_tokens: None,
+        context_tokens: None,
     })
 }
 
@@ -1489,6 +1493,7 @@ impl AcpSession {
             .no_console_window()
             .kill_on_drop(true)
             .spawn()
+            .map(crate::external_agents::spawn::AgentChild::from)
             .map_err(|e| format!("spawn: {e}"))?;
         // N1: drain stderr for the process lifetime.
         let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
@@ -4118,6 +4123,7 @@ pub async fn probe_acp_sessions(
         .no_console_window()
         .kill_on_drop(true)
         .spawn()
+        .map(crate::external_agents::spawn::AgentChild::from)
         .ok()?;
 
     let mut stdin = child.stdin.take()?;
@@ -4257,6 +4263,7 @@ pub async fn probe_acp_session_history(
         .no_console_window()
         .kill_on_drop(true)
         .spawn()
+        .map(crate::external_agents::spawn::AgentChild::from)
         .ok()?;
 
     let mut stdin = child.stdin.take()?;

@@ -19,12 +19,16 @@ pub(super) struct ChatAgentHost<'a> {
     /// 多模型臂置 true：抑制 mid-run 部分快照落盘（协调者统一落盘）。默认 false（现状）。
     pub(super) suppress_partial_persist: bool,
     pub(super) context_owner: bool,
+    pub(super) interactive_approval: bool,
     /// 用户配置的生命周期 Hooks。无启用 Hook 时为 `None`，loop 零开销。
     pub(super) hooks: Option<crate::chat::hooks::HookDispatcher>,
     pub(super) workflow_hooks: crate::chat::workflow_hooks::Runtime,
 }
 
 impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
+    fn supports_interactive_approval(&self) -> bool {
+        self.interactive_approval
+    }
     fn wait_for_child_results<'b>(
         &'b self,
         conversation_id: &'b str,
@@ -79,6 +83,34 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         emit_chat_stream_delta(&self.app, run_id, delta, reasoning_delta, segment);
     }
 
+    fn discard_stream_attempt(
+        &self,
+        run_id: &str,
+        text_chars: u32,
+        reasoning_chars: u32,
+        segment_ids: Vec<String>,
+        tool_ids: Vec<String>,
+    ) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StreamAttemptDiscarded {
+                text_chars,
+                reasoning_chars,
+                segment_ids,
+                tool_ids,
+            },
+        );
+    }
+
+    fn emit_status_note(&self, run_id: &str, note: Option<String>) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note },
+        );
+    }
+
     fn emit_tool_record(
         &self,
         _conversation_id: &str,
@@ -126,7 +158,9 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         context_window_tokens: Option<u64>,
         cache_usage: Option<(u64, u64)>,
     ) {
-        if !self.context_owner { return; }
+        if !self.context_owner {
+            return;
+        }
         let runtime = self.state.chat_runtime();
         let (live, segments_once) = if token_count_source.is_some() {
             let Some((live, include_segments)) =
@@ -153,7 +187,6 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         );
     }
 
-
     fn begin_context_request(
         &self,
         conversation_id: &str,
@@ -163,7 +196,9 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         messages: &[Value],
         tools: &[ChatToolDefinition],
     ) {
-        if !self.context_owner { return; }
+        if !self.context_owner {
+            return;
+        }
         let runtime = self.state.chat_runtime();
         let cache = runtime
             .context_measurement(conversation_id)
@@ -174,7 +209,10 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         // refreshes retain the last reported request's total and categories.
         let settings = self.state.settings_read();
         let segments = super::context::measure_request_segments(
-            messages, tools, settings.get_provider(provider_id), model,
+            messages,
+            tools,
+            settings.get_provider(provider_id),
+            model,
         );
         drop(settings);
         runtime.bind_prepared_context(
@@ -216,7 +254,9 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
     }
 
     fn note_context_cache(&self, conversation_id: &str, run_cache: Option<(u64, u64)>) {
-        if !self.context_owner { return; }
+        if !self.context_owner {
+            return;
+        }
         self.state
             .chat_runtime()
             .note_context_run_cache(conversation_id, &self.run_id, run_cache);
@@ -396,6 +436,34 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         _reasoning_delta: Option<&str>,
         _segment: Option<&ChatMessageSegment>,
     ) {
+    }
+
+    fn discard_stream_attempt(
+        &self,
+        run_id: &str,
+        text_chars: u32,
+        reasoning_chars: u32,
+        segment_ids: Vec<String>,
+        tool_ids: Vec<String>,
+    ) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StreamAttemptDiscarded {
+                text_chars,
+                reasoning_chars,
+                segment_ids,
+                tool_ids,
+            },
+        );
+    }
+
+    fn emit_status_note(&self, run_id: &str, note: Option<String>) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note },
+        );
     }
 
     fn emit_tool_record(

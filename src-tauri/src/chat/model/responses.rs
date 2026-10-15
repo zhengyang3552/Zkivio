@@ -359,14 +359,13 @@ impl OpenAiResponsesProvider<'_> {
                 ModelError::new(err)
             })?;
 
-        let mut buffer = String::new();
-        let mut utf8 = crate::api::Utf8StreamDecoder::default();
+        let mut sse = super::sse::SseDecoder::default();
         let mut state = ResponsesStreamState {
             model: request.model.clone(),
             ..Default::default()
         };
 
-        loop {
+        'stream: loop {
             let chunk = response.chunk().await.map_err(|err| {
                 let model_error = stream_read_error(&label, &err);
                 self.record_usage_failure(
@@ -389,10 +388,8 @@ impl OpenAiResponsesProvider<'_> {
             let Some(chunk) = chunk else {
                 break;
             };
-            buffer.push_str(&utf8.push(&chunk));
-            while let Some(pos) = buffer.find('\n') {
-                let line: String = buffer.drain(..=pos).collect();
-                if let Some(err) = process_sse_line(&line, &mut state, sink)? {
+            for data in sse.push(&chunk) {
+                if let Some(err) = process_sse_data(&data, &mut state, sink)? {
                     self.record_usage_failure(
                         &request,
                         &label,
@@ -408,11 +405,35 @@ impl OpenAiResponsesProvider<'_> {
                         started_at,
                         started.elapsed(),
                     );
-                    return Err(ModelError::new(err));
+                    return Err(ModelError::provider_stream_error(err));
+                }
+                // response.completed/incomplete includes final usage and is
+                // authoritative even if a proxy never closes the HTTP body.
+                if state.finish_reason.is_some() {
+                    break 'stream;
                 }
             }
         }
 
+        if state.finish_reason.is_none() {
+            let err = ModelError::stream_ended_early(&label);
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.to_string(),
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                true,
+                &err.to_string(),
+                started_at,
+                started.elapsed(),
+            );
+            return Err(err);
+        }
         let output = state.finish(sink)?;
         self.record_usage_success(
             &request,
@@ -860,13 +881,6 @@ struct ResponsesStreamState {
 }
 
 impl ResponsesStreamState {
-    fn has_usable_output(&self) -> bool {
-        !self.text.trim().is_empty()
-            || !self.reasoning.trim().is_empty()
-            || !self.tool_calls.is_empty()
-            || !self.images.is_empty()
-    }
-
     fn partial_mut(&mut self, item_id: &str) -> Option<&mut ResponsesToolPartial> {
         self.tool_calls
             .iter_mut()
@@ -1053,6 +1067,8 @@ impl ResponsesStreamState {
             cancelled: false,
             web_search: self.web_search,
             images: self.images,
+            canonical_message: None,
+            billing_usage: None,
             reasoning_items: self
                 .reasoning_items
                 .into_iter()
@@ -1311,7 +1327,8 @@ fn handle_responses_stream_event(
                 if let Some(usage) = model_usage_from_openai_value(response) {
                     if let Some(input_tokens) = usage.input_tokens {
                         sink.emit(StreamPart::ContextUsage {
-                            input_tokens, output_tokens: usage.output_tokens.unwrap_or(0),
+                            input_tokens,
+                            output_tokens: usage.output_tokens.unwrap_or(0),
                         })?;
                     }
                     state.usage = Some(usage);
@@ -1352,11 +1369,6 @@ fn handle_responses_stream_event(
         }
         "response.failed" | "error" => {
             let message = responses_stream_error_text(value);
-            // Gemini 等上游常不发 response.completed；中转会在正文已经流完后补一条
-            // 「缺终态」error。有可用输出时当成功收尾，别把已经生成的回答整轮作废。
-            if super::is_missing_stream_terminal_error(&message) && state.has_usable_output() {
-                return Ok(None);
-            }
             return Ok(Some(message));
         }
         _ => {}
@@ -1364,24 +1376,13 @@ fn handle_responses_stream_event(
     Ok(None)
 }
 
-/// Process one raw SSE line from a Responses stream into the accumulating state.
-///
-/// Shared by the live streaming loop (`stream_inner`, one drained `\n`-terminated line
-/// at a time) and the non-stream SSE fallback (`output_from_sse_body`, lines split off a
-/// fully-buffered body). Responses SSE carries `event:` and `data:` lines; the `data:`
-/// JSON already includes a `type` field mirroring the event name, so only the `data:`
-/// payload matters. Returns `Ok(Some(err))` for a terminal provider error, `Ok(None)`
-/// otherwise; non-`data:` lines, blanks, `[DONE]`, and unparseable payloads are skipped.
-fn process_sse_line(
-    line: &str,
+/// Decode one complete event payload, shared by live streaming and buffered fallback.
+fn process_sse_data(
+    data: &str,
     state: &mut ResponsesStreamState,
     sink: &mut (dyn StreamSink + Send),
 ) -> Result<Option<String>, ModelError> {
-    let line = line.trim();
-    if !line.starts_with("data:") {
-        return Ok(None);
-    }
-    let data = line.trim_start_matches("data:").trim();
+    let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
         return Ok(None);
     }
@@ -1408,10 +1409,16 @@ fn looks_like_sse(body: &str) -> bool {
 fn output_from_sse_body(body: &str) -> Result<GenerateOutput, ModelError> {
     let mut state = ResponsesStreamState::default();
     let mut sink = DiscardSink;
-    for line in body.split('\n') {
-        if let Some(err) = process_sse_line(line, &mut state, &mut sink)? {
-            return Err(ModelError::new(err));
+    for data in super::sse::SseDecoder::default().push(body.as_bytes()) {
+        if let Some(err) = process_sse_data(&data, &mut state, &mut sink)? {
+            return Err(ModelError::provider_stream_error(err));
         }
+        if state.finish_reason.is_some() {
+            break;
+        }
+    }
+    if state.finish_reason.is_none() {
+        return Err(ModelError::stream_ended_early("Responses SSE body"));
     }
     state.finish(&mut sink)
 }
@@ -1547,6 +1554,8 @@ pub fn output_from_responses(
         provider_messages: Vec::new(),
         cancelled: false,
         web_search: web_search_from_responses_output(output),
+        canonical_message: None,
+        billing_usage: None,
         images,
         reasoning_items: reasoning_items
             .into_iter()
@@ -1759,7 +1768,7 @@ fn responses_error_message(error: &Value) -> String {
 
 /// `response.failed` 把原因放在 `response.error`；OpenAI 的 `type: error` 事件把
 /// `message` 放在顶层；部分中转把 `error` 直接写成字符串。三条都要读到，否则缺终态
-/// 的那条文案会变成笼统的 "Responses stream failed"，后面的 salvage 对不上。
+/// 的那条文案会变成笼统的 "Responses stream failed"，无法正确识别可重试错误。
 fn responses_stream_error_text(value: &Value) -> String {
     let nested = value
         .get("response")
@@ -1769,14 +1778,25 @@ fn responses_stream_error_text(value: &Value) -> String {
         if let Some(text) = error.as_str().map(str::trim).filter(|s| !s.is_empty()) {
             return text.to_string();
         }
-        return responses_error_message(error);
+        let message = responses_error_message(error);
+        return match error
+            .get("code")
+            .or_else(|| error.get("type"))
+            .and_then(Value::as_str)
+        {
+            Some(code) => format!("{message} ({code})"),
+            None => message,
+        };
     }
     value
         .get("message")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(|message| match value.get("code").and_then(Value::as_str) {
+            Some(code) => format!("{message} ({code})"),
+            None => message.to_string(),
+        })
         .unwrap_or_else(|| "Responses stream failed".to_string())
 }
 
@@ -2385,10 +2405,10 @@ mod tests {
         // message 的 output_text 是空串（图即答案），且没有任何 output_text.delta。
         // 不收 image_generation_call.result 会让整轮变成「空助手响应」而报错。
         let body = concat!(
-            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"ig_1\",\"type\":\"image_generation_call\",\"status\":\"completed\",\"action\":\"generate\",\"output_format\":\"png\",\"result\":\"aGVsbG8=\"}}\n",
-            "data: {\"type\":\"response.output_text.done\",\"output_index\":2,\"text\":\"\"}\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"\"}]}]}}\n",
-            "data: [DONE]\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"ig_1\",\"type\":\"image_generation_call\",\"status\":\"completed\",\"action\":\"generate\",\"output_format\":\"png\",\"result\":\"aGVsbG8=\"}}\n\n",
+            "data: {\"type\":\"response.output_text.done\",\"output_index\":2,\"text\":\"\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"\"}]}]}}\n\n",
+            "data: [DONE]\n\n",
         );
         let output = output_from_sse_body(body).expect("sse output");
         assert!(output.text.trim().is_empty(), "正文确实是空的");
@@ -2605,9 +2625,9 @@ mod tests {
         // 流式:web_search_call(带 sources)到达但整轮无 url_citation(grok 岔去客户端
         // fetch 的典型形态)⇒ finish 时 sources 兜底进 citations。
         let body = concat!(
-            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"nvda close\",\"sources\":[{\"type\":\"url\",\"url\":\"https://finance.yahoo.com/quote/NVDA/\"},{\"type\":\"url\",\"url\":\"https://www.cnbc.com/quotes/NVDA\"}]}}}\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n",
-            "data: [DONE]\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"nvda close\",\"sources\":[{\"type\":\"url\",\"url\":\"https://finance.yahoo.com/quote/NVDA/\"},{\"type\":\"url\",\"url\":\"https://www.cnbc.com/quotes/NVDA\"}]}}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n",
+            "data: [DONE]\n\n",
         );
         let output = output_from_sse_body(body).expect("sse output");
         let ws = output.web_search.expect("web_search present");
@@ -2810,6 +2830,29 @@ mod tests {
         assert_eq!(out.finish_reason.as_deref(), Some("stop"));
     }
 
+    #[test]
+    fn sse_body_fallback_does_not_commit_unterminated_completion() {
+        let body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n",
+        );
+        let error = output_from_sse_body(body).expect_err("blank line is required to commit");
+        assert!(error.is_stream_read_interrupted());
+    }
+
+    #[test]
+    fn sse_body_fallback_preserves_multiline_event_data() {
+        let body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\r\n",
+            "data: \"delta\":\"你好\"}\r\n\r\n",
+            "data: {\"type\":\"response.completed\",\r",
+            "data: \"response\":{\"status\":\"completed\"}}\r\r",
+        );
+        let output = output_from_sse_body(body).expect("complete multiline SSE");
+        assert_eq!(output.text, "你好");
+        assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+    }
+
     /// A provider that streams an SSE body despite `stream:false`. `output_from_sse_body`
     /// must reuse the streaming accumulation and yield the same `GenerateOutput` the live
     /// stream path produces — text/tool-call args/usage — instead of a JSON parse error.
@@ -2851,11 +2894,11 @@ mod tests {
     #[test]
     fn sse_stream_captures_builtin_web_search_from_events() {
         let body = concat!(
-            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"queries\":[\"TSLA latest close\"],\"query\":\"TSLA latest close\"}}}\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n",
-            "data: {\"type\":\"response.output_text.annotation.added\",\"annotation\":{\"type\":\"url_citation\",\"title\":\"ChartExchange\",\"url\":\"https://chartexchange.com/x\"}}\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n",
-            "data: [DONE]\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"queries\":[\"TSLA latest close\"],\"query\":\"TSLA latest close\"}}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n",
+            "data: {\"type\":\"response.output_text.annotation.added\",\"annotation\":{\"type\":\"url_citation\",\"title\":\"ChartExchange\",\"url\":\"https://chartexchange.com/x\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n",
+            "data: [DONE]\n\n",
         );
         let output = output_from_sse_body(body).expect("sse output");
         let ws = output
@@ -2884,17 +2927,17 @@ mod tests {
         }
 
         let body = concat!(
-            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"in_progress\"}}\n",
-            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"queries\":[\"TSLA latest close\"],\"query\":\"TSLA latest close\"}}}\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n",
-            "data: {\"type\":\"response.output_text.annotation.added\",\"annotation\":{\"type\":\"url_citation\",\"title\":\"ChartExchange\",\"url\":\"https://chartexchange.com/x\"}}\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n",
-            "data: [DONE]\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"in_progress\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"queries\":[\"TSLA latest close\"],\"query\":\"TSLA latest close\"}}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n",
+            "data: {\"type\":\"response.output_text.annotation.added\",\"annotation\":{\"type\":\"url_citation\",\"title\":\"ChartExchange\",\"url\":\"https://chartexchange.com/x\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n",
+            "data: [DONE]\n\n",
         );
         let mut state = ResponsesStreamState::default();
         let mut sink = CapturingSink::default();
-        for line in body.split('\n') {
-            process_sse_line(line, &mut state, &mut sink).expect("process line");
+        for data in crate::chat::model::sse::SseDecoder::default().push(body.as_bytes()) {
+            process_sse_data(&data, &mut state, &mut sink).expect("process event");
         }
         state.finish(&mut sink).expect("finish");
 
@@ -2923,56 +2966,64 @@ mod tests {
     #[test]
     fn sse_body_fallback_accumulates_text() {
         let body = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"，世界\"}\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"，世界\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
         );
         let output = output_from_sse_body(body).expect("sse output");
         assert_eq!(output.text, "你好，世界");
         assert_eq!(output.finish_reason.as_deref(), Some("stop"));
     }
 
-    /// A terminal `response.failed` event in the SSE body surfaces as a `ModelError`.
+    /// Both official top-level error codes and nested relay codes preserve
+    /// their retryability; unknown errors remain failures without auto-replay.
     #[test]
     fn sse_body_fallback_surfaces_provider_error() {
-        let body = concat!(
-            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"boom\"}}}\n",
-        );
-        let err = output_from_sse_body(body).expect_err("should error");
-        assert!(err.to_string().contains("boom"));
+        for (event, retryable) in [
+            (
+                serde_json::json!({"type":"response.failed","response":{"error":{"message":"boom"}}}),
+                false,
+            ),
+            (
+                serde_json::json!({"type":"error","code":"server_error","message":"boom"}),
+                true,
+            ),
+            (
+                serde_json::json!({"type":"response.failed","response":{"error":{"code":"server_error","message":"boom"}}}),
+                true,
+            ),
+            (
+                serde_json::json!({"type":"error","code":"invalid_api_key","message":"boom"}),
+                false,
+            ),
+        ] {
+            let err =
+                output_from_sse_body(&format!("data: {event}\n\n")).expect_err("provider failure");
+            assert!(err.to_string().contains("boom"));
+            assert_eq!(err.is_stream_read_interrupted(), retryable, "{event}");
+        }
     }
 
-    /// 中转在正文已经流完后补一条「缺 response.completed」error：token 是真的，当成功收尾。
+    /// Partial text cannot prove completion; relay missing-terminal errors must retry.
     #[test]
-    fn missing_completed_event_after_text_is_success() {
-        let nested = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n",
-            "data: {\"type\":\"error\",\"error\":{\"message\":\"stream ended without terminal event or completed response\"}}\n",
-        );
-        let nested_output = output_from_sse_body(nested).expect("should keep streamed text");
-        assert_eq!(nested_output.text, "你好");
-        assert_eq!(nested_output.finish_reason.as_deref(), Some("stop"));
-
-        let top_level = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n",
-            "data: {\"type\":\"error\",\"message\":\"stream ended without terminal event or completed response\"}\n",
-        );
-        let top_level_output = output_from_sse_body(top_level).expect("top-level error message");
-        assert_eq!(top_level_output.text, "你好");
-
-        let failed = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n",
-            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"stream ended without terminal event or completed response\"}}}\n",
-        );
-        let failed_output = output_from_sse_body(failed).expect("response.failed after text");
-        assert_eq!(failed_output.text, "你好");
+    fn missing_completed_event_after_text_is_interrupted() {
+        for error in [
+            serde_json::json!({"type":"error","error":{"message":"stream ended without terminal event or completed response"}}),
+            serde_json::json!({"type":"error","message":"stream ended without terminal event or completed response"}),
+            serde_json::json!({"type":"response.failed","response":{"error":{"message":"stream ended without terminal event or completed response"}}}),
+        ] {
+            let body = format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}}\n\ndata: {error}\n\n");
+            let err =
+                output_from_sse_body(&body).expect_err("partial stream must not count as success");
+            assert!(err.is_stream_read_interrupted(), "{err}");
+        }
     }
 
     /// 没有可用输出时，同一条缺终态 error 仍是失败——不能把空流当成成功。
     #[test]
     fn missing_completed_event_without_output_is_still_error() {
         let body = concat!(
-            "data: {\"type\":\"error\",\"message\":\"stream ended without terminal event or completed response\"}\n",
+            "data: {\"type\":\"error\",\"message\":\"stream ended without terminal event or completed response\"}\n\n",
         );
         let err = output_from_sse_body(body).expect_err("empty stream should fail");
         assert!(err.to_string().contains("without terminal"), "got {err}");
