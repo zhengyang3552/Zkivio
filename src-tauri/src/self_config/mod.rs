@@ -137,14 +137,14 @@ pub fn inspect(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         let value = match args.topic.as_str() {
             "status" => status_summary(&settings, cwd(&ctx).as_deref()),
             "skills" => {
-                let registry = crate::skills::build_registry_metadata_in(
+                let registry = crate::skills::build_registry_in(
                     ctx.app,
                     &settings.chat_tools.skill_scan_paths,
                     cwd(&ctx).as_deref(),
                 )?;
                 json!({"skills":registry.metas().iter().map(|m| json!({
                     "id":m.id,"name":m.name,"source":m.source,"path":m.path,
-                    "globallyAvailable":crate::settings::skill_globally_available(&settings.chat_tools, &m.id, crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path)),
+                    "globallyAvailable":crate::settings::skill_globally_available(&settings.chat_tools, &m.id),
                     "disableModelInvocation":m.disable_model_invocation
                 })).collect::<Vec<_>>(),"warnings":registry.warnings,
                 "note":"Registry and global gates only; the conversation assistant allow-list and model tools can still restrict activation."})
@@ -239,7 +239,7 @@ async fn configure_action(ctx: &NativeCallCtx<'_>, action: Action) -> Result<Val
         }
         Action::SkillSetEnabled { id, enabled } => {
             let settings = ctx.state.settings_read().clone();
-            let registry = crate::skills::build_registry_metadata_in(
+            let registry = crate::skills::build_registry_in(
                 ctx.app,
                 &settings.chat_tools.skill_scan_paths,
                 cwd(ctx).as_deref(),

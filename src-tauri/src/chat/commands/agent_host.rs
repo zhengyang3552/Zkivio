@@ -107,7 +107,25 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         crate::chat::protocol::emit_run_event(
             &self.app,
             run_id,
-            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note },
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note, retry: None },
+        );
+    }
+
+    fn emit_retry_status(
+        &self,
+        run_id: &str,
+        retry: crate::chat::protocol::ChatRetryStatusPayload,
+    ) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated {
+                note: Some(format!(
+                    "{} · retry {}/{}",
+                    retry.reason, retry.attempt, retry.max_retries
+                )),
+                retry: Some(retry),
+            },
         );
     }
 
@@ -462,7 +480,25 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         crate::chat::protocol::emit_run_event(
             &self.app,
             run_id,
-            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note },
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note, retry: None },
+        );
+    }
+
+    fn emit_retry_status(
+        &self,
+        run_id: &str,
+        retry: crate::chat::protocol::ChatRetryStatusPayload,
+    ) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated {
+                note: Some(format!(
+                    "{} · retry {}/{}",
+                    retry.reason, retry.attempt, retry.max_retries
+                )),
+                retry: Some(retry),
+            },
         );
     }
 
@@ -570,7 +606,7 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
         ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        skill_cache: Option<&'a mut skills::SkillRunCache>,
+        skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> crate::chat::agent::ToolExecutorFuture<'a> {
         Box::pin(async move {
             if ctx.depth == 0 {
@@ -613,7 +649,7 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
                 self.state,
                 tool,
                 arguments,
-                skill_cache,
+                skill_context,
                 Some(native_ctx),
             )
             .await;

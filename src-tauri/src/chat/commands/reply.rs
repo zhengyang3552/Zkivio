@@ -21,7 +21,6 @@ use crate::chat::{
     chat_missing_model_error, format_chat_login_required_error, session_model_for_conversation,
     Conversation, ToolCallStatus,
 };
-use crate::skills;
 use crate::state::AppState;
 
 #[cfg(debug_assertions)]
@@ -454,12 +453,17 @@ pub(super) async fn complete_assistant_reply_inner(
         &settings.chat_tools.native_tools.working_directory,
     )
     .ok();
-    let skill_registry = skills::build_registry_in(
-        app,
-        &settings.chat_tools.skill_scan_paths,
-        skill_cwd.as_deref(),
-    )
-    .unwrap_or_default();
+    let resources = state
+        .chat_runtime()
+        .resource_catalog(
+            app,
+            &conversation.id,
+            &settings.chat_tools.skill_scan_paths,
+            skill_cwd.as_deref(),
+            false,
+        )
+        .await?;
+    let skill_registry = resources.skills.clone();
     let mut effective_chat_tools = settings.chat_tools.clone();
     // Read the stored text, before attachment/vision augmentation, so those
     // documents never become slash arguments. This also covers edited retries.
@@ -470,8 +474,40 @@ pub(super) async fn complete_assistant_reply_inner(
         .find(|message| message.role == "user")
         .map(|message| message.content.as_str())
         .unwrap_or_default();
+    let requested_skill = active_skill_id.or(conversation.active_skill_id.as_deref());
+    let mut selected: Vec<String> = if conversation.agent_runtime.is_chat() {
+        Vec::new()
+    } else {
+        crate::chat::slash_commands::command_ranges(user_content)
+            .into_iter()
+            .filter_map(|range| skill_registry.find_by_trigger(&user_content[range]))
+            .map(|record| record.meta.id.clone())
+            .collect()
+    };
+    if let Some(record) = requested_skill.and_then(|id| skill_registry.find(id)) {
+        selected.push(record.meta.id.clone());
+    }
+    selected.retain(|id| {
+        agent_prepare::skill_allowed_for_conversation(
+            &effective_chat_tools,
+            conversation.assistant_snapshot.as_ref(),
+            id,
+        )
+    });
+    selected.sort();
+    selected.dedup();
+    let request_registry = if selected.is_empty() {
+        skill_registry.clone()
+    } else {
+        let catalog = skill_registry.clone();
+        std::sync::Arc::new(
+            tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected))
+                .await
+                .map_err(|e| e.to_string())??,
+        )
+    };
     let (skill_id, active_skill_detail) = resolve_request_skill(
-        &skill_registry,
+        &request_registry,
         &mut effective_chat_tools,
         conversation.assistant_snapshot.as_ref(),
         if conversation.agent_runtime.is_chat() {
@@ -480,7 +516,6 @@ pub(super) async fn complete_assistant_reply_inner(
             user_content
         },
         active_skill_id.or(conversation.active_skill_id.as_deref()),
-        crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
     );
     if skill_id.is_none() && conversation.active_skill_id.is_some() {
         conversation.active_skill_id = None;
@@ -587,23 +622,12 @@ pub(super) async fn complete_assistant_reply_inner(
     {
         crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
     }
-    // Resolved here (rather than further down with the other prompt context) so
-    // the sub-agent role registry below can reuse the project root instead of
-    // resolving the conversation's project a second time.
     let project_prompt_context = project_prompt_context_for(app, conversation);
     // Multi-agent spawn tool (P3): exposure is mode-controlled. Act and
     // Orchestrate both expose the `agent` tool; Plan / Chat exclude it (spawn is a
     // side-effecting, non-read-only capability).
     if !plan_mode && !chat_mode && !builder_mode {
-        // Load the role registry (built-in + user + project) so the `agent`
-        // tool's schema lists the roles that actually exist for this
-        // conversation — the model must not have to guess role names.
-        let project_root = project_prompt_context
-            .as_ref()
-            .and_then(|context| context.root_path.as_deref())
-            .map(std::path::Path::new);
-        let agent_defs = crate::agents::load_agent_definitions(app, project_root);
-        crate::chat::sub_agent::append_tool_definitions(&mut tools, true, &agent_defs);
+        crate::chat::sub_agent::append_tool_definitions(&mut tools, true, &resources.agents);
     }
     let runtime_tools_available = !tools.is_empty();
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
@@ -625,8 +649,6 @@ pub(super) async fn complete_assistant_reply_inner(
     .map(|path| path.display().to_string());
     // 集的系统提示词：按对话 set_id 实时取（不冻结），随集编辑立即对集内对话生效。
     let set_system_prompt = live_set_system_prompt(app, conversation);
-    let obsidian_vault_path = (!settings.obsidian_vault_path.trim().is_empty())
-        .then_some(settings.obsidian_vault_path.as_str());
     let knowledge_base_prompt = crate::chat::knowledge_base::mount_system_prompt(
         app,
         &conversation.knowledge_base_ids,
@@ -652,7 +674,6 @@ pub(super) async fn complete_assistant_reply_inner(
         project_prompt_context.as_ref(),
         workbench_dir.as_deref(),
         knowledge_base_prompt.as_deref(),
-        obsidian_vault_path,
         &conversation.additional_directories,
     );
     // 从未成功连接的 MCP server：工具没法降级进列表，注一行说明让模型知道
@@ -720,7 +741,6 @@ pub(super) async fn complete_assistant_reply_inner(
         project_prompt_context.as_ref(),
         workbench_dir.as_deref(),
         knowledge_base_prompt.as_deref(),
-        obsidian_vault_path,
         &conversation.additional_directories,
     );
 
@@ -729,6 +749,7 @@ pub(super) async fn complete_assistant_reply_inner(
             Default::default()
         } else {
             crate::plugins::packages::hook_runtime(
+                &resources.hooks,
                 workbench_dir
                     .as_deref()
                     .map(PathBuf::from)
@@ -841,7 +862,7 @@ pub(super) async fn complete_assistant_reply_inner(
             initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
             initial_anchor_total_tokens,
             initial_anchor_trailing_estimate,
-            skill_project_cwd: skill_cwd.clone(),
+            skill_registry: skill_registry.clone(),
             todo_state: conversation.agent_todo_state.clone(),
         },
         host,

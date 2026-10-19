@@ -70,7 +70,7 @@ Text on screen, a captured region, and coding CLIs you already installed do not 
 
 ## Features
 
-Full history: [Releases](https://github.com/ZMGID/kivio/releases) · current notes: [v3.1.2](docs/releases/v3.1.2.md)
+Full history: [Releases](https://github.com/ZMGID/kivio/releases) · current notes: [v3.1.3](docs/releases/v3.1.3.md)
 
 ### Chat & agent
 
@@ -259,6 +259,12 @@ npm run protocol:check
 Development conventions: [Engineering standards](docs/engineering-standards.md).
 
 </details>
+
+## Model database updates
+
+Model metadata is maintained in the public [kivio-models](https://github.com/ZMGID/kivio-models) repository. Use **Settings → About → Check for updates → Update model database** to refresh model names, context limits, capabilities, and reference pricing without upgrading the app. Successful updates apply to future requests and preserve custom settings. Startup does not download updates; failed downloads leave the existing database intact.
+
+Release builds automatically fetch the latest compatible database and bundle the same pinned snapshot on macOS and Windows. For development, use `npm run models:check` to validate bundled data or `npm run models:sync` to refresh it. Append `-- --ref <model repository commit SHA>` to pin the source. Set `GITHUB_TOKEN` or specify a commit SHA if the GitHub API is rate-limited. See the model repository README for editing and versioning instructions.
 
 ## Contributing
 

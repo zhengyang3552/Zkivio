@@ -5,13 +5,14 @@ mod runtime;
 mod types;
 
 pub use catalog::format_catalog;
+pub(crate) use discover::build_registry_with_plugins;
 pub use discover::{
-    build_registry, build_registry_in, build_registry_metadata, build_registry_metadata_in,
-    home_agents_skills_dir, kivio_skills_dir, legacy_app_data_skills_dir, user_skills_dir,
+    build_registry, build_registry_in, home_agents_skills_dir, kivio_skills_dir,
+    legacy_app_data_skills_dir, read_skill_record, user_skills_dir,
 };
 pub use parse::parse_skill_markdown;
 pub use runtime::{
-    activate_skill, extract_skill_name, lookup_skill, substitute_arguments, SkillRunCache,
+    activate_skill, extract_skill_name, lookup_skill, substitute_arguments, SkillRunContext,
 };
 pub use types::{
     slugify, SkillDetail, SkillImportResult, SkillListResult, SkillMeta, SkillOpenFolderResult,
@@ -42,29 +43,18 @@ pub fn chat_skills_list(
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
-    match build_registry_metadata_in(&app, &paths, cwd.as_deref()) {
+    match build_registry_in(&app, &paths, cwd.as_deref()) {
         Ok(registry) => {
-            let settings = state.settings_read();
             // 插件附属 skill 一并返回，技能页单独分区展示；
             // 开关仍由「扩展 → 插件」统一管理（前端禁止在技能页改插件 skill）。
             let skills = registry
                 .metas()
                 .into_iter()
-                .filter_map(|mut meta| {
+                .map(|mut meta| {
                     if crate::plugins::skill_owned_by_plugin(&meta.id).is_some() {
                         meta.source = "plugin".to_string();
-                        return Some(meta);
                     }
-                    if meta.source == "plugin" {
-                        return Some(meta);
-                    }
-                    crate::settings::skill_connector_satisfied(
-                        &meta.id,
-                        crate::settings::obsidian_connector_configured(
-                            &settings.obsidian_vault_path,
-                        ),
-                    )
-                    .then_some(meta)
+                    meta
                 })
                 .collect();
             SkillListResult {
@@ -91,12 +81,9 @@ pub fn chat_skills_read(
     project_cwd: Option<String>,
 ) -> SkillReadResult {
     let settings = state.settings_read();
-    if let Some(err) = crate::settings::skill_global_unavailable_error(
-        &settings.chat_tools,
-        &skill_id,
-        crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
-        &skill_id,
-    ) {
+    if let Some(err) =
+        crate::settings::skill_global_unavailable_error(&settings.chat_tools, &skill_id, &skill_id)
+    {
         return SkillReadResult {
             success: false,
             skill: None,
@@ -314,9 +301,10 @@ pub fn read_skill_detail_in(
     let record = registry
         .find(skill_id)
         .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
+    let record = read_skill_record(record)?;
     Ok(SkillDetail {
-        meta: record.meta.clone(),
-        body: record.body.clone(),
+        meta: record.meta,
+        body: record.body,
     })
 }
 
@@ -327,7 +315,7 @@ fn import_skill_dir(source: &Path, skills_dir: &Path) -> Result<SkillMeta, Strin
     }
     let raw =
         fs::read_to_string(&skill_file).map_err(|err| format!("Read SKILL.md failed: {err}"))?;
-    let files = discover::index_skill_files(source)?;
+    let files = Vec::new();
     let mut warnings = Vec::new();
     let parsed = parse::parse_skill_record(&skill_file, &raw, "user", files, &mut warnings)?;
     let dest = skills_dir.join(&parsed.meta.id);
