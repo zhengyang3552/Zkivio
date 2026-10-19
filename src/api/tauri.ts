@@ -24,6 +24,8 @@ import type { GoalState } from './goalContracts'
 import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from './dockContracts'
 import type { ThemeDefinition } from '../theme/types'
 
+import type { WebDavConfig, WebDavConfigInput, WebDavBackup, WebDavBackupKind, WebDavDownload } from '../generated/webdav'
+
 // ========== 类型定义 ==========
 
 export interface ModelDatabaseSnapshot {
@@ -1623,6 +1625,14 @@ export const api = {
     return { id, url: convertFileSrc(id, 'kivio-preview') }
   },
   releaseHtmlPreview: (id: string) => invoke<void>('release_html_preview', { id }),
+  webdavLoad: () => invoke<WebDavConfig>('webdav_load'),
+  webdavSave: (input: WebDavConfigInput) => invoke<WebDavConfig>('webdav_save', { input }),
+  webdavTest: (input: WebDavConfigInput) => invoke<void>('webdav_test', { input }),
+  webdavList: () => invoke<WebDavBackup[]>('webdav_list'),
+  webdavUpload: (kind: WebDavBackupKind, interfaceState: Record<string, string>) => invoke<string>('webdav_upload', { kind, interface: interfaceState }),
+  webdavDownload: (name: string) => invoke<WebDavDownload>('webdav_download', { name }),
+  webdavRelease: (id: string) => invoke<void>('webdav_release', { id }),
+  webdavDelete: (name: string) => invoke<void>('webdav_delete', { name }),
   exportFullBackup: (path: string, interfaceState: Record<string, string>) => invoke<void>('export_full_backup', { path, interface: interfaceState }),
   importFullBackup: (path: string, trusted: boolean) => invoke<void>('import_full_backup', { path, trusted }),
   backupInterface: () => invoke<{ id: string; values: Record<string, string> } | null>('backup_interface'),
@@ -1779,6 +1789,9 @@ export const api = {
    *  路走后端而不是 window.setEffects()，因为 tauri 把 apply_mica 的失败静默吞掉了。 */
   chatWindowApplyMica: (dark: boolean): Promise<boolean> =>
     invoke('chat_window_apply_mica', { dark }),
+  /** 只同步 macOS 毛玻璃视图，不改变应用或 WebView 的系统主题来源。 */
+  chatWindowSetMaterialAppearance: (dark: boolean): Promise<boolean> =>
+    invoke('chat_window_set_material_appearance', { dark }),
   /** macOS：材质没上时把 NSWindow 设回 opaque，换回合成器的不透明快路径（台前调度不掉帧）。
    *  材质上了必须传 false，否则 Menu 材质被实色背景挡死。非 macOS 是 no-op。 */
   chatWindowSetOpaque: (opaque: boolean): Promise<void> =>
@@ -2072,6 +2085,7 @@ export const api = {
       : Promise.resolve({ success: true }),
   chatMcpListTools: (cachedOnly = false) =>
     invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null; discoveryPending?: boolean }>('chat_mcp_list_tools', { cachedOnly }),
+
   chatMcpTestServer: (server: ChatMcpServer, timeoutMs?: number) =>
     invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null }>(
       'chat_mcp_test_server',

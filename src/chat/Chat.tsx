@@ -1919,19 +1919,34 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   //     codex 有 `turn/steer`；pi 有 RPC `steer`；dsh 有 bridge `session/steer`。
   //     claude 的 stream-json 输入是顺序处理的、ACP 只有 prompt/cancel。
   //   - 多模型一问多答 → 一律不给：同会话 N 条并发 run，按 conversation 键的信箱定不到某条臂。
-  const canSteerCurrentConversation = activeReplyModels.length < 2
-  // Goal 的用户输入必须先于自动续跑，因此复用原生 follow-up；普通内置循环仍保留
-  // 可见队列和「立刻引导」。外部 CLI 仅在协议原生支持时启用，多模型一问多答不给。
-  const canFollowUpCurrentConversation = goalActive && activeReplyModels.length < 2
+  const activeExternalAgentSupportsSteering = useMemo(() => {
+    const agentId = activeAgentRuntime.externalAgentId
+    if (!agentId) return false
+    const agent = detectedExternalAgents.find((item) => item.id === agentId)
+    return Boolean(agent?.supportsSteering ?? agent?.supports_steering)
+  }, [activeAgentRuntime.externalAgentId, detectedExternalAgents])
+  const activeExternalAgentSupportsFollowUp = useMemo(() => {
+    const agentId = activeAgentRuntime.externalAgentId
+    if (!agentId) return false
+    const agent = detectedExternalAgents.find((item) => item.id === agentId)
+    return Boolean(agent?.supportsFollowUp ?? agent?.supports_follow_up)
+  }, [activeAgentRuntime.externalAgentId, detectedExternalAgents])
+  const canSteerCurrentConversation =
+    (usesExternalRuntime ? activeExternalAgentSupportsSteering : true)
+    && activeReplyModels.length < 2
+  // Prefer steering even for goals/Pi; native follow-up is only a compatibility fallback.
+  const canFollowUpCurrentConversation =
+    ((usesExternalRuntime && activeExternalAgentSupportsFollowUp) || goalActive)
+    && activeReplyModels.length < 2
 
-  const handleQueueMessage = useCallback((content: string, attachments: PendingAttachment[]) => {
+  const handleSendWhileRunning = useCallback((content: string, attachments: PendingAttachment[]) => {
     const conversation = currentConversationRef.current
     if (!conversation) return
-    const message = queueCommands.enqueue(conversation.id, content, attachments)
-    if (message && canFollowUpCurrentConversation) {
-      void queueCommands.followUp(conversation, message.id)
-    }
-  }, [canFollowUpCurrentConversation, queueCommands])
+    queueCommands.sendWhileRunning(conversation, content, attachments, {
+      canSteer: canSteerCurrentConversation,
+      canFollowUp: canFollowUpCurrentConversation,
+    })
+  }, [canSteerCurrentConversation, canFollowUpCurrentConversation, queueCommands])
 
   const [closedAsyncQuestions, setClosedAsyncQuestions] = useState<Record<string, string[]>>({})
   const asyncQuestionsValue = useMemo(() => {
@@ -1951,9 +1966,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         const conversation = currentConversationRef.current
         if (!conversation || conversation.id !== conversationId) throw new Error('对话已切换，请重试')
         if (text) {
-          const queued = queueCommands.enqueue(conversation.id, text, [])
-          if (!queued) throw new Error('答复未能加入消息队列，请重试')
-          if (!generatingConversationIdsRef.current.has(conversation.id)) {
+          if (generatingConversationIdsRef.current.has(conversation.id)) {
+            handleSendWhileRunning(text, [])
+          } else {
+            const queued = queueCommands.enqueue(conversation.id, text, [])
+            if (!queued) throw new Error('答复未能发送，请重试')
             void queueCommands.drain(conversation)
           }
         }
@@ -1962,13 +1979,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         }))
       },
     }
-  }, [closedAsyncQuestions, currentConversation, queueCommands])
-
-  const handleSteerQueuedMessage = useCallback((messageId: string) => {
-    const conversationId = currentConversationIdRef.current
-    if (!conversationId) return
-    void queueCommands.steer(conversationId, messageId)
-  }, [queueCommands])
+  }, [closedAsyncQuestions, currentConversation, queueCommands, handleSendWhileRunning])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
     const conversationId = currentConversationIdRef.current
@@ -2167,7 +2178,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       conversationId,
       () => chatApi.cancelStream(conversationId),
       () => {
-        setStreamCoarse({ cancelling: true })
         interactionInbox.observe({ kind: 'drop', conversationId })
       },
     )
@@ -2532,7 +2542,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const inputBarProps = useMemo<InputBarProps>(() => ({
     onSend: handleSendMessage,
-    onQueue: handleQueueMessage,
+    onSendWhileRunning: handleSendWhileRunning,
     disabled: isCurrentConversationBusy(),
     onCancel: handleCancelStream,
     cancelVisible: streamCoarse.streaming,
@@ -2618,7 +2628,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleComposerModeChange,
     handleOpenChatSettings,
     handleOpenDockGit,
-    handleQueueMessage,
+    handleSendWhileRunning,
     handleSelectAssistant,
     handleSendMessage,
     handleSetWebSearchMode,
@@ -2938,8 +2948,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               />
             ) : null}
             queuedMessages={currentQueuedMessages}
-            canSteerQueuedMessages={canSteerCurrentConversation}
-            onSteerQueuedMessage={handleSteerQueuedMessage}
             onRemoveQueuedMessage={handleRemoveQueuedMessage}
             onRestoreQueuedMessage={handleRestoreQueuedMessage}
             lang={uiLang}

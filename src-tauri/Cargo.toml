@@ -1,7 +1,7 @@
 # Kivio Rust 后端 Cargo 配置
 [package]
 name = "kivio"
-version = "3.1.3"
+version = "3.1.4"
 description = "Kivio Desktop - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 license = "GPL-3.0-or-later"
@@ -75,9 +75,11 @@ rmcp = { version = "=3.5.1", default-features = false, features = [
 process-wrap = { version = "10.0.1", features = ["tokio1"] }
 
 # HTTP 客户端与异步运行时
-reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form"] }
+reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form", "stream"] }
 tokio = { version = "1", features = ["time", "process", "io-util", "net", "sync", "rt-multi-thread", "macros"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
+tokio-util = { version = "0.7", features = ["io"] }
 scraper = "0.23"
 html-escape = "0.2"
 regex = "1"
@@ -85,6 +87,8 @@ ignore = "0.4"
 # Dock：workspace 文件监听（notify）+ git 命令超时杀进程树（wait-timeout）。
 notify = "7"
 wait-timeout = "0.2"
+# Bounded CLI probes spool output without waiting on inherited pipes.
+tempfile = "3"
 
 # 跨平台 app-data 目录定位。
 directories = "5"
@@ -197,7 +201,6 @@ windows = { version = "0.61.3", features = [
 custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
-tempfile = "3"
 # Named DST zones keep schedule regressions independent of the process timezone.
 chrono-tz = "0.10"
 # 测试用：test-util 提供 tokio 暂停时钟（start_paused），让重试退避 sleep 在单测中瞬时跳过。

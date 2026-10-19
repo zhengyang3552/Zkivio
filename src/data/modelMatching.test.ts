@@ -3,24 +3,47 @@ import { matchModel, matchModelExact, resolveModelInfo } from './modelMatching'
 
 describe('matchModel', () => {
   it.each([
-    ['[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored', 'Qwen3.8 27B Uncensored'],
-    ['[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive', 'Qwen3.5 9B Uncensored (HauhauCS Aggressive)'],
-  ])('keeps the self-hosted variant identity and avoids inherited commercial pricing for %s', (id, displayName) => {
-    expect(matchModel(id)).toMatchObject({ displayName, contextWindow: 262144, reasoningEfforts: [] })
+    ['qwen3.8-flash-next', ['low', 'medium', 'xhigh']],
+    ['alibaba/qwen3.8-flash-next', ['low', 'medium', 'xhigh']],
+    ['qwen3.8-27b', ['low', 'medium', 'xhigh']],
+    ['qwen/qwen3.8-27b', ['low', 'medium', 'xhigh']],
+    ['qwen3.8-max-0902', ['low', 'medium', 'xhigh']],
+    ['qwen3.8-omni-flash', ['low', 'medium', 'xhigh']],
+    ['deepseek-flash', ['low', 'high', 'max']],
+    ['deepseek-v4-pro-0813', ['low', 'high', 'max']],
+    ['glm-5.1', []],
+    ['gpt-5.5-pro', ['medium', 'high', 'xhigh']],
+  ])('uses native effort values from the verified API contract for %s', (id, efforts) => {
+    expect(matchModel(id)?.reasoningEfforts).toEqual(efforts)
+    expect(resolveModelInfo(id, { [id]: { reasoningEfforts: ['low'] } }).reasoningEfforts).toEqual(['low'])
+  })
+
+  it.each(['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol'])(
+    'uses the official API context and output limits for %s', (id) => {
+      expect(matchModel(id)).toMatchObject({ contextWindow: 1_050_000, maxOutput: 128_000 })
+      expect(matchModel(`openai/${id}`)?.contextWindow).toBe(1_050_000)
+    },
+  )
+
+  it.each([
+    ['[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored', 'Qwen3.8 27B Uncensored', ['low', 'medium', 'xhigh']],
+    ['[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive', 'Qwen3.5 9B Uncensored (HauhauCS Aggressive)', []],
+  ])('keeps the self-hosted variant identity and avoids inherited commercial pricing for %s', (id, displayName, efforts) => {
+    expect(matchModel(id)).toMatchObject({ displayName, contextWindow: 262144, reasoningEfforts: efforts })
     expect(matchModel(id)?.pricing?.input).toBeUndefined()
     expect(matchModel(id)?.pricing?.output).toBeUndefined()
     expect(resolveModelInfo(id, { [id]: { maxOutput: 8192 } }).maxOutput).toBe(8192)
   })
 
   it.each([
-    ['openai/gpt-6-sol', 'GPT-6 Sol', 256000, 2, 10, 0.2],
-    ['openai/gpt-6-luna', 'GPT-6 Luna', 256000, 0.1, 0.5, 0.01],
+    ['openai/gpt-6-sol', 'GPT-6 Sol', 1050000, 2, 10, 0.2],
+    ['openai/gpt-6-luna', 'GPT-6 Luna', 1050000, 0.1, 0.5, 0.01],
     ['anthropic/claude-opus-5-5', 'Claude Opus 5.5', 1000000, 4, 20, 0.2],
     ['xiaomi/mimo-v2.6-pro', 'MiMo V2.6 Pro', 1048576, 0.435, 0.87, 0.0036],
     ['xiaomi/mimo-v2.6-flash', 'MiMo V2.6 Flash', 1048576, 0.14, 0.28, 0.0028],
     ['z-ai/glm-5.3-flashx', 'GLM-5.3 FlashX', 1000000, 0.37, 1.25, 0.075],
     ['x-ai/grok-4.7', 'Grok 4.7', 500000, 2, 6, 0.5],
-    ['qwen/qwen3.8-omni-flash', 'Qwen3.8 Omni Flash', 1000000, 0.15, 0.47, 0.016],
+    ['qwen/qwen3.8-omni-flash', 'Qwen3.8 Omni Flash', 1000000, 0.11901219875, 0.401666170783, 0.0148765248438],
   ])('resolves the September 24 catalog entry for %s without inheriting an older variant', (id, name, context, input, output, cachedInput) => {
     expect(matchModelExact(id)).toMatchObject({
       displayName: name, contextWindow: context,
@@ -51,12 +74,12 @@ describe('matchModel', () => {
     expect(matchModel('mimo-v2.5')?.pricing).toEqual({ input: 0.14, output: 0.28, cachedInput: 0.0028 })
   })
 
-  it('resolves all eight OpenCode free variants without inheriting paid limits or prices', () => {
+  it('resolves OpenCode free route identities without assuming native zero-priced billing', () => {
     for (const id of ['big-pickle', 'deepseek-v4-flash-free', 'ling-3.0-flash-fin-free', 'mimo-v2.5-free', 'muse-spark-1.2-contributor-free', 'muse-spark-1.3-contributor-free', 'nemotron-3-ultra-free', 'nemotron-3.5-lightning-free']) {
       const info = matchModelExact(id)
       expect(info, id).not.toBeNull()
-      expect(info?.pricing?.input).toBe(0)
-      expect(info?.pricing?.output).toBe(0)
+      expect(info?.pricing?.input).toBeUndefined()
+      expect(info?.pricing?.output).toBeUndefined()
       expect(matchModel(`opencode/${id}`)).toEqual(info)
     }
     expect(matchModelExact('muse-spark-1.3-contributor-free')?.maxOutput).toBe(131072)
@@ -78,7 +101,7 @@ describe('matchModel', () => {
 
   it('resolves September models through provider and effort aliases without losing variants', () => {
     expect(matchModel('gemini-3.8-flash-high')).toEqual(matchModelExact('gemini-3.8-flash'))
-    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(256000)
+    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(1050000)
     expect(matchModel('anthropic/claude-fable-5-1')?.displayName).toBe('Claude Fable 5.1')
     expect(matchModel('claude-mythos-5-1')?.displayName).toBe('Claude Mythos 5.1')
     expect(matchModel('meta/muse-spark-1.3-contributor')?.pricing?.input).toBe(0.1)
@@ -119,11 +142,6 @@ describe('matchModel', () => {
     expect(matchModel('gpt-5.6-luna')?.displayName).toBe('GPT-5.6 Luna')
     expect(matchModel('gpt-5.6-sol')?.displayName).toBe('GPT-5.6 Sol')
     expect(matchModel('gpt-5.6-terra')?.displayName).toBe('GPT-5.6 Terra')
-    expect(matchModel('gpt-5.6')?.contextWindow).toBe(256_000)
-    expect(matchModel('gpt-5.6-sol')?.contextWindow).toBe(256_000)
-    expect(matchModel('gpt-5.6-terra')?.contextWindow).toBe(256_000)
-    expect(matchModel('gpt-5.6-luna')?.contextWindow).toBe(256_000)
-    expect(matchModel('gpt-6-astra')?.contextWindow).toBe(256_000)
     expect(matchModel('gpt-5.5')?.displayName).toBe('GPT-5.5')
     expect(matchModel('gpt-5')?.displayName).toBe('GPT-5')
   })
@@ -136,7 +154,8 @@ describe('matchModel', () => {
     expect(flare?.displayName).toBe('GPT Image 2.5 Flare')
     expect(flare?.capabilities?.vision).toBe(true)
     expect(flare?.capabilities?.imageGeneration).toBe(true)
-    expect(flare?.pricing?.output).toBe(30)
+    // Text and image tokens have different official rates; no blended scalar.
+    expect(flare?.pricing?.output).toBeUndefined()
 
     const sunburstSnapshot = matchModel('gpt-image-2.5-sunburst-2026-09-08')
     expect(sunburstSnapshot?.displayName).toBe('GPT Image 2.5 Sunburst (2026-09-08)')
@@ -210,10 +229,9 @@ describe('matchModel', () => {
     expect(matchModel('gemini-3.7-flash')?.displayName).toBe('Gemini 3.7 Flash')
     expect(matchModel('gemini-3.7-flash')?.contextWindow).toBe(1_048_576)
     expect(matchModel('gemini-3.7-flash')?.maxOutput).toBe(65_536)
-    expect(matchModel('gemini-3.7-flash')?.pricing?.input).toBe(0.75)
-    expect(matchModel('gemini-3.7-flash')?.pricing?.output).toBe(3.75)
+    expect(matchModel('gemini-3.7-flash')?.pricing?.input).toBeUndefined()
     expect(matchModel('gemini-3.6-flash')?.displayName).toBe('Gemini 3.6 Flash')
-    expect(matchModel('gemini-3.6-flash')?.pricing?.output).toBe(7.5)
+    expect(matchModel('gemini-3.6-flash')?.pricing?.output).toBe(3.75)
     expect(matchModel('gemini-3.5-flash-lite')?.displayName).toBe('Gemini 3.5 Flash-Lite')
     expect(matchModel('gemini-3.5-flash-lite')?.pricing?.input).toBe(0.3)
     expect(matchModel('gemini-3.1-flash-lite')?.displayName).toBe('Gemini 3.1 Flash-Lite')
@@ -268,7 +286,7 @@ describe('matchModel', () => {
     expect(matchModel('composer-2')?.displayName).toBe('Composer 2')
     expect(matchModel('composer-1.5')?.displayName).toBe('Composer 1.5')
     expect(matchModel('composer-1')?.displayName).toBe('Composer 1')
-    expect(matchModel('composer-1')?.pricing?.input).toBe(1.25)
+    expect(matchModel('composer-1')?.pricing?.input).toBeUndefined()
     expect(matchModel('composer-1')?.capabilities?.vision).toBe(true)
   })
 
@@ -282,9 +300,9 @@ describe('matchModel', () => {
     expect(hy4?.capabilities?.functionCalling).toBe(true)
     expect(hy4?.capabilities?.reasoning).toBe(true)
     expect(hy4?.reasoningEfforts).toEqual(['high'])
-    expect(hy4?.pricing?.input).toBe(0.834)
-    expect(hy4?.pricing?.output).toBe(2.501)
-    expect(hy4?.pricing?.cachedInput).toBe(0.042)
+    expect(hy4?.pricing?.input).toBeCloseTo(6 / 6.722, 10)
+    expect(hy4?.pricing?.output).toBeCloseTo(18 / 6.722, 10)
+    expect(hy4?.pricing?.cachedInput).toBeCloseTo(0.3 / 6.722, 10)
     expect(matchModel('hy4')?.displayName).toBe('Hy4 Preview')
     expect(matchModel('tencent/hy4-preview')).toEqual(hy4)
 
@@ -293,7 +311,7 @@ describe('matchModel', () => {
     expect(hy3?.contextWindow).toBe(262_144)
     expect(hy3?.maxOutput).toBe(131_072)
     expect(hy3?.reasoningEfforts).toEqual(['low', 'high'])
-    expect(hy3?.pricing?.input).toBe(0.132)
+    expect(hy3?.pricing?.input).toBeCloseTo(1 / 6.722, 10)
     expect(matchModel('tencent/hy3')?.displayName).toBe('Hy3')
 
     expect(matchModel('hy3-preview')?.displayName).toBe('Hy3 Preview')
@@ -314,8 +332,8 @@ describe('matchModel', () => {
     expect(pro21?.capabilities?.functionCalling).toBe(true)
     expect(pro21?.capabilities?.reasoning).toBe(true)
     expect(pro21?.reasoningEfforts).toEqual(['low', 'medium', 'high'])
-    expect(pro21?.pricing?.input).toBe(0.9)
-    expect(pro21?.pricing?.output).toBe(4.5)
+    expect(pro21?.pricing?.input).toBeCloseTo(6 / 6.722, 10)
+    expect(pro21?.pricing?.output).toBeCloseTo(30 / 6.722, 10)
     expect(matchModel('doubao-seed-2-1-pro-260628')?.displayName).toBe('Doubao Seed 2.1 Pro')
     expect(matchModel('seed-2.1-pro')?.displayName).toBe('Doubao Seed 2.1 Pro')
 
@@ -326,14 +344,14 @@ describe('matchModel', () => {
     const pro20 = matchModel('doubao-seed-2.0-pro')
     expect(pro20?.displayName).toBe('Doubao Seed 2.0 Pro')
     expect(pro20?.capabilities?.vision).toBe(true)
-    expect(pro20?.pricing?.input).toBe(0.5)
+    expect(pro20?.pricing?.input).toBeCloseTo(3.2 / 6.722, 10)
     expect(pro20?.displayName).not.toBe('Doubao Seed 2.1 Pro')
     expect(matchModel('doubao-seed-2.1-pro')?.displayName).not.toBe('Doubao Seed 2.0 Pro')
 
     expect(matchModel('doubao-seed-2.0-code')?.displayName).toBe('Doubao Seed 2.0 Code')
     expect(matchModel('bytedance-seed/seed-2.0-code')?.displayName).toBe('Doubao Seed 2.0 Code')
-    expect(matchModel('doubao-seed-2.0-lite')?.pricing?.input).toBe(0.25)
-    expect(matchModel('doubao-seed-2.0-mini')?.pricing?.output).toBe(0.4)
+    expect(matchModel('doubao-seed-2.0-lite')?.pricing?.input).toBeCloseTo(0.6 / 6.722, 10)
+    expect(matchModel('doubao-seed-2.0-mini')?.pricing?.output).toBeCloseTo(2 / 6.722, 10)
     expect(matchModel('seed-1.6-flash')?.displayName).toBe('Doubao Seed 1.6 Flash')
     expect(matchModel('doubao-seed-1.6')?.displayName).toBe('Doubao Seed 1.6')
     expect(matchModel('seed-1.6-flash')?.displayName).not.toBe('Doubao Seed 1.6')
@@ -350,8 +368,8 @@ describe('matchModel', () => {
     expect(info?.capabilities?.reasoning).toBe(true)
     expect(info?.capabilities?.streaming).toBe(true)
     expect(info?.reasoningEfforts).toEqual(['high', 'max'])
-    expect(info?.pricing?.input).toBe(0)
-    expect(info?.pricing?.output).toBe(0)
+    expect(info?.pricing?.input).toBeUndefined()
+    expect(info?.pricing?.output).toBeUndefined()
     expect(matchModel('stealth/ox-alpha')).toEqual(info)
   })
 
@@ -413,8 +431,8 @@ describe('matchModel', () => {
     expect(max?.contextWindow).toBe(1_000_000)
     expect(max?.maxOutput).toBe(131_072)
     expect(max?.capabilities?.vision).toBe(true)
-    expect(max?.pricing?.input).toBe(2)
-    expect(max?.pricing?.output).toBe(6)
+    expect(max?.pricing?.input).toBeCloseTo(12 / 6.722, 10)
+    expect(max?.pricing?.output).toBeCloseTo(36 / 6.722, 10)
     expect(matchModel('qwen/qwen3.8-max')?.displayName).toBe('Qwen3.8 Max')
 
     expect(matchModel('qwen3.8-flash')?.displayName).toBe('Qwen3.8 Flash')
@@ -434,7 +452,7 @@ describe('matchModel', () => {
     expect(current?.contextWindow).toBe(1_048_576)
     expect(current?.maxOutput).toBe(384_000)
     expect(current?.capabilities?.vision).toBe(true)
-    expect(current?.reasoningEfforts).toEqual(['low', 'high', 'xhigh', 'max'])
+    expect(current?.reasoningEfforts).toEqual(['low', 'high', 'max'])
     expect(current?.pricing?.input).toBe(0.3)
 
     const flash = matchModel('deepseek-v4-flash')
@@ -456,7 +474,7 @@ describe('matchModel', () => {
     expect(matchModel('nex-agi/nex-n2.5-pro:free')?.displayName).toBe('Nex N2.5 Pro')
     expect(matchModel('sakana/fugu-max')?.contextWindow).toBe(1_000_000)
     expect(matchModel('sakana/fugu-ultra-v2')?.displayName).toBe('Fugu Ultra V2')
-    expect(matchModel('gpt-5.6-cyber')?.contextWindow).toBe(256_000)
+    expect(matchModel('gpt-5.6-cyber')?.contextWindow).toBe(400_000)
   })
 
   it('matches MiniMax M2.7 as a thinking model without collapsing onto highspeed', () => {

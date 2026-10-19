@@ -97,3 +97,82 @@ describe('useSettingsBackupController', () => {
   })
 
 })
+
+describe('manual WebDAV backup lifecycle', () => {
+  function remotePort(): SettingsBackupPort {
+    return { ...fullPort, pickImport: async () => null, pickExport: async () => null,
+      import: vi.fn(async () => {}), export: vi.fn(async () => {}),
+      webdav: {
+        load: async () => ({ url: 'https://dav.test', username: 'user', directory: 'Kivio', hasPassword: true }),
+        save: async () => ({ url: 'https://dav.test', username: 'user', directory: 'Kivio', hasPassword: true }),
+        test: async () => {}, list: async () => [], upload: vi.fn(async () => 'backup.json'),
+        download: vi.fn(async () => ({ id: 'download', path: '/private/backup.kivio' })),
+        release: vi.fn(async () => {}), delete: vi.fn(async () => {}),
+        confirmRestore: async () => true, confirmDelete: async () => true,
+      },
+    }
+  }
+  const backup = { name: 'kivio-full-test.kivio', kind: 'full' as const, size: 10, modified: '' }
+
+  it('requires confirmation before downloading and cleans temporary data after rejected archive validation', async () => {
+    const port = remotePort()
+    port.webdav!.confirmRestore = async () => false
+    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
+    await act(async () => { await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
+    expect(port.webdav!.download).not.toHaveBeenCalled()
+    port.webdav!.confirmRestore = async () => true
+    port.importFull = async () => { throw new Error('Invalid checksum') }
+    await act(async () => { await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
+    expect(port.webdav!.release).toHaveBeenCalledWith('download')
+    expect(result.current.restartRequired).toBe(false)
+    expect(result.current.status).toEqual({ kind: 'err', msg: 'Operation failed: Invalid checksum' })
+    port.importFull = async () => {}
+    await act(async () => { await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
+    expect(result.current.restartRequired).toBe(true)
+  })
+
+  it.each(['configuration', 'full', 'invalid'] as const)('preserves the %s restore outcome when temporary cleanup fails', async (outcome) => {
+    const port = remotePort()
+    port.webdav!.release = vi.fn(async () => { throw new Error('Cleanup unavailable') })
+    if (outcome === 'invalid') port.importFull = async () => { throw new Error('Invalid checksum') }
+    const selected = { ...backup, kind: outcome === 'configuration' ? 'configuration' as const : 'full' as const }
+    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
+    let restored = false
+    await act(async () => { restored = await result.current.runWebDav({ type: 'restore', backup: selected, trusted: false }) })
+    expect(restored).toBe(outcome !== 'invalid')
+    expect(result.current.restartRequired).toBe(outcome === 'full')
+    expect(result.current.status?.kind).toBe(outcome === 'invalid' ? 'err' : 'ok')
+    expect(result.current.status?.msg).toContain(outcome === 'invalid' ? 'Invalid checksum' : outcome === 'full' ? 'Restart to restore' : 'Configuration restored')
+    expect(result.current.status?.msg).toContain('Temporary backup cleanup failed')
+  })
+
+  it('blocks overlapping local export and duplicate upload until remote upload completes', async () => {
+    const pending = deferred<string>()
+    const port = remotePort()
+    port.webdav!.upload = vi.fn(() => pending.promise)
+    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
+    let upload!: Promise<boolean>
+    act(() => { upload = result.current.runWebDav({ type: 'upload', kind: 'full' }) })
+    await act(async () => {
+      await result.current.exportBackup()
+      await result.current.runWebDav({ type: 'upload', kind: 'full' })
+    })
+    expect(port.export).not.toHaveBeenCalled()
+    expect(port.webdav!.upload).toHaveBeenCalledOnce()
+    expect(result.current.busy).toBe(true)
+    pending.resolve('backup.kivio')
+    await act(async () => { await upload })
+    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Backup uploaded.' })
+    expect(result.current.busy).toBe(false)
+  })
+
+  it('keeps a successful upload distinct from a failed list refresh', async () => {
+    const port = remotePort()
+    port.webdav!.list = async () => { throw new Error('Offline') }
+    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
+    await act(async () => { await result.current.runWebDav({ type: 'upload', kind: 'configuration' }) })
+    expect(result.current.status?.msg).toContain('Operation completed, but the list could not refresh')
+    expect(result.current.webdavFiles).toBeNull()
+    expect(port.webdav!.upload).toHaveBeenCalledOnce()
+  })
+})
