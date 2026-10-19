@@ -14,6 +14,7 @@ import {
 } from './chatProtocol'
 import type {
   ChatProtocolEvent,
+  ChatRetryStatusPayload,
   ChatRunEventEnvelope,
   ChatSegmentPayload as GeneratedChatSegmentPayload,
 } from '../generated/chatProtocol'
@@ -24,6 +25,12 @@ import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from '.
 import type { ThemeDefinition } from '../theme/types'
 
 // ========== 类型定义 ==========
+
+export interface ModelDatabaseSnapshot {
+  revision: number
+  version: string
+  database: Record<string, unknown>
+}
 
 export interface ThinkingCapabilities {
   levels: string[]
@@ -1188,7 +1195,10 @@ export type Settings = {
   uiFontScale?: number
   uiFontFamily?: string
   uiFontMono?: string
+  /** 输入翻译的输出语言；auto 表示中英互译。 */
   targetLang: string
+  /** 划词、截图与替换翻译的阅读目标语言，由后端迁移和规范化。 */
+  readingTargetLang: string
   autoPaste: boolean
   launchAtStartup: boolean
   /** 启动后不打开聊天窗口，进程留在托盘（适合开机自启后后台常驻） */
@@ -1287,8 +1297,6 @@ export type Settings = {
   imageArchiveEnabled?: boolean
   /** 自动归档目标目录路径 */
   imageArchivePath?: string
-  /** Obsidian 笔记库本地路径（空表示未配置） */
-  obsidianVaultPath?: string
   /** 收藏并置顶的模型键（"providerId:model"）；顺序即置顶顺序。chat 模型选择器用。 */
   favoriteModels: string[]
 }
@@ -1861,6 +1869,11 @@ export const api = {
     return { id, url: convertFileSrc(id, 'kivio-preview') }
   },
   releaseHtmlPreview: (id: string) => invoke<void>('release_html_preview', { id }),
+  exportFullBackup: (path: string, interfaceState: Record<string, string>) => invoke<void>('export_full_backup', { path, interface: interfaceState }),
+  importFullBackup: (path: string, trusted: boolean) => invoke<void>('import_full_backup', { path, trusted }),
+  backupInterface: () => invoke<{ id: string; values: Record<string, string> } | null>('backup_interface'),
+  backupRestorePending: () => invoke<boolean>('backup_restore_pending'),
+  restartAfterRestore: () => invoke<void>('restart_after_restore'),
   exportSettings: (path: string, share?: boolean) => invoke<void>('export_settings', { path, share }),
   importSettings: async (path: string, expectedVersion: SettingsVersion, trusted?: boolean) =>
     normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion, trusted })),
@@ -1938,9 +1951,6 @@ export const api = {
       channel.onmessage = () => {}
     }
   },
-
-  listObsidianVaults: () =>
-    invoke<{ name: string; path: string }[]>('list_obsidian_vaults_cmd'),
 
   /** 能力插件列表（目录 + 安装/启用状态） */
   pluginsList: () => invoke<PluginStatus[]>('plugins_list'),
@@ -2187,7 +2197,7 @@ export const api = {
   },
   /** 流状态行的瞬态一行字（上游重试等，status_note_updated）。note=null 为显式清除。 */
   onChatStatusNote: (
-    listener: (payload: { conversationId: string; runId: string; note: string | null }) => void,
+    listener: (payload: { conversationId: string; runId: string; note: string | null; retry?: ChatRetryStatusPayload }) => void,
   ) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return onChatProtocol((event) => {
@@ -2196,6 +2206,7 @@ export const api = {
         conversationId: event.conversationId,
         runId: event.runId,
         note: event.note,
+        retry: event.retry,
       })
     })
   },
@@ -2358,6 +2369,10 @@ export const api = {
     if (!isTauriRuntime()) return Promise.resolve()
     return invoke<void>('chat_mcp_warmup', { serverIds })
   },
+  chatSessionSkills: (conversationId: string, reload = false) =>
+    invoke<{ success: boolean; skills: SkillMeta[]; warnings?: string[]; error?: string | null }>(
+      'chat_session_skills', { conversationId, reload },
+    ),
   chatSkillsList: (skillScanPaths?: string[], projectCwd?: string) =>
     invoke<{ success: boolean; skills: SkillMeta[]; warnings?: string[]; error?: string | null }>(
       'chat_skills_list',
@@ -2556,6 +2571,11 @@ export const api = {
   // ========== 自动更新（仅检查 + 跳转，不做自动下载安装） ==========
 
   /** 调后端 GitHub Releases API 检查最新版本 */
+  getModelDatabase: () => invoke<ModelDatabaseSnapshot>('get_model_database'),
+  updateModelDatabase: () => invoke<ModelDatabaseSnapshot>('update_model_database'),
+  onModelDatabaseChanged: (listener: (snapshot: ModelDatabaseSnapshot) => void) =>
+    on<ModelDatabaseSnapshot>('model-database-changed', listener),
+
   checkUpdate: () => invoke<UpdateInfo>('check_github_latest_release'),
 
   /** 下载新版本安装包到 OS temp 目录，返回本地文件路径。下载进度通过 onUpdateDownloadProgress 派发 */

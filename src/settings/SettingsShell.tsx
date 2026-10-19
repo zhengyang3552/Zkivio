@@ -1,9 +1,10 @@
+import { useModelDatabase } from '../data/useModelDatabase'
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
-  Download, Upload, ArrowLeft, Palette,
+  ArrowLeft, Palette,
 } from 'lucide-react'
-import { open, save } from '@tauri-apps/plugin-dialog'
+import { confirm, open, save } from '@tauri-apps/plugin-dialog'
 import {
   api,
   type Settings as SettingsType,
@@ -31,7 +32,7 @@ import { applyProviderDraftIntent, type ProviderDraftIntent } from './providerDr
 import { i18n, type Lang } from '../components/i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  CliIcon, ComputerIcon, WebSearchIcon, ConnectorsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
+  CliIcon, ComputerIcon, WebSearchIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
 } from './NavIcons'
 import { formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
@@ -54,6 +55,8 @@ import { AppInfoGroup, UpdateGroup } from './tabs/AboutTab'
 import { useSettingsMemoryEditor } from './useSettingsMemoryEditor'
 import { useProviderCatalogController } from './useProviderCatalogController'
 import { useSettingsBackupController } from './useSettingsBackupController'
+import { BackupSection } from './BackupSection'
+import { captureBackupInterface } from '../api/backupInterface'
 import { useSettingsHotkeyRecorder, type HotkeyScopeKey } from './useSettingsHotkeyRecorder'
 import { useProviderModalController } from './useProviderModalController'
 import { useSettingsOnboardingController } from './useSettingsOnboardingController'
@@ -70,12 +73,11 @@ import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../api/chat
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from './uiFont'
 import {
   SettingRow,
-  SettingsGroup, FieldBlock,
+  SettingsGroup,
 } from './components'
-import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
 
-export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'sessions' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 // UI 字号：以 px 展示、以整体缩放（zoom）实现。CSS 全是 px 硬编码，做不了真正的 rem 基准字号，
@@ -247,6 +249,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const modelTestProviderId = providerModals.testId
   const { closePicker, cancelDelete } = providerModals
   const requestWindowFocus = useWindowInteractionFocus()
+  useModelDatabase()
   const updates = useSettingsUpdateController(settings ? settings.autoCheckUpdate : null)
   const platform = getPlatform()
   const isMac = platform === 'macos'
@@ -270,15 +273,26 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   })
   const settingsBackup = useSettingsBackupController({
     pickImport: async () => {
-      const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
+      const selected = await open({ multiple: false, filters: [{ name: 'Kivio backup', extensions: ['json', 'kivio', 'zip'] }] })
       return typeof selected === 'string' ? selected : null
     },
-    pickExport: (share) => save({
-      defaultPath: share ? 'kivio-share.json' : 'kivio-backup.json',
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+    pickExport: (kind) => save({
+      defaultPath: kind === 'full' ? 'kivio-full-backup.kivio' : 'kivio-configuration.json',
+      filters: [{ name: 'Kivio backup', extensions: kind === 'full' ? ['kivio'] : ['json'] }],
     }),
     import: (path, trusted) => editorController.import(path, trusted),
-    export: (path, share) => api.exportSettings(path, share),
+    export: async (path, kind) => {
+      if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
+      if (kind === 'full') await api.exportFullBackup(path, captureBackupInterface())
+      else await api.exportSettings(path)
+    },
+    importFull: (path, trusted) => api.importFullBackup(path, trusted),
+    confirmFullRestore: () => confirm(lang === 'zh'
+      ? '重启后将用备份替换当前 Kivio 数据，恢复前的数据会保留副本。请先停止正在运行的任务。继续准备恢复？'
+      : 'After restarting, this backup will replace your Kivio data. A copy of your previous data will be kept. Stop active tasks first. Prepare restore?',
+    { title: lang === 'zh' ? '恢复完全备份' : 'Restore full backup', kind: 'warning' }),
+    restart: () => api.restartAfterRestore(),
+    pendingRestore: () => api.backupRestorePending(),
   }, lang)
   const onboarding = useSettingsOnboardingController({
     flush: () => editorController.flush(),
@@ -424,7 +438,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   useEffect(() => {
     if (retryAttempts === undefined) return
-    setRetryAttemptsInput(String(retryAttempts))
+    setRetryAttemptsInput(String(Math.max(0, retryAttempts - 1)))
   }, [retryAttempts])
 
   const uiFontScale = settings?.uiFontScale
@@ -569,25 +583,25 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     if (value.trim() === '') return
     const parsed = Number.parseInt(value, 10)
     if (Number.isNaN(parsed)) return
-    const clamped = Math.min(8, Math.max(1, parsed))
-    updateSettings({ retryAttempts: clamped })
+    const clamped = Math.min(10, Math.max(0, parsed))
+    updateSettings({ retryAttempts: clamped + 1 })
   }
 
   const handleRetryAttemptsBlur = () => {
     if (!settings) return
     if (retryAttemptsInput.trim() === '') {
-      setRetryAttemptsInput(String(settings.retryAttempts))
+      setRetryAttemptsInput(String(Math.max(0, settings.retryAttempts - 1)))
       return
     }
     const parsed = Number.parseInt(retryAttemptsInput, 10)
     if (Number.isNaN(parsed)) {
-      setRetryAttemptsInput(String(settings.retryAttempts))
+      setRetryAttemptsInput(String(Math.max(0, settings.retryAttempts - 1)))
       return
     }
-    const clamped = Math.min(8, Math.max(1, parsed))
+    const clamped = Math.min(10, Math.max(0, parsed))
     setRetryAttemptsInput(String(clamped))
-    if (clamped !== settings.retryAttempts) {
-      updateSettings({ retryAttempts: clamped })
+    if (clamped + 1 !== settings.retryAttempts) {
+      updateSettings({ retryAttempts: clamped + 1 })
     }
   }
 
@@ -912,7 +926,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: CliIcon },
     { id: 'computerControl' as const, label: lang === 'zh' ? '电脑操控' : 'Computer control', icon: ComputerIcon },
     { id: 'hooks' as const, label: t.tabHooks, icon: HooksIcon },
-    { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
     { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
     { id: 'usage' as const, label: lang === 'zh' ? '使用统计' : 'Usage', icon: UsageIcon },
@@ -971,10 +984,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     hooks: {
       title: t.tabHooks,
       subtitle: t.hooksPageSubtitle,
-    },
-    connectors: {
-      title: t.tabConnectors,
-      subtitle: t.pluginCenterConnectorsSubtitle,
     },
     sessions: {
       title: t.tabSessions,
@@ -1155,46 +1164,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   </SettingRow>
                 </SettingsGroup>
 
-                <SettingsGroup title={lang === 'zh' ? '备份与恢复' : 'Backup & Restore'}>
-                  <FieldBlock
-                    label={lang === 'zh' ? '数据备份' : 'Data backup'}
-                    description={lang === 'zh'
-                      ? '完整备份含 API Key、OAuth 和集，请仅保存在可信位置。普通导入会禁用 MCP 和 hooks，保留本机外部 CLI 配置；可信恢复会保留执行权限。'
-                      : 'Full backups include API keys, OAuth and sets. Keep them private. Import disables MCP and hooks and keeps local CLI configuration. Trusted restore preserves execution permissions.'}
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        onClick={settingsBackup.exportBackup}
-                        disabled={settingsBackup.busy}
-                        data-tauri-drag-region="false"
-                      >
-                        <Download size={11} />
-                        {lang === 'zh' ? '导出备份' : 'Export'}
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={settingsBackup.importBackup}
-                        disabled={settingsBackup.busy}
-                        data-tauri-drag-region="false"
-                      >
-                        <Upload size={11} />
-                        {lang === 'zh' ? '导入备份' : 'Import'}
-                      </Button>
-                      <Button size="sm" onClick={settingsBackup.shareBackup} disabled={settingsBackup.busy}>
-                        {lang === 'zh' ? '导出分享配置' : 'Export for sharing'}
-                      </Button>
-                      <Button size="sm" onClick={settingsBackup.restoreBackup} disabled={settingsBackup.busy}>
-                        {lang === 'zh' ? '恢复可信备份（保留权限）' : 'Restore trusted backup (keep permissions)'}
-                      </Button>
-                      {settingsBackup.status && (
-                        <span className={`text-[12px] ${settingsBackup.status.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
-                          {settingsBackup.status.msg}
-                        </span>
-                      )}
-                    </div>
-                  </FieldBlock>
-                </SettingsGroup>
+                <BackupSection controller={settingsBackup} lang={lang} />
 
                 {(permissions.status?.platform === 'macos' || permissions.status?.platform === 'linux') && (
                   <PermissionsGroup
@@ -1347,29 +1317,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 lang={lang}
                 hooks={settings.chatTools.hooks ?? []}
                 onChange={(hooks) => updateChatTools({ hooks })}
-              />
-            )}
-
-            {/* ===== 连接器；通用插件包由插件市场管理 ===== */}
-            {activeTab === 'connectors' && (
-              <ConnectorsPanel
-                servers={settings.chatTools.servers}
-                updateChatTools={updateChatTools}
-                obsidianVaultPath={settings?.obsidianVaultPath ?? ''}
-                onObsidianVaultPathChange={(path) => updateSettings({ obsidianVaultPath: path })}
-                lang={lang}
-                testServer={async (server) => {
-                  try {
-                    const result = await api.chatMcpTestServer(server, settings?.chatTools?.toolTimeoutMs)
-                    return {
-                      ok: result.success,
-                      message: result.error || '',
-                      tools: result.tools,
-                    }
-                  } catch {
-                    return null
-                  }
-                }}
               />
             )}
 

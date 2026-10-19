@@ -216,12 +216,7 @@ pub(crate) async fn collect_enabled_mcp_tool_defs(
 ) -> (Vec<ChatToolDefinition>, Vec<String>) {
     let servers = eligible_mcp_servers(settings)
         .into_iter()
-        .filter(|server| {
-            allowed_server_ids.is_none_or(|ids| {
-                ids.iter()
-                    .any(|id| crate::computer_control::mcp_server_ids_equivalent(id, &server.id))
-            })
-        })
+        .filter(|server| allowed_server_ids.is_none_or(|ids| ids.iter().any(|id| id == &server.id)))
         .collect::<Vec<_>>();
     let listings = servers.iter().map(|server| async move {
         let result = list_tools_bounded(state, sink, server).await;
@@ -769,7 +764,7 @@ pub async fn call_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
-    skill_cache: Option<&mut crate::skills::SkillRunCache>,
+    skill_context: Option<&mut crate::skills::SkillRunContext>,
     native_ctx: Option<NativeToolContext>,
 ) -> Result<McpToolCallResult, String> {
     if tool.source == "native" {
@@ -777,7 +772,7 @@ pub async fn call_tool(
     }
 
     if tool.source == "skill" {
-        return call_skill_tool(app, state, tool, arguments, skill_cache).await;
+        return call_skill_tool(app, state, tool, arguments, skill_context).await;
     }
 
     if tool.source == "mixer" {
@@ -999,36 +994,35 @@ async fn call_skill_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
-    skill_cache: Option<&mut crate::skills::SkillRunCache>,
+    skill_context: Option<&mut crate::skills::SkillRunContext>,
 ) -> Result<McpToolCallResult, String> {
     let settings = state.settings_read().clone();
     let skill_name = crate::skills::extract_skill_name(&arguments)?;
 
-    // Resolve the SkillRecord, preferring the run-scoped cached registry (T1).
-    // Clone it out so we drop the immutable borrow on the cache before we need a
-    // mutable borrow for activate/read dispatch and run-scoped activation state.
-    let mut skill_cache = skill_cache;
-    let record = if let Some(cache) = skill_cache.as_deref_mut() {
-        let registry = cache.registry_for(app, &settings.chat_tools.skill_scan_paths)?;
-        crate::skills::lookup_skill(registry, &skill_name)
-            .cloned()
-            .ok_or_else(|| format!("Skill not found: {skill_name}"))?
+    let fallback;
+    let registry = if let Some(context) = skill_context.as_deref() {
+        context.registry()
     } else {
-        let registry = crate::skills::build_registry(app, &settings.chat_tools.skill_scan_paths)?;
-        crate::skills::lookup_skill(&registry, &skill_name)
-            .cloned()
-            .ok_or_else(|| format!("Skill not found: {skill_name}"))?
+        let app = app.clone();
+        let paths = settings.chat_tools.skill_scan_paths.clone();
+        fallback = tauri::async_runtime::spawn_blocking(move || {
+            crate::skills::build_registry(&app, &paths)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        &fallback
     };
+    let record = crate::skills::lookup_skill(&registry, &skill_name)
+        .ok_or_else(|| format!("Skill not found: {skill_name}"))?;
     if let Some(err) = crate::settings::skill_global_unavailable_error(
         &settings.chat_tools,
         &record.meta.id,
-        crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
         &skill_name,
     ) {
         return Err(err);
     }
     // 助手技能白名单硬 gate(防绕过):模型报个不在目录里的技能名也会被这里拦下。
-    if let Some(cache) = skill_cache.as_deref() {
+    if let Some(cache) = skill_context.as_deref() {
         if !cache.skill_id_allowed(&record.meta.id) {
             return Err(format!(
                 "Skill is not allowed for the active assistant: {skill_name}"
@@ -1036,14 +1030,13 @@ async fn call_skill_tool(
         }
     }
 
+    let record = record.clone();
+    let record =
+        tauri::async_runtime::spawn_blocking(move || crate::skills::read_skill_record(&record))
+            .await
+            .map_err(|e| e.to_string())??;
     let content = match tool.name.as_str() {
-        "skill" => {
-            if let Some(cache) = skill_cache.as_deref_mut() {
-                cache.activate_with_cache(&record)
-            } else {
-                crate::skills::activate_skill(&record)
-            }
-        }
+        "skill" => crate::skills::activate_skill(&record),
         other => return Err(format!("Unknown skill tool: {other}")),
     };
 

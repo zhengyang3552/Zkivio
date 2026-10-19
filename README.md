@@ -70,7 +70,7 @@
 
 ## 功能
 
-完整记录见 [Releases](https://github.com/zhengyang3552/kivio-linux/releases) · 当前版本说明：[v3.1.2](docs/releases/v3.1.2.md)
+完整记录见 [Releases](https://github.com/zhengyang3552/kivio-linux/releases) · 当前版本说明：[v3.1.3](docs/releases/v3.1.3.md)
 
 ### 聊天与 Agent
 
@@ -251,6 +251,12 @@ npm run protocol:check
 开发约定见[统一工程规范](docs/engineering-standards.md)。
 
 </details>
+
+## 模型库更新
+
+模型资料在公开仓库 [kivio-models](https://github.com/ZMGID/kivio-models) 维护。在「设置 → 关于 → 检查更新」点击「更新模型库」，即可更新模型名称、上下文、能力和参考价格，无需升级应用。更新成功后立即用于后续请求，保留用户自定义设置；启动时不自动联网更新，下载失败继续使用原库。
+
+Kivio 发版时自动同步最新兼容的模型库，并让 macOS 和 Windows 携带同一个提交的快照。开发时 `npm run models:check` 校验内置数据，`npm run models:sync` 手动同步；可通过 `-- --ref <模型库提交 SHA>` 固定来源。遇到 GitHub API 限流，可设置 `GITHUB_TOKEN` 或指定提交 SHA。模型资料的修改和升版方式见模型库仓库的 README。
 
 ## 贡献
 

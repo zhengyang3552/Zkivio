@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
 import { getComposerDraft } from './composerDraft'
 
@@ -7,9 +7,11 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ onFocusChanged: () => Promise.resolve(() => {}) }) }))
 vi.mock('../api/tauri', () => ({ api: {}, isTauriRuntime: () => false }))
+const cli = vi.hoisted(() => ({ commands: [{ name: 'compact', slash: '/compact' }] }))
+beforeEach(() => { cli.commands = [{ name: 'compact', slash: '/compact' }] })
 vi.mock('./api', () => ({ chatApi: {
   getProjects: () => Promise.resolve([]),
-  listExternalCliSlashCommands: () => Promise.resolve({ commands: [{ name: 'compact', slash: '/compact' }] }),
+  listExternalCliSlashCommands: () => Promise.resolve({ commands: cli.commands }),
 } }))
 
 beforeAll(() => {
@@ -47,6 +49,20 @@ describe('InputBar with real command editor', () => {
     expect(getComposerDraft('inline-settings')?.input).toBe('前文  后文')
   })
 
+  it.each([false, true])('reloads skills locally without sending a model request (external: %s)', async (external) => {
+    const reload = vi.fn().mockResolvedValue(undefined)
+    const send = vi.fn()
+    render(<InputBar onSend={send} onReloadSkills={reload} conversationId={`reload-skills-${external}`} usesChatRuntime={!external} usesExternalRuntime={external} externalAgentName={external ? "pi" : undefined} />)
+    paste('前文 /relo')
+    fireEvent.click(await screen.findByText('/reload'))
+    paste('后文')
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce())
+    expect(send).not.toHaveBeenCalled()
+    expect(getComposerDraft(`reload-skills-${external}`)?.input).toBe('前文  后文')
+    expect(await screen.findByRole('status')).toHaveTextContent(/技能列表已重新加载|Skills reloaded/)
+  })
+
   it('restores command chips when returning to a draft without leaking undo history', async () => {
     const props = { onSend: vi.fn() }
     const { rerender } = render(<InputBar {...props} conversationId="inline-draft-a" />)
@@ -69,28 +85,29 @@ describe('InputBar with real command editor', () => {
     expect(screen.getByRole('textbox').querySelector('[data-command]')).toBeNull()
   })
 
-  it('uses the external agent logo and sends the original inline text', async () => {
+  it.each(['compact', 'reload'])('preserves the native %s command and sends the original inline text', async (command) => {
+    cli.commands = [{ name: command, slash: `/${command}` }]
     const send = vi.fn().mockResolvedValue(true)
-    render(<InputBar onSend={send} conversationId="inline-cli" usesExternalRuntime externalAgentName="claude" />)
-    paste('请执行/comp')
-    fireEvent.click(await screen.findByText('/compact'))
-    const chip = screen.getByRole('textbox').querySelector('[data-command="cli:claude:compact"]')
+    render(<InputBar onSend={send} conversationId={`inline-cli-${command}`} usesExternalRuntime externalAgentName="claude" />)
+    paste(`请执行/${command}`)
+    fireEvent.click(await screen.findByText(`/${command}`))
+    const chip = screen.getByRole('textbox').querySelector(`[data-command="cli:claude:${command}"]`)
     expect(chip?.querySelector('img')).toHaveAttribute('src', '/agent-icons/claude.svg')
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
-    await waitFor(() => expect(send).toHaveBeenCalledWith('请执行/compact', [], expect.anything()))
+    await waitFor(() => expect(send).toHaveBeenCalledWith(`请执行/${command}`, [], expect.anything()))
   })
 
-  it('restores a failed action to its original draft even after navigation', async () => {
+  it.each(['compact', 'reload'] as const)('restores a failed %s action to its original draft even after navigation', async (command) => {
     let reject!: (error: Error) => void
     const compact = vi.fn(() => new Promise<void>((_resolve, fail) => { reject = fail }))
-    const props = { onSend: vi.fn(), onCompactContext: compact }
-    const { rerender } = render(<InputBar {...props} conversationId="action-origin" />)
-    paste('前文 /compact 后文')
+    const props = { onSend: vi.fn(), onCompactContext: compact, onReloadSkills: compact }
+    const { rerender } = render(<InputBar {...props} conversationId={`action-origin-${command}`} />)
+    paste(`前文 /${command} 后文`)
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
     expect(compact).toHaveBeenCalledOnce()
-    rerender(<InputBar {...props} conversationId="action-other" />)
+    rerender(<InputBar {...props} conversationId={`action-other-${command}`} />)
     await act(async () => reject(new Error('compaction failed')))
-    expect(getComposerDraft('action-origin')?.input).toBe('前文 /compact 后文')
-    expect(getComposerDraft('action-other')).toBeUndefined()
+    expect(getComposerDraft(`action-origin-${command}`)?.input).toBe(`前文 /${command} 后文`)
+    expect(getComposerDraft(`action-other-${command}`)).toBeUndefined()
   })
 })

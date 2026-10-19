@@ -1949,6 +1949,9 @@ pub struct Settings {
     pub ui_font_mono: String,
     #[serde(default = "default_target_lang")]
     pub target_lang: String,
+    /// 阅读目标语言：划词、截图与替换翻译共用；缺失时从旧目标语言迁移。
+    #[serde(default)]
+    pub reading_target_lang: String,
     #[serde(default = "default_true")]
     pub auto_paste: bool,
     #[serde(default = "default_false")]
@@ -2010,6 +2013,7 @@ pub struct Settings {
     pub settings_language: Option<String>,
     #[serde(default = "default_retry_enabled")]
     pub retry_enabled: bool,
+    /// Total attempts, including the first request. UI shows this minus one.
     #[serde(default = "default_retry_attempts")]
     pub retry_attempts: u8,
     /// 一次性迁移标记：内置专家（写作/编程/研究/数据）已 seed 进 assistants.json 后置 true。
@@ -2044,9 +2048,6 @@ pub struct Settings {
     /// 自动归档目标目录路径（空字符串表示未设置）
     #[serde(default)]
     pub image_archive_path: String,
-    /// 用户 Obsidian 笔记库本地路径（空表示未配置）；注入系统提示供 agent 读取笔记。
-    #[serde(default)]
-    pub obsidian_vault_path: String,
     /// 收藏并置顶的模型键（"providerId:model"）；列表顺序即置顶顺序。
     /// 只在 chat 模型选择器里展示为顶部"收藏"组；失效项（provider 删/禁用/模型没了）展示时过滤。
     #[serde(default)]
@@ -2175,6 +2176,7 @@ impl Default for Settings {
             ui_font_family: String::new(),
             ui_font_mono: String::new(),
             target_lang: "auto".to_string(),
+            reading_target_lang: "zh".to_string(),
             auto_paste: true,
             launch_at_startup: false,
             launch_minimized_to_tray: false,
@@ -2209,7 +2211,6 @@ impl Default for Settings {
             auto_check_update: true,
             image_archive_enabled: false,
             image_archive_path: String::new(),
-            obsidian_vault_path: String::new(),
             favorite_models: Vec::new(),
             openai: None,
         }
@@ -2252,47 +2253,19 @@ pub fn is_skill_enabled(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
         .any(|disabled| disabled == skill_id)
 }
 
-/// Bundled skill ids for the Obsidian connector — hidden until a vault path is
-/// configured. Adapted from kepano/obsidian-skills (see resources/skills/NOTICE.md).
-pub const OBSIDIAN_CONNECTOR_SKILL_IDS: &[&str] = &[
-    "obsidian-markdown",
-    "obsidian-bases",
-    "json-canvas",
-    "obsidian-cli",
-];
-
-/// The Obsidian connector is "configured" once a vault path is set.
-pub fn obsidian_connector_configured(vault_path: &str) -> bool {
-    !vault_path.trim().is_empty()
-}
-
-/// Connector-backed skills stay unavailable until their connector is configured.
-pub fn skill_connector_satisfied(skill_id: &str, obsidian_vault_configured: bool) -> bool {
-    if OBSIDIAN_CONNECTOR_SKILL_IDS.contains(&skill_id) {
-        return obsidian_vault_configured;
-    }
-    true
-}
-
-/// Global skill gate: Settings enable list + connector prerequisites + 插件门闸。
+/// Global skill gate: Settings enable list + 插件门闸。
 /// 插件附属 skill（如 officecli）仅在对应插件「已安装且启用」时可用。
-pub fn skill_globally_available(
-    chat_tools: &ChatToolsConfig,
-    skill_id: &str,
-    obsidian_vault_configured: bool,
-) -> bool {
+pub fn skill_globally_available(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
     if !crate::plugins::plugin_skill_available(skill_id) {
         return false;
     }
     is_skill_enabled(chat_tools, skill_id)
-        && skill_connector_satisfied(skill_id, obsidian_vault_configured)
 }
 
 /// When [`skill_globally_available`] is false, returns a loop/UI-friendly error.
 pub fn skill_global_unavailable_error(
     chat_tools: &ChatToolsConfig,
     skill_id: &str,
-    obsidian_vault_configured: bool,
     skill_name: &str,
 ) -> Option<String> {
     if !crate::plugins::plugin_skill_available(skill_id) {
@@ -2305,11 +2278,6 @@ pub fn skill_global_unavailable_error(
     }
     if !is_skill_enabled(chat_tools, skill_id) {
         return Some(format!("Skill is disabled in Settings: {skill_name}"));
-    }
-    if !skill_connector_satisfied(skill_id, obsidian_vault_configured) {
-        return Some(format!(
-            "Skill requires a configured Obsidian connector: {skill_name}"
-        ));
     }
     None
 }
@@ -2356,6 +2324,20 @@ fn mirror_explicit_chat_default_for_persistence(settings: &mut Settings) {
 }
 
 pub fn sanitize_settings(mut settings: Settings) -> Settings {
+    // 旧的自动中英互译只属于输入翻译；阅读翻译始终有一个明确目标。
+    let reading = settings.reading_target_lang.trim();
+    let reading = if reading.is_empty() {
+        settings.target_lang.trim()
+    } else {
+        reading
+    };
+    settings.reading_target_lang = match reading {
+        "zh-Hant" | "en" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "it" | "ru" | "ar" | "hi"
+        | "th" | "vi" | "id" | "ms" | "tr" | "nl" | "pl" | "uk" | "sv" | "da" | "no" | "fi" => {
+            reading.to_string()
+        }
+        _ => "zh".to_string(),
+    };
     let token = settings.chat_tools.playwright_extension_token.trim();
     let token = token.strip_prefix("export ").unwrap_or(token).trim();
     let token = token
@@ -3029,26 +3011,34 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     }
     // Persist only the new single-directory setting after legacy migration.
     settings.chat_tools.native_tools.workspace_roots.clear();
-    let mut migrated_legacy_cua = false;
+    // Cua now runs through its Skill + CLI. Retire only Kivio-managed MCP
+    // entries; preserve the user's disabled state and unrelated MCP servers.
+    let mut cua_enabled = None;
+    settings.chat_tools.servers.retain(|server| {
+        let managed_cua = crate::computer_control::is_cua_mcp_server_id(server.id.trim())
+            || matches!(
+                server.connector_id.as_deref().map(str::trim),
+                Some("computer-control:cua" | "plugin:cua-driver")
+            );
+        if managed_cua {
+            cua_enabled = Some(cua_enabled.unwrap_or(false) || server.enabled);
+        }
+        !managed_cua
+    });
+    if cua_enabled == Some(false)
+        && !settings
+            .chat_tools
+            .disabled_skill_ids
+            .iter()
+            .any(|id| id == "cua-driver")
+    {
+        settings
+            .chat_tools
+            .disabled_skill_ids
+            .push("cua-driver".to_string());
+    }
     for server in &mut settings.chat_tools.servers {
         server.id = server.id.trim().to_string();
-        let is_legacy_cua = server.id == crate::computer_control::LEGACY_CUA_MCP_SERVER_ID
-            || server.connector_id.as_deref().is_some_and(|id| {
-                id.trim() == crate::computer_control::LEGACY_CUA_MCP_CONNECTOR_ID
-            });
-        if is_legacy_cua {
-            migrated_legacy_cua = true;
-            server.id = crate::computer_control::CUA_MCP_SERVER_ID.to_string();
-            server.name = "Cua Driver".to_string();
-            server.connector_id = None;
-            server.transport = "stdio".to_string();
-            if server.command.trim().is_empty() {
-                server.command = "cua-driver".to_string();
-            }
-            if server.args.is_empty() {
-                server.args = vec!["mcp".to_string()];
-            }
-        }
         if server.id.is_empty() {
             server.id = format!("mcp-{}", uuid::Uuid::new_v4());
         }
@@ -3124,28 +3114,9 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         .chat_tools
         .servers
         .retain(|server| seen_server_ids.insert(server.id.clone()));
-    if migrated_legacy_cua {
-        let enabled = settings
-            .chat_tools
-            .servers
-            .iter()
-            .find(|server| server.id == crate::computer_control::CUA_MCP_SERVER_ID)
-            .is_some_and(|server| server.enabled);
-        settings
-            .chat_tools
-            .disabled_skill_ids
-            .retain(|id| id != "cua-driver");
-        if !enabled {
-            settings
-                .chat_tools
-                .disabled_skill_ids
-                .push("cua-driver".to_string());
-        }
-    }
 
     // 清理归档目录路径（去除首尾空白）
     settings.image_archive_path = settings.image_archive_path.trim().to_string();
-    settings.obsidian_vault_path = settings.obsidian_vault_path.trim().to_string();
 
     settings.retry_attempts = clamp_retry_attempts(settings.retry_attempts);
 
@@ -3664,13 +3635,42 @@ pub fn default_lens_system_prompt(language: &str, has_image: bool) -> String {
     }
 }
 
-/// Chat 客户端默认系统提示：允许正常 Markdown（含表格），不强制「不要空行」。
+/// 内置 Agent 的完整默认提示词。运行时只补充能力、模式和上下文。
+/// 用户自定义系统提示词替换此正文；应用信任边界仍由运行时统一提供。
 pub fn default_chat_system_prompt(has_image: bool) -> String {
+    let mut prompt = r#"You are the AI assistant inside Kivio. Help the user understand problems, make decisions, and complete their requests using the capabilities available in this conversation.
+
+How you work:
+Answer questions directly. For action requests, carry the work through to completion, including necessary supporting steps within the requested scope. Use available context to make reasonable routine decisions; ask a focused question when missing information materially affects the outcome. Incorporate the user's answers and corrections into the ongoing task; follow explicit requests to change the objective or stop.
+
+Use the tools declared in this conversation when they help complete the task, following their descriptions and schemas. Ground action and completion claims in their results. During multi-step work, give brief updates about useful findings, obstacles, or changes of direction. Carry out independent steps while waiting for results needed elsewhere.
+
+When editing files, inspect existing content and follow its conventions. Preserve the user's work, keep temporary files separate, and clean up only your own disposable files. Commit or push when the user requests it. Use absolute paths when passing local files to MCP tools.
+
+Handle failures by using the error and current state to adjust your approach. Retry when a changed approach or new evidence gives a reason to expect progress. When blocked, explain what is complete, the concrete obstacle, and what is needed to continue.
+
+Verify the deliverable against the request with checks proportional to the change and its risks. Fix issues found and recheck affected results. Once the requested outcome is achieved and checked, deliver it; present optional improvements as suggestions.
+
+Response style:
+Answer in the user's language with clear, natural prose and detail proportional to the task. Lead with the main point and develop the information the user needs. Prefer paragraphs; use lists for parallel items or steps, tables for comparisons, and headings for longer answers. Use emphasis sparingly and keep Markdown well formed. Use backticks for code and identifiers, LaTeX for math, and currency names or codes for amounts. Follow the user's requested format.
+
+Make the final answer self-contained, even after clarification: lead with the result, then provide the information needed to understand, use, or continue the work. Keep internal reasoning in the dedicated reasoning channel.
+
+Attachment presentation:
+Choose placement by the attachment's purpose. When the user asks for an image, file, or other media as the main result, present it near the start of the final answer, with at most a brief introduction before it and any necessary usage notes after it. When an image or chart explains a particular point, place it immediately after the complete paragraph it supports. For reports, spreadsheets, archives, and other downloadable deliverables accompanying a written answer, finish the explanation first and group the files at the end. Follow any placement or ordering the user requests.
+
+Place each attachment reference in its own paragraph, separated from surrounding text by blank lines, so previews and file cards have a clear place in the message. Keep explanatory sentences, lists, tables, and code blocks complete before inserting an attachment. For multiple attachments, arrange them in the order discussed and identify each with a short, meaningful name; distinguish versions or formats when useful. For visual comparisons, keep each option's label, image, and explanation together.
+
+Present the selected result once per answer and refer to it by name elsewhere. Reuse the available attachment reference; use the relevant tool's documented syntax to render an image preview or file card. Include supporting files when they help the user use the result. Keep intermediate screenshots, extracted frames, drafts, and failed attempts in the working context unless the user needs to inspect them. Refer to user-uploaded attachments by name and present them again only when useful for the requested explanation or comparison.
+
+Distinguish confirmed facts, inferences, and unverified points; state material uncertainty. Preserve source-provided citation formats and link web sources. Verify time-sensitive information with available tools; when verification is unavailable, state the information's time frame and uncertainty.
+
+Instruction scope:
+Work within application safety, tool availability, and the active mode. Follow the user's current request and apply project, assistant, set, and skill instructions to their relevant scope. Specific task requirements override general style defaults. If a material conflict remains, ask one focused question."#.to_string();
     if has_image {
-        "You are the AI assistant inside Kivio. You can help users write, analyze documents/data, search the web, run code for calculations, edit files, and answer questions. You can use images the user provides. Answer clearly and concisely; Markdown is welcome (tables, lists, code blocks—each table row on its own line). Use LaTeX ($...$ or $$...$$) for math. Think briefly.".to_string()
-    } else {
-        "You are the AI assistant inside Kivio. You can help users write, analyze documents/data, search the web, run code for calculations, edit files, and answer questions. Answer clearly, directly, and concisely; Markdown is welcome (tables, lists, code blocks—each table row on its own line). Use LaTeX ($...$ or $$...$$) for math. Think briefly.".to_string()
+        prompt.push_str("\n\nUse the user's images as visual context.");
     }
+    prompt
 }
 
 /**
@@ -3785,7 +3785,7 @@ fn default_settings_language() -> Option<String> {
 }
 
 fn default_retry_attempts() -> u8 {
-    5
+    11 // First request + ten retries; persisted totals retain their original meaning.
 }
 
 fn default_retry_enabled() -> bool {
@@ -3793,7 +3793,7 @@ fn default_retry_enabled() -> bool {
 }
 
 fn clamp_retry_attempts(value: u8) -> u8 {
-    value.clamp(1, 8)
+    value.clamp(1, 11)
 }
 
 /**
@@ -3863,6 +3863,33 @@ mod tests {
     use std::cell::RefCell;
 
     use crate::state::test_app_state;
+
+    #[test]
+    fn reading_translation_language_migrates_once_and_stays_independent() {
+        for (legacy, expected, prompt_language) in [
+            ("auto", "zh", "Simplified Chinese"),
+            ("ja", "ja", "Japanese"),
+            ("zh-Hant", "zh-Hant", "Traditional Chinese"),
+            ("es", "es", "Spanish"),
+            ("ar", "ar", "Arabic"),
+            ("th", "th", "Thai"),
+        ] {
+            let old: Settings =
+                serde_json::from_value(serde_json::json!({"targetLang": legacy})).unwrap();
+            let migrated = sanitize_settings(old);
+            let mut saved = serde_json::to_value(migrated).unwrap();
+            assert_eq!(saved["readingTargetLang"], expected);
+            saved["targetLang"] = serde_json::json!("ko");
+            let reopened = sanitize_settings(serde_json::from_value(saved).unwrap());
+            assert_eq!(
+                crate::utils::language_name(&reopened.reading_target_lang),
+                prompt_language
+            );
+            let saved = serde_json::to_value(reopened).unwrap();
+            assert_eq!(saved["readingTargetLang"], expected);
+            assert_eq!(saved["targetLang"], "ko");
+        }
+    }
 
     #[test]
     fn mixer_roles_migrate_legacy_selection_once_and_keep_effort_with_model() {
@@ -4277,15 +4304,12 @@ mod tests {
 
     #[test]
     fn sanitize_settings_clamps_retry_attempts() {
-        let mut s = Settings::default();
-        s.retry_attempts = 0;
-        let s = sanitize_settings(s);
-        assert!((1..=8).contains(&s.retry_attempts));
-
-        let mut s = Settings::default();
-        s.retry_attempts = 99;
-        let s = sanitize_settings(s);
-        assert!((1..=8).contains(&s.retry_attempts));
+        assert_eq!(Settings::default().retry_attempts, 11);
+        for (stored, expected) in [(0, 1), (5, 5), (11, 11), (99, 11)] {
+            let mut settings = Settings::default();
+            settings.retry_attempts = stored;
+            assert_eq!(sanitize_settings(settings).retry_attempts, expected);
+        }
     }
 
     #[test]
@@ -5508,57 +5532,51 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_settings_moves_cua_mcp_out_of_plugins() {
-        let mut s = Settings::default();
-        s.chat_tools.servers.push(ChatMcpServer {
-            id: "plugin-cua-driver".to_string(),
-            name: "Cua Driver (插件)".to_string(),
-            enabled: true,
-            transport: "stdio".to_string(),
-            command: "cua-driver".to_string(),
-            args: vec!["mcp".to_string()],
-            connector_id: Some("plugin:cua-driver".to_string()),
-            ..Default::default()
-        });
-
-        let s = sanitize_settings(s);
-        let server = &s.chat_tools.servers[0];
-        assert_eq!(server.id, "computer-control-cua-driver");
-        assert_eq!(server.name, "Cua Driver");
-        assert_eq!(server.connector_id, None);
-        assert_eq!(server.args, vec!["mcp".to_string()]);
-        assert!(server.enabled);
-        assert!(!s
-            .chat_tools
-            .disabled_skill_ids
-            .contains(&"cua-driver".to_string()));
-    }
-
-    #[test]
-    fn sanitize_settings_keeps_disabled_legacy_cua_disabled() {
-        let mut s = Settings::default();
-        s.chat_tools.servers.push(ChatMcpServer {
-            id: "plugin-cua-driver".to_string(),
-            name: "Cua Driver (插件)".to_string(),
-            enabled: false,
-            transport: "stdio".to_string(),
-            command: "cua-driver".to_string(),
-            args: vec!["mcp".to_string()],
-            connector_id: Some("plugin:cua-driver".to_string()),
-            ..Default::default()
-        });
-
-        let s = sanitize_settings(s);
-
-        assert_eq!(
-            s.chat_tools.servers[0].id,
-            crate::computer_control::CUA_MCP_SERVER_ID
-        );
-        assert!(!s.chat_tools.servers[0].enabled);
-        assert!(s
-            .chat_tools
-            .disabled_skill_ids
-            .contains(&"cua-driver".to_string()));
+    fn sanitize_settings_retires_cua_mcp_and_preserves_skill_choice() {
+        for (id, connector) in [
+            ("plugin-cua-driver", None),
+            ("computer-control-cua-driver", None),
+            ("custom-id", Some("plugin:cua-driver")),
+            ("custom-id", Some("computer-control:cua")),
+        ] {
+            for enabled in [false, true] {
+                for skill_disabled in [false, true] {
+                    let mut s = Settings::default();
+                    if skill_disabled {
+                        s.chat_tools
+                            .disabled_skill_ids
+                            .push("cua-driver".to_string());
+                    }
+                    s.chat_tools.servers = vec![
+                        ChatMcpServer {
+                            id: id.to_string(),
+                            enabled,
+                            connector_id: connector.map(str::to_string),
+                            command: "cua-driver".to_string(),
+                            args: vec!["mcp".to_string()],
+                            ..Default::default()
+                        },
+                        ChatMcpServer {
+                            id: "other".to_string(),
+                            ..Default::default()
+                        },
+                    ];
+                    let s = sanitize_settings(s);
+                    assert_eq!(s.chat_tools.servers.len(), 1);
+                    assert_eq!(s.chat_tools.servers[0].id, "other");
+                    assert_eq!(
+                        s.chat_tools
+                            .disabled_skill_ids
+                            .contains(&"cua-driver".to_string()),
+                        skill_disabled || !enabled
+                    );
+                    let saved = serde_json::to_value(&s).unwrap();
+                    let reopened =
+                        sanitize_settings(serde_json::from_value(saved.clone()).unwrap());
+                    assert_eq!(serde_json::to_value(reopened).unwrap(), saved);
+                }
+            }
+        }
     }
 
     #[test]
@@ -5754,59 +5772,25 @@ mod tests {
     }
 
     #[test]
-    fn skill_globally_available_hides_obsidian_without_vault() {
-        let chat_tools = ChatToolsConfig::default();
-        for id in OBSIDIAN_CONNECTOR_SKILL_IDS {
-            // No vault configured → each Obsidian skill is unavailable.
-            assert!(
-                !skill_globally_available(&chat_tools, id, false),
-                "{id} should be hidden without a vault"
-            );
-            assert!(!skill_connector_satisfied(id, false));
-            assert!(
-                skill_globally_available(&chat_tools, id, true),
-                "{id} should be available with a vault"
-            );
-            assert!(skill_connector_satisfied(id, true));
-        }
-        // Non-connector skills are unaffected by vault state.
-        assert!(skill_globally_available(&chat_tools, "pdf", false));
-    }
-
-    #[test]
-    fn skill_global_unavailable_error_distinguishes_disabled_and_connector() {
-        let mut chat_tools = ChatToolsConfig::default();
-        chat_tools.disabled_skill_ids = vec!["obsidian-markdown".to_string()];
+    fn standalone_obsidian_skills_follow_normal_enable_rules() {
+        let mut legacy = serde_json::to_value(Settings::default()).unwrap();
+        legacy["obsidianVaultPath"] = serde_json::json!("/old/vault");
+        let restored: Settings = serde_json::from_value(legacy).unwrap();
+        assert!(serde_json::to_value(&restored)
+            .unwrap()
+            .get("obsidianVaultPath")
+            .is_none());
+        let mut config = restored.chat_tools;
+        assert!(skill_globally_available(&config, "obsidian-markdown"));
         assert_eq!(
-            skill_global_unavailable_error(
-                &chat_tools,
-                "obsidian-markdown",
-                true,
-                "obsidian-markdown",
-            )
-            .as_deref(),
-            Some("Skill is disabled in Settings: obsidian-markdown")
-        );
-
-        chat_tools.disabled_skill_ids.clear();
-        assert_eq!(
-            skill_global_unavailable_error(
-                &chat_tools,
-                "obsidian-markdown",
-                false,
-                "obsidian-markdown"
-            )
-            .as_deref(),
-            Some("Skill requires a configured Obsidian connector: obsidian-markdown")
-        );
-        assert_eq!(
-            skill_global_unavailable_error(
-                &chat_tools,
-                "obsidian-markdown",
-                true,
-                "obsidian-markdown"
-            ),
+            skill_global_unavailable_error(&config, "obsidian-markdown", "Obsidian"),
             None
+        );
+        config.disabled_skill_ids = vec!["obsidian-markdown".into()];
+        assert!(!skill_globally_available(&config, "obsidian-markdown"));
+        assert_eq!(
+            skill_global_unavailable_error(&config, "obsidian-markdown", "Obsidian").as_deref(),
+            Some("Skill is disabled in Settings: Obsidian")
         );
     }
 

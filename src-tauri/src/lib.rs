@@ -4,6 +4,7 @@ pub mod agents;
 pub mod api;
 pub mod app_data;
 pub mod automation;
+mod backup;
 pub mod capture_geometry;
 pub mod chat;
 pub mod commands;
@@ -253,6 +254,8 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
+            backup::apply_pending(&app.path().app_data_dir()?)
+                .map_err(std::io::Error::other)?;
             let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
 
             // Windows：退出后台执行速度节流（EcoQoS）。无可见窗口时进程会被 Win11 当后台空闲
@@ -549,6 +552,11 @@ pub fn run() {
             commands::save_settings,
             commands::set_favorite_models,
             commands::set_translate_card_size,
+            backup::export_full_backup,
+            backup::import_full_backup,
+            backup::backup_interface,
+            backup::backup_restore_pending,
+            backup::restart_after_restore,
             commands::export_settings,
             commands::import_settings,
             commands::open_settings_window,
@@ -592,6 +600,8 @@ pub fn run() {
             lens_commands::lens_commit_image_to_history,
             lens_commands::lens_delete_history_image,
             updates::check_github_latest_release,
+            chat::model_database::get_model_database,
+            chat::model_database::update_model_database,
             updates::download_update_asset,
             updates::install_update_and_quit,
             commands::rapidocr_status,
@@ -753,7 +763,6 @@ pub fn run() {
             mcp::registry::chat_mcp_warmup,
             connectors::connector_oauth_connect,
             connectors::connector_oauth_cancel,
-            connectors::obsidian::list_obsidian_vaults_cmd,
             market::market_snapshot,
             market::market_install,
             market::market_uninstall,
@@ -810,6 +819,7 @@ pub fn run() {
             scheduled_tasks::commands::scheduled_task_runs,
             scheduled_tasks::commands::scheduled_task_preview,
             scheduled_tasks::commands::scheduled_task_run_delete,
+            chat::commands::catalog::chat_session_skills,
             skills::chat_skills_list,
             skills::chat_skills_read,
             skills::chat_skills_import,

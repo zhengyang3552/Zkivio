@@ -71,15 +71,17 @@ pub(crate) async fn planning_step(
     let host = env.host;
     let step_number = state.step_number;
     // 循环内上下文治理：超限时先 snip / 摘要，得到本步发送视图（未超限时为原样 clone）。
-    let mut send_messages = super::compaction::maybe_compact_send_view(env, state).await;
+    let active_tools = state.tools.clone();
+    let mut send_messages =
+        super::compaction::maybe_compact_send_view(env, state, &active_tools).await;
 
     // ZCode rapid-refill breaker: the context refilled right after compaction several
     // times in a row (a file or tool output is too large), so compacting again cannot
     // help. End the turn with the gathered tool results via recovery's degrade path.
-    // A failed compaction alone never ends the turn.
+    // Failed compaction also stops a request known to exceed the model input allowance.
     if state.compaction_blocked {
         eprintln!(
-            "Chat context compaction: context keeps refilling after compaction; ending turn with gathered results"
+            "Chat context compaction: context cannot fit safely after compaction; ending turn with gathered results"
         );
         let kind = crate::chat::agent::recovery::FailureKind::ContextOverflow;
         let content = crate::chat::agent::recovery::assemble_results_from_tool_records(
@@ -100,13 +102,13 @@ pub(crate) async fn planning_step(
             ChatMessageSegmentPhase::Plain,
             Some(step_number),
             Some(round),
-            &format!("step_{step_number}_compaction_thrash"),
+            &format!("step_{step_number}_compaction_blocked"),
         );
         return Ok(PlanningStepOutcome::Recovered(
             RunResultBuilder::new(host, env.ids(), content)
                 .segment(&degrade_segment)
                 .emit_done("done")
-                .outcome("compaction_thrash")
+                .outcome("compaction_blocked")
                 .finish(
                     std::mem::take(&mut state.segment_builder),
                     &state.planning_reasoning_parts,
@@ -116,7 +118,6 @@ pub(crate) async fn planning_step(
         ));
     }
 
-    let active_tools = state.tools.clone();
     let stream_policy = AgentStreamPolicy::PlanningNoDoneUntilNoTools;
     let planning_reasoning_segment = state.segment_builder.reserve(
         ChatMessageSegmentKind::Reasoning,
@@ -275,8 +276,9 @@ pub(crate) async fn planning_step(
             {
                 overflow_attempted = true;
                 let previous = send_messages.clone();
-                send_messages = super::compaction::compact_send_view(env, state, true).await;
-                if previous == send_messages {
+                send_messages =
+                    super::compaction::compact_send_view(env, state, true, &active_tools).await;
+                if state.compaction_blocked || previous == send_messages {
                     break Err(err.to_string());
                 }
                 continue;
@@ -673,87 +675,83 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
         label,
         GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
     );
-    let reconnect_max = retry_attempts.max(1).saturating_sub(1);
-    for reconnect in 0..=reconnect_max {
-        let mut sink = AgentStreamSink::new(
-            host,
-            conversation_id,
-            run_id,
-            message_id,
-            matches!(policy, AgentStreamPolicy::PlanningNoDoneUntilNoTools),
-            text_segment.clone(),
-            reasoning_segment.clone(),
-            tool_draft_tracker.clone(),
-            web_search_tracker.clone(),
-        );
-        let result = {
-            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-            let stream_future = crate::api::RETRY_PROGRESS.scope(
-                progress_tx,
-                stream_with_chat_provider(
-                    state,
-                    provider,
-                    retry_attempts,
-                    request.clone(),
-                    &mut sink,
-                ),
+    crate::api::with_retry_budget(retry_attempts, async {
+        let budget = crate::api::RetryBudget::current_or_new(retry_attempts);
+        loop {
+            let mut sink = AgentStreamSink::new(
+                host,
+                conversation_id,
+                run_id,
+                message_id,
+                matches!(policy, AgentStreamPolicy::PlanningNoDoneUntilNoTools),
+                text_segment.clone(),
+                reasoning_segment.clone(),
+                tool_draft_tracker.clone(),
+                web_search_tracker.clone(),
             );
-            tokio::pin!(stream_future);
-            loop {
-                tokio::select! {
-                    result = &mut stream_future => break Some(result),
-                    Some(note) = progress_rx.recv() => host.emit_status_note(run_id, Some(note)),
-                    _ = host.wait_for_generation_inactive(conversation_id, generation) => break None,
-                }
-            }
-        };
-        let Some(result) = result else {
-            let (content, reasoning) = sink.snapshot();
-            return Ok(ChatStreamOutput::new(
-                content.trim().to_string(),
-                reasoning.trim().to_string(),
-                true,
-            ));
-        };
-        let output = match result {
-            Ok(output) => output,
-            Err(err) if err.is_stream_read_interrupted() && reconnect < reconnect_max => {
-                sink.discard_attempt();
-                let attempt = reconnect + 1;
-                eprintln!("{label} stream interrupted; reconnect {attempt}/{reconnect_max}: {err}");
-                let delay = std::time::Duration::from_secs((attempt as u64 * 2).min(30));
-                host.emit_status_note(
-                    run_id,
-                    Some(format!(
-                        "重连 {attempt}/{reconnect_max} · {}s",
-                        delay.as_secs()
-                    )),
+            let result = {
+                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+                let stream_future = crate::api::RETRY_PROGRESS.scope(
+                    progress_tx,
+                    stream_with_chat_provider(
+                        state,
+                        provider,
+                        retry_attempts,
+                        request.clone(),
+                        &mut sink,
+                    ),
                 );
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {},
-                    _ = host.wait_for_generation_inactive(conversation_id, generation) => {
-                        return Ok(ChatStreamOutput::new(String::new(), String::new(), true));
+                tokio::pin!(stream_future);
+                loop {
+                    tokio::select! {
+                        result = &mut stream_future => break Some(result),
+                        Some(retry) = progress_rx.recv() => host.emit_retry_status(run_id, retry),
+                        _ = host.wait_for_generation_inactive(conversation_id, generation) => break None,
                     }
                 }
-                continue;
+            };
+            let Some(result) = result else {
+                let (content, reasoning) = sink.snapshot();
+                return Ok(ChatStreamOutput::new(
+                    content.trim().to_string(),
+                    reasoning.trim().to_string(),
+                    true,
+                ));
+            };
+            let output = match result {
+                Ok(output) => output,
+                Err(err) if err.is_stream_read_interrupted() => {
+                    let Some((retry, delay_ms)) = budget.schedule(None, "Stream interrupted", false) else {
+                        return Err(err);
+                    };
+                    sink.discard_attempt();
+                    host.emit_retry_status(run_id, retry);
+                    let delay = std::time::Duration::from_millis(delay_ms);
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {},
+                        _ = host.wait_for_generation_inactive(conversation_id, generation) => {
+                            return Ok(ChatStreamOutput::new(String::new(), String::new(), true));
+                        }
+                    }
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            host.emit_status_note(run_id, None);
+            sink.flush_pending_text();
+            // 内置搜索实时卡定稿：流成功结束 ⇒ 翻 Success 并发终态记录（取消路径已在上面的
+            // select 分支 return，不会到这里，故取消时实时卡不落 Success，与 draft 行为一致）。
+            if let Some(record) = sink.finish_web_search_card() {
+                host.emit_tool_record(conversation_id, run_id, message_id, &record);
             }
-            Err(err) => return Err(err),
-        };
-        host.emit_status_note(run_id, None);
-        sink.flush_pending_text();
-        // 内置搜索实时卡定稿：流成功结束 ⇒ 翻 Success 并发终态记录（取消路径已在上面的
-        // select 分支 return，不会到这里，故取消时实时卡不落 Success，与 draft 行为一致）。
-        if let Some(record) = sink.finish_web_search_card() {
-            host.emit_tool_record(conversation_id, run_id, message_id, &record);
+            let (snapshot_content, snapshot_reasoning) = sink.snapshot();
+            let stream_output = ChatStreamOutput::from_generate_output_with_snapshot(
+                output,
+                snapshot_content,
+                snapshot_reasoning,
+            );
+            validate_stream_output(label, policy, &stream_output).map_err(ModelError::new)?;
+            return Ok(stream_output);
         }
-        let (snapshot_content, snapshot_reasoning) = sink.snapshot();
-        let stream_output = ChatStreamOutput::from_generate_output_with_snapshot(
-            output,
-            snapshot_content,
-            snapshot_reasoning,
-        );
-        validate_stream_output(label, policy, &stream_output).map_err(ModelError::new)?;
-        return Ok(stream_output);
-    }
-    unreachable!("bounded reconnect loop always returns")
+    }).await
 }
