@@ -7,7 +7,6 @@ import {
   Check,
   ChevronRight,
   Copy,
-  CornerDownRight,
   GitBranch,
   ListChecks,
   Play,
@@ -422,18 +421,9 @@ function MissingToolSegment({ toolCallId }: { toolCallId: string }) {
 function UserSteerSegment({ toolCall }: { toolCall: ToolCallRecord }) {
   const text = isUserFollowUpToolCall(toolCall) ? userFollowUpText(toolCall) : userSteerText(toolCall)
   if (!text.trim()) return null
-  return (
-    <div className="not-prose flex justify-end">
-      <div className="flex max-w-[85%] items-start gap-1.5 rounded-md bg-neutral-100 px-2.5 py-1.5 text-[12.5px] leading-5 text-neutral-700">
-        <CornerDownRight
-          size={13}
-          strokeWidth={1.9}
-          className="mt-0.5 shrink-0 text-neutral-400 dark:text-neutral-500"
-        />
-        <span className="min-w-0 whitespace-pre-wrap break-words">{text}</span>
-      </div>
-    </div>
-  )
+  return <MessageBubble message={{
+    id: toolRecordId(toolCall), role: 'user', content: text, timestamp: 0,
+  }} />
 }
 
 function isUserInjectedToolCall(toolCall: ToolCallRecord): boolean {
@@ -933,6 +923,7 @@ function TimelineSegments({
   conversationId,
   messageStreaming,
   completed,
+  cancelled,
   reasoningStreaming,
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
@@ -946,6 +937,7 @@ function TimelineSegments({
   conversationId?: string | null
   messageStreaming: boolean
   completed: boolean
+  cancelled: boolean
   reasoningStreaming: boolean
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
@@ -963,7 +955,7 @@ function TimelineSegments({
   // Read the authority, not a possibly batched parent render, when a delta arrives.
   const following = useContext(ScrollFollowingContext).isFollowing()
   const committedPage = useRef<{ following: boolean; ids: ReadonlySet<string> }>({ following, ids: pinnedProcessIds })
-  const defaultOpen = messageStreaming
+  const defaultOpen = messageStreaming || cancelled
   const toolCallById = useMemo(() => {
     const toolCallById = new Map<string, ToolCallRecord>()
     for (const toolCall of toolCalls) {
@@ -1004,7 +996,7 @@ function TimelineSegments({
       messageStreaming ? 'running' : completed ? 'completed' : 'stopped',
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
-        return Boolean(tool && isVisibleArtifactPresentation(tool))
+        return Boolean(tool && (isVisibleArtifactPresentation(tool) || isUserInjectedToolCall(tool)))
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')
@@ -1176,8 +1168,10 @@ function MessageBubbleComponent({
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const streamOutcome = message.stream_outcome ?? message.streamOutcome
+  const cancelled = streamOutcome === 'cancelled'
+    || Boolean(message.segments?.some(segment => /^seg_\d+_cancelled_synthesis$/.test(segment.id)))
   // 停止出字不一定是成功完成；取消、错误和中断后保留已有正文。
-  const completed = !messageStreaming && (!streamOutcome || streamOutcome === 'completed')
+  const completed = !messageStreaming && !cancelled && (!streamOutcome || streamOutcome === 'completed')
   const bodyText = useMemo(() => messageBodyText(message), [message])
   // 历史消息会被虚拟列表反复卸载/挂载；只让真正的流式预览播放进入动画，
   // 否则滚动时每个重新进入 DOM 的旧气泡都会淡入并上移，看起来像刷新且阻滞滚动。
@@ -1207,8 +1201,8 @@ function MessageBubbleComponent({
         id: `legacy-tool-${toolRecordId(tool) || index}`, kind: 'tool', phase: 'tool_loop',
         order: index + 1, tool_call_id: toolRecordId(tool),
       }))
-      if (message.content.trim() && message.content.trim() !== degradedText) timelineSegments.push({
-        id: 'legacy-answer', kind: 'text', phase: 'plain', order: toolCalls.length + 1, text: message.content,
+      if (bodyText.trim() && bodyText.trim() !== degradedText) timelineSegments.push({
+        id: 'legacy-answer', kind: 'text', phase: 'plain', order: toolCalls.length + 1, text: bodyText,
       })
     }
     const hasTimelineSegments = timelineSegments.length > 0
@@ -1252,8 +1246,8 @@ function MessageBubbleComponent({
     ].filter((artifact) => !isImageArtifact(artifact))
     const hasAnswerContent =
       !isDirectImageGenerationPending &&
-      message.content.trim().length > 0 &&
-      message.content.trim() !== degradedText
+      bodyText.trim().length > 0 &&
+      bodyText.trim() !== degradedText
     const hasGeneratedImages = galleryImageArtifacts.length > 0
     const hasGeneratedFiles = generatedFileArtifacts.length > 0
 
@@ -1272,7 +1266,7 @@ function MessageBubbleComponent({
       hasGeneratedImages,
       hasGeneratedFiles,
     }
-  }, [conversationArtifactsById, isUser, message])
+  }, [bodyText, conversationArtifactsById, isUser, message])
   const {
     attachments,
     toolCalls,
@@ -1506,6 +1500,7 @@ function MessageBubbleComponent({
               conversationId={conversationId}
               messageStreaming={messageStreaming}
               completed={completed}
+              cancelled={cancelled}
               reasoningStreaming={reasoningStreaming}
               reasoningDurationMs={reasoningDurationMs}
               reasoningDurationMsBySegmentId={reasoningDurationMsBySegmentId}
@@ -1531,7 +1526,7 @@ function MessageBubbleComponent({
               )}
               {hasAnswerContent && (
                 <ChatMarkdown
-                  content={message.content}
+                  content={bodyText}
                   artifacts={renderArtifacts}
                   conversationId={conversationId}
                   onImageClick={handleChatImageClick}

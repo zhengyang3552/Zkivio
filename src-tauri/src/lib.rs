@@ -4,7 +4,7 @@ pub mod agents;
 pub mod api;
 pub mod app_data;
 pub mod automation;
-mod backup;
+pub mod backup;
 pub mod capture_geometry;
 pub mod chat;
 pub mod commands;
@@ -543,6 +543,7 @@ pub fn run() {
             commands::set_hotkeys_suspended,
             commands::list_gnome_system_shortcuts,
             windows::chat_window_apply_mica,
+            windows::chat_window_set_material_appearance,
             windows::chat_window_set_opaque,
             windows::chat_traffic_light_center_y,
             chat::notification_viewing::chat_report_notification_view,
@@ -552,6 +553,14 @@ pub fn run() {
             commands::save_settings,
             commands::set_favorite_models,
             commands::set_translate_card_size,
+            backup::webdav::webdav_load,
+            backup::webdav::webdav_save,
+            backup::webdav::webdav_test,
+            backup::webdav::webdav_list,
+            backup::webdav::webdav_upload,
+            backup::webdav::webdav_download,
+            backup::webdav::webdav_release,
+            backup::webdav::webdav_delete,
             backup::export_full_backup,
             backup::import_full_backup,
             backup::backup_interface,
