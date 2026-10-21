@@ -1,5 +1,6 @@
 # Kivio Rust 后端 Cargo 配置
 [package]
+# v3.1.5 发行说明见 docs/releases/v3.1.5.md（本提交仅用于触发 push 型打包，产物与 tag v3.1.5 一致）。
 name = "kivio"
 version = "3.1.5"
 description = "Kivio Desktop - Screen-level AI assistant for macOS/Windows"
