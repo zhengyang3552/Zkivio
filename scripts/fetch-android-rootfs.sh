@@ -17,7 +17,7 @@
 set -euo pipefail
 
 TERMUX_REPO="${TERMUX_REPO:-https://packages.termux.dev/apt/termux-main}"
-PROOT_VERSION="5.1.107.96"
+PROOT_VERSION="5.1.107.98"
 TALLOC_VERSION="2.5.0"
 ANDROID_SHMEM_VERSION="0.7"
 
