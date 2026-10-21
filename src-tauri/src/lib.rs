@@ -12,6 +12,9 @@ mod computer_control;
 pub mod connectors;
 pub mod desktop_pet;
 pub mod dock;
+#[path = "../../extensions/sdk/native.rs"]
+mod extension_sdk;
+mod extensions;
 pub mod external_agents;
 pub mod fonts;
 mod html_preview;
@@ -36,6 +39,8 @@ pub mod prompts;
 pub mod provider_oauth;
 pub mod provider_request;
 pub mod rapidocr;
+#[path = "../../extensions/study/native/mod.rs"]
+pub mod reading;
 pub mod replace_translation;
 pub mod scheduled_tasks;
 #[cfg(target_os = "macos")]
@@ -256,6 +261,7 @@ pub fn run() {
         .setup(|app| {
             backup::apply_pending(&app.path().app_data_dir()?)
                 .map_err(std::io::Error::other)?;
+            extensions::resume(app.handle().clone());
             let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
 
             // Windows：退出后台执行速度节流（EcoQoS）。无可见窗口时进程会被 Win11 当后台空闲
@@ -520,7 +526,13 @@ pub fn run() {
             macos_hang_watchdog::start(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(|invoke| {
+            if extensions::owns_command(invoke.message.command()) {
+                return extensions::invoke(invoke);
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            extensions::extensions_list,
+            extensions::extensions_set_enabled,
             html_preview::create_html_preview,
             html_preview::release_html_preview,
             desktop_pet::desktop_pet_get_enabled,
@@ -882,7 +894,9 @@ pub fn run() {
             dock::terminal::dock_terminal_write,
             dock::terminal::dock_terminal_resize,
             dock::terminal::dock_terminal_close,
-        ])
+        ];
+            handler(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
@@ -902,6 +916,7 @@ pub fn run() {
                             return;
                         }
                     }
+                    tauri::async_runtime::block_on(extensions::shutdown());
                     // 自动化先于 MCP：运行中的图可能正跑 agent loop（依赖 MCP/供应商）或
                     // 命令节点（Child 靠 kill_on_drop 收尸）。先标记取消、限时等收尾，
                     // 此时运行时还活着，select! 的取消分支才来得及 drop 掉 Child。

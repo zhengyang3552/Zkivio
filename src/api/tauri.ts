@@ -692,7 +692,6 @@ export type ChatToolsConfig = {
   skillFallbackMode?: 'progressive' | 'skill_md_only' | 'legacy_full_body' | string
   /** Skill ids turned off in Settings; omitted ids are enabled. */
   disabledSkillIds?: string[]
-  maxToolRounds: number | null
   toolTimeoutMs: number
   /** MCP 持久连接空闲超时（ms）：会话空闲超过此值后被回收，下次调用透明重连。 */
   mcpIdleTimeoutMs?: number
@@ -1161,9 +1160,7 @@ export type WebSearchConfig = {
   grokBaseUrl?: string
   grokSystemPrompt?: string
   deepseekApiKey?: string
-  deepseekModel?: string
   deepseekBaseUrl?: string
-  deepseekSystemPrompt?: string
   braveApiKey?: string
   braveBaseUrl?: string
   serperApiKey?: string
@@ -1875,11 +1872,11 @@ export const api = {
   webdavSave: (input: WebDavConfigInput) => invoke<WebDavConfig>('webdav_save', { input }),
   webdavTest: (input: WebDavConfigInput) => invoke<void>('webdav_test', { input }),
   webdavList: () => invoke<WebDavBackup[]>('webdav_list'),
-  webdavUpload: (kind: WebDavBackupKind, interfaceState: Record<string, string>) => invoke<string>('webdav_upload', { kind, interface: interfaceState }),
+  webdavUpload: (kind: WebDavBackupKind, interfaceState: Record<string, string>) => invoke<string[]>('webdav_upload', { kind, interface: interfaceState }),
   webdavDownload: (name: string) => invoke<WebDavDownload>('webdav_download', { name }),
   webdavRelease: (id: string) => invoke<void>('webdav_release', { id }),
   webdavDelete: (name: string) => invoke<void>('webdav_delete', { name }),
-  exportFullBackup: (path: string, interfaceState: Record<string, string>) => invoke<void>('export_full_backup', { path, interface: interfaceState }),
+  exportFullBackup: (path: string, interfaceState: Record<string, string>) => invoke<string[]>('export_full_backup', { path, interface: interfaceState }),
   importFullBackup: (path: string, trusted: boolean) => invoke<void>('import_full_backup', { path, trusted }),
   backupInterface: () => invoke<{ id: string; values: Record<string, string> } | null>('backup_interface'),
   backupRestorePending: () => invoke<boolean>('backup_restore_pending'),
