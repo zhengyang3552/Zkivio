@@ -74,12 +74,16 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # tauri-build 的 build.rs 会校验 externalBin sidecar 与 frontendDist 存在性,
-      # cargo run 不需要真产物,放空壳即可(与 rust-check.yml 相同处理)。
-      - name: Stub sidecar binary and frontend dist
+      # tauri-build 的 build.rs 会校验 externalBin sidecar、frontendDist 与
+      # bundle.resources 的存在性,cargo run 不需要真产物,放空壳即可
+      # (与 rust-check.yml 相同处理)。resources/word 是 npm run build:word 的
+      # 产物(gitignore),这里只建空目录过校验;真实的 Word 加载项由
+      # npm run build:ui(vite)与发布流程的 tauri build 构建。
+      - name: Stub sidecar binary, frontend dist and word bundle
         run: |
           mkdir -p dist
           mkdir -p src-tauri/binaries
+          mkdir -p src-tauri/resources/word
           touch src-tauri/binaries/kivio-ocr-helper-x86_64-unknown-linux-gnu
           chmod +x src-tauri/binaries/kivio-ocr-helper-x86_64-unknown-linux-gnu
 

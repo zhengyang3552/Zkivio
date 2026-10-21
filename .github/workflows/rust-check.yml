@@ -43,13 +43,15 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # tauri-build 的 build.rs 会校验 externalBin sidecar 与 frontendDist 存在性,
-      # cargo test 不需要真产物,放空壳即可。
+      # tauri-build 的 build.rs 会校验 externalBin sidecar、frontendDist 与
+      # bundle.resources 的存在性,cargo test 不需要真产物,放空壳即可。
       # (kivio-ocr-helper 真实实现仅 macOS,Linux 下为空 stub,运行时按平台禁用)
-      - name: Stub sidecar binary and frontend dist
+      # resources/word 是 npm run build:word 的产物(gitignore),空目录即可过校验。
+      - name: Stub sidecar binary, frontend dist and word bundle
         run: |
           mkdir -p dist
           mkdir -p src-tauri/binaries
+          mkdir -p src-tauri/resources/word
           touch src-tauri/binaries/kivio-ocr-helper-x86_64-unknown-linux-gnu
           chmod +x src-tauri/binaries/kivio-ocr-helper-x86_64-unknown-linux-gnu
 
