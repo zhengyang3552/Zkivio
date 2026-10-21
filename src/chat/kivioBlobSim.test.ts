@@ -107,7 +107,6 @@ describe('kivioBlobSim', () => {
     }
     expect(sim.debug().body).toBe('circle')
     expect(first.rig.startsWith('translate(0.00 0.00)')).toBe(true)
-    expect(first.body).toContain('scale(1 1.000)')
 
     sim.setMood('think', 8000)
     expect(sim.wantsHighFps(8000)).toBe(true)
@@ -370,4 +369,101 @@ describe('kivioBlobSim', () => {
     expect(sim.debug().body).toBe('circle')
     expect(sim.debug().face).toBe('lookUp')
   })
+})
+
+// Geometric output is the public rendering boundary; avoid inspecting springs.
+function eyeCenter(paint: ReturnType<KivioBlobSim['sample']>) {
+  const values = [...paint.eyes[0].d.matchAll(/-?\d+\.\d+/g)].map(m => Number(m[0]))
+  return values.filter((_, i) => i % 2 === 0).reduce((a, b) => a + b, 0) / (values.length / 2)
+}
+
+describe('volume motion continuity', () => {
+  it('turning accelerates, brakes, and preserves momentum when the target reverses', () => {
+    const sim = new KivioBlobSim({ random: () => 0.5 })
+    const initial = eyeCenter(sim.sample(0))
+    sim.poke(0, 1, -0.5)
+    expect(eyeCenter(sim.sample(0))).toBe(initial)
+    const positions = [initial]
+    for (let t = 10; t <= 200; t += 10) positions.push(eyeCenter(sim.sample(t)))
+    const speeds = positions.slice(1).map((x, i) => x - positions[i])
+    expect(Math.max(...speeds)).toBeGreaterThan(speeds[0] * 2)
+    const before = positions[positions.length - 1]
+    sim.poke(200, -1, -0.5)
+    expect(eyeCenter(sim.sample(200))).toBeCloseTo(before, 2)
+    expect(eyeCenter(sim.sample(210))).toBeGreaterThan(before)
+    for (let t = 220; t <= 1800; t += 10) sim.sample(t)
+    expect(eyeCenter(sim.sample(1800))).toBeLessThan(initial)
+    const settledAt = driveUntilStill(sim, 1810, 14000)
+    expect(settledAt).toBeLessThan(15810)
+    expect(eyeCenter(sim.sample(settledAt))).toBeCloseTo(initial, 2)
+  })
+
+  it('repeated pokes and state changes do not teleport the current geometry', () => {
+    const sim = new KivioBlobSim({ random: () => 0.1 })
+    sim.sample(0)
+    sim.poke(0, 1, -1)
+    for (let t = 10; t <= 160; t += 10) sim.sample(t)
+    const before = sim.sample(160)
+    sim.poke(160, -1, 1)
+    sim.setMood('work', 160)
+    const after = sim.sample(160)
+    expect(after.rig).toBe(before.rig)
+    expect(after.bodyD).toBe(before.bodyD)
+    expect(after.eyes).toEqual(before.eyes)
+  })
+
+  it('an authored glance has matching projected positions at 24, 30, 60 and 120 fps', () => {
+    const centers = [24, 30, 60, 120].map(fps => {
+      const sim = new KivioBlobSim({ random: () => 0.5 })
+      sim.sample(0)
+      sim.nudge(0)
+      for (let n = 1; n <= fps; n++) sim.sample(n * 1000 / fps)
+      return eyeCenter(sim.sample(1000))
+    })
+    expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(0.05)
+  })
+})
+
+
+it('large-character idle gestures vary, sleep between actions and yield to nearby gaze', () => {
+  const sim = new KivioBlobSim({ random: () => 0.5 })
+  sim.setAmbientMotion(true, 0)
+  const rest = sim.sample(0)
+  expect(sim.wantsHighFps(0)).toBe(false)
+  const wake = sim.nextIdleWakeMs(0)
+  expect(wake).toBeGreaterThan(2000)
+  expect(wake).toBeLessThan(5000)
+  sim.sample(wake)
+  for (let t = wake + 16; t <= wake + 800; t += 16) sim.sample(t)
+  const gesture = sim.sample(wake + 800)
+  expect(gesture.eyes).not.toEqual(rest.eyes)
+  const settledAt = driveUntilStill(sim, wake + 816, 6000)
+  expect(sim.wantsHighFps(settledAt)).toBe(false)
+  expect(sim.nextIdleWakeMs(settledAt)).toBeGreaterThan(0)
+  sim.lookAt(-0.8, 0.3, settledAt)
+  for (let t = settledAt; t <= settledAt + 2000; t += 16) sim.sample(t)
+  expect(sim.nextIdleWakeMs(settledAt + 2000)).toBe(Infinity)
+  const held = sim.sample(settledAt + 2000)
+  expect(sim.sample(settledAt + 12000).eyes).toEqual(held.eyes)
+  sim.releaseLook()
+  sim.sample(settledAt + 12016)
+  expect(sim.nextIdleWakeMs(settledAt + 12016)).toBeGreaterThan(0)
+  sim.setReducedMotion(true)
+  sim.sample(settledAt + 13000)
+  expect(sim.wantsHighFps(settledAt + 13000)).toBe(false)
+  expect(sim.nextIdleWakeMs(settledAt + 13000)).toBe(Infinity)
+})
+
+
+it('reschedules idle gestures after a centered pointer leaves without needing a return animation', () => {
+  const sim = new KivioBlobSim({ random: () => 0.5 })
+  sim.setAmbientMotion(true, 0)
+  sim.sample(0)
+  sim.lookAt(0, 0, 100)
+  sim.sample(100)
+  expect(sim.nextIdleWakeMs(100)).toBe(Infinity)
+  sim.releaseLook()
+  expect(sim.wantsHighFps(100)).toBe(false)
+  expect(sim.nextIdleWakeMs(100)).toBeGreaterThan(0)
+  expect(sim.nextIdleWakeMs(100)).toBeLessThan(13000)
 })

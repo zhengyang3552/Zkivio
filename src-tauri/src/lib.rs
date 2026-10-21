@@ -20,6 +20,9 @@ pub mod connectors;
 pub mod desktop_pet;
 #[cfg(not(target_os = "android"))]
 pub mod dock;
+#[path = "../../extensions/sdk/native.rs"]
+mod extension_sdk;
+mod extensions;
 pub mod external_agents;
 pub mod fonts;
 mod html_preview;
@@ -46,6 +49,8 @@ pub mod provider_oauth;
 pub mod provider_request;
 #[cfg(not(target_os = "android"))]
 pub mod rapidocr;
+#[path = "../../extensions/study/native/mod.rs"]
+pub mod reading;
 #[cfg(not(target_os = "android"))]
 pub mod replace_translation;
 pub mod scheduled_tasks;
@@ -312,6 +317,7 @@ pub fn run() {
         .setup(|app| {
             backup::apply_pending(&app.path().app_data_dir()?)
                 .map_err(std::io::Error::other)?;
+            extensions::resume(app.handle().clone());
             let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
 
             // Windows：退出后台执行速度节流（EcoQoS）。无可见窗口时进程会被 Win11 当后台空闲
@@ -600,11 +606,16 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             macos_hang_watchdog::start(app.handle());
             Ok(())
-        });
-        // 桌面：完整命令表（含 dock / lens / windows / desktop_pet 等桌面模块）。
-        #[cfg(not(target_os = "android"))]
-        let builder = builder
-        .invoke_handler(tauri::generate_handler![
+        })
+        .invoke_handler(|invoke| {
+            if extensions::owns_command(invoke.message.command()) {
+                return extensions::invoke(invoke);
+            }
+            // 桌面：完整命令表（含 dock / lens / windows / desktop_pet 等桌面模块）。
+            #[cfg(not(target_os = "android"))]
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            extensions::extensions_list,
+            extensions::extensions_set_enabled,
             html_preview::create_html_preview,
             html_preview::release_html_preview,
             desktop_pet::desktop_pet_get_enabled,
@@ -962,13 +973,14 @@ pub fn run() {
             dock::terminal::dock_terminal_write,
             dock::terminal::dock_terminal_resize,
             dock::terminal::dock_terminal_close,
-        ]);
+        ];
 
         // Android：去掉桌面专属模块的命令（托盘 / 热键 / 多窗口 / Lens / Dock / 桌宠），
         // 其余命令与桌面共用同一份实现。
         #[cfg(target_os = "android")]
-        let builder = builder
-        .invoke_handler(tauri::generate_handler![
+        let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            extensions::extensions_list,
+            extensions::extensions_set_enabled,
             android_rootfs::android_rootfs_state,
             android_rootfs::android_rootfs_install,
             android_rootfs::android_rootfs_uninstall,
@@ -1123,7 +1135,6 @@ pub fn run() {
             mcp::registry::chat_mcp_warmup,
             connectors::connector_oauth_connect,
             connectors::connector_oauth_cancel,
-            connectors::obsidian::list_obsidian_vaults_cmd,
             market::market_snapshot,
             market::market_install,
             market::market_uninstall,
@@ -1199,10 +1210,10 @@ pub fn run() {
             chat::knowledge_base::ingest::kb_update_embedding,
             chat::knowledge_base::ingest::kb_set_embed_batch_size,
             // Dock 模块命令（右侧文件树 + Git 面板 + 终端面板 + workspace 监听）
-        ]);
+        ];
 
-        builder
-
+        handler(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
@@ -1222,6 +1233,7 @@ pub fn run() {
                             return;
                         }
                     }
+                    tauri::async_runtime::block_on(extensions::shutdown());
                     // 自动化先于 MCP：运行中的图可能正跑 agent loop（依赖 MCP/供应商）或
                     // 命令节点（Child 靠 kill_on_drop 收尸）。先标记取消、限时等收尾，
                     // 此时运行时还活着，select! 的取消分支才来得及 drop 掉 Child。

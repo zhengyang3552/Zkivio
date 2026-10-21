@@ -13,6 +13,8 @@ export type ChatRouteKind =
   | 'mcp'
   | 'knowledge'
   | 'notes'
+  | 'reading'
+  | 'extensions'
   | 'artifacts'
   | 'media'
   | 'onboarding'

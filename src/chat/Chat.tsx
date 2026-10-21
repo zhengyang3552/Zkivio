@@ -1,3 +1,4 @@
+import { ExtensionCenter, catalog, initializeExtensions, extensionIdForPath, useExtensions, useExtensionPath } from '../extensions/public/host'
 import { PluginCenterHeading } from './market/PluginCenterHeading'
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
@@ -38,6 +39,7 @@ import {
   isChatKnowledgeCenterPath,
   isChatMcpCenterPath,
   isChatNotesPath,
+  isChatReadingPath,
   isChatArtifactsPath,
   isChatMediaPath,
   isChatOnboardingRoute,
@@ -59,6 +61,7 @@ import { useConversationContext } from './hooks/useConversationContext'
 import { useConversationMetaMutations } from './hooks/useConversationMetaMutations'
 import { useMessageActions } from './hooks/useMessageActions'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
+import { ModelSelector } from './ModelSelector'
 import { ConversationTitlebarControls } from './ConversationTitlebarControls'
 import {
   captureConversationNavigation,
@@ -311,6 +314,7 @@ function setStreamError(error: string): void {
 }
 
 type SendMessageOptions = {
+  embedded?: boolean
   planMessageId?: string
   forceNewConversation?: boolean
   conversationOverride?: Conversation | null
@@ -329,6 +333,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   useChatPerfRenderProbe('Chat', { view: hashPath() })
   useChatPerfLongTaskProbe()
   useKeyboardInset()
+  const extensions = useExtensions()
+  const extensionId = extensionIdForPath(useExtensionPath())
+  useEffect(() => { void initializeExtensions().catch(() => {}) }, [])
   const [chatView, setChatView] = useState<ChatView>(() => {
     const path = hashPath()
     if (isChatOnboardingRoute(path)) return 'onboarding'
@@ -337,6 +344,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatSkillCenterPath(path)) return 'skill'
     if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatKnowledgeCenterPath(path)) return 'knowledge'
+    if (isChatReadingPath(path) || path === 'chat/extensions' || path.startsWith('chat/extensions/')) return 'extensions'
     if (isChatNotesPath(path)) return 'notes'
     if (isChatMediaPath(path)) return 'media'
     if (isChatArtifactsPath(path)) return 'artifacts'
@@ -1038,7 +1046,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     tasksLeaveGuardRef,
     requestTasksLeave,
   })
-  const extensionsActive = extensionsNavItemForView(chatView)
+  const extensionsActive = chatView === 'extensions' && extensionId && extensions.enabled.includes(extensionId) ? `extension:${extensionId}` as const : extensionsNavItemForView(chatView)
 
   const handleOnboardingExit = useCallback(() => {
     setChatView('conversation')
@@ -1808,7 +1816,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     attachments: PendingAttachment[] = [],
     options: SendMessageOptions = {},
   ) => {
-    const attachmentSkillId = resolveSendSkillId(
+    const attachmentSkillId = options.embedded ? null : resolveSendSkillId(
       attachments,
       enabledSkills,
       options.skillId !== undefined ? options.skillId : options.forceNewConversation ? null : effectiveSkillId,
@@ -1823,23 +1831,23 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         forceNew: Boolean(options.forceNewConversation),
         providerId: activeProviderId,
         model: activeModel,
-        projectName: selectedProject?.name ?? null,
-        projectId: selectedProject?.id ?? null,
-        setId: selectedSet?.id ?? null,
+        projectName: options.embedded ? null : selectedProject?.name ?? null,
+        projectId: options.embedded ? null : selectedProject?.id ?? null,
+        setId: options.embedded ? null : selectedSet?.id ?? null,
         draft: {
-          agentRuntime: draftAgentRuntime,
-          knowledgeBaseIds: draftKnowledgeBaseIds,
-          forceKnowledgeSearch: draftForceKnowledgeSearch,
-          additionalDirectories: draftAdditionalDirectories,
+          agentRuntime: options.embedded ? BUILTIN_AGENT_RUNTIME : draftAgentRuntime,
+          knowledgeBaseIds: options.embedded ? [] : draftKnowledgeBaseIds,
+          forceKnowledgeSearch: options.embedded ? false : draftForceKnowledgeSearch,
+          additionalDirectories: options.embedded ? [] : draftAdditionalDirectories,
           thinkingLevel: draftThinkingLevel,
           webSearchMode: draftWebSearchMode,
           rememberedWebSearchMode: loadLastWebSearchMode(),
-          replyModels: draftReplyModels,
+          replyModels: options.embedded ? [] : draftReplyModels,
         },
         providerOAuthTypes,
       },
       attachmentSkillId,
-      disabledReason: sendDisabledReason,
+      disabledReason: options.embedded ? '' : sendDisabledReason,
       planMessageId: options.planMessageId,
       onPartialConversation: options.onPartialConversation,
       onAccepted: options.onAccepted,
@@ -1852,6 +1860,21 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     effectiveSkillId, enabledSkills, usesChatRuntime, selectedProject?.id,
     selectedProject?.name, selectedSet?.id, sendDisabledReason, sendController,
   ])
+  const activateExtensionConversation = useCallback(async (id: string | null) => {
+    if (!id) { navigation.resetRouteConversation(); return }
+    // The navigation owner loads and restores the same stream; keep the extension route.
+    await navigation.loadEmbeddedConversation(id)
+  }, [navigation])
+  const createExtensionConversation = useCallback(async (name: string) => {
+    const { activeProviderId, activeModel } = newConversationDefaultsRef.current
+    const conversation = await chatApi.createConversation(activeProviderId || undefined, activeModel || undefined)
+    await chatApi.setAgentRuntime(conversation.id, BUILTIN_AGENT_RUNTIME)
+    const updated = await chatApi.updateConversation(conversation.id, { title: name })
+    refreshSidebar()
+    return updated
+  }, [refreshSidebar])
+  const sendExtensionMessage = useCallback((conversation: Conversation, content: string, attachments: PendingAttachment[], onAccepted?: () => void) =>
+    handleSendMessage(content, attachments, { conversationOverride: conversation, embedded: true, onAccepted }), [handleSendMessage])
   // 历史预置（Lens「在 AI 客户端继续」交接）：用最新 reactive 值（provider/model/project）创建带历史的新会话。
   // 插件市场“使用”：新建对话并发出开场消息；原有单入口插件仍兼容 Skill 绑定。
   // Skill 由会话的 activeSkillId 决定（后端在对话初始化时发现技能），不依赖本地 skills 列表是否已刷新。
@@ -2790,6 +2813,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onOpenMemory={handleSidebarOpenMemory}
           settingsActive={settingsPanelActive}
           extensionsActive={extensionsActive}
+          extensionEntries={catalog.filter(p => extensions.enabled.includes(p.manifest.id)).map(p => ({ id: `extension:${p.manifest.id}` as const, name: p.manifest.name }))}
           collapsed={sidebarCollapsed || settingsPanelActive}
           onToggleCollapsed={handleCollapseSidebar}
           width={sidebarWidth}
@@ -2874,6 +2898,27 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           <div key="center" className={worksPageClass}>
             {centerPageTopStrip}
             <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
+          </div>
+        ) : chatView === 'extensions' || chatView === 'reading' ? (
+          <div key="center" className="chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col">
+            <ExtensionCenter heading={<PluginCenterHeading value="extensions" onChange={handleSidebarOpenExtensionsItem} />} id={extensionId} onOpen={id => handleSidebarOpenExtensionsItem(`extension:${id}`)} host={{
+              headerControls: usesNativeTitlebar && sidebarCollapsed ? (
+                <div className={`chat-titlebar-row ${chatTitlebarRowClass} ${chatTitlebarMacInsetClass} chat-titlebar-row--collapsed-mac`} data-tauri-drag-region>
+                  <ChatTitlebarActions
+                    sidebarExpanded={false}
+                    onToggleSidebar={() => setSidebarCollapsedPersisted(false)}
+                    onNewConversation={() => void handleNewConversation()}
+                  />
+                </div>
+              ) : undefined,
+              inputBarProps,
+              messageListProps,
+              onCreateConversation: createExtensionConversation,
+              onActivateConversation: activateExtensionConversation,
+              onSend: sendExtensionMessage,
+              selectedModel: { providerId: activeProviderId, model: activeModel },
+              modelControls: <ModelSelector portal currentProviderId={activeProviderId} currentModel={activeModel} onModelChange={handleModelChange} />,
+            }} />
           </div>
         ) : chatView === 'notes' ? (
           <div key="center" className={centerPageClass}>

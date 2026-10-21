@@ -11,10 +11,12 @@
     "mcp",
     "knowledge",
     "notes",
+    "reading",
     "artifacts",
     "media",
     "onboarding",
-    "popout"
+    "popout",
+    "extensions"
   ],
   "rememberableCenterSegments": [
     "assistants",
@@ -26,12 +28,39 @@
     "mcp",
     "knowledge",
     "notes",
+    "reading",
     "artifacts",
-    "media"
+    "media",
+    "extensions"
   ],
   "cases": [
-    { "name": "media station", "raw": "#chat/media", "path": "chat/media", "kind": "media", "decodedConversationId": null, "rememberable": true, "restorable": true },
-    { "name": "scheduled tasks", "raw": "#chat/schedules", "path": "chat/schedules", "kind": "schedules", "decodedConversationId": null, "rememberable": true, "restorable": true },
+    {
+      "name": "reading preview",
+      "raw": "#chat/reading",
+      "path": "chat/reading",
+      "kind": "reading",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "media station",
+      "raw": "#chat/media",
+      "path": "chat/media",
+      "kind": "media",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "scheduled tasks",
+      "raw": "#chat/schedules",
+      "path": "chat/schedules",
+      "kind": "schedules",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
     {
       "name": "works library",
       "raw": "#chat/artifacts",
@@ -229,6 +258,15 @@
       "decodedConversationId": null,
       "rememberable": false,
       "restorable": false
+    },
+    {
+      "name": "bundled extension",
+      "raw": "#chat/extensions/study",
+      "path": "chat/extensions/study",
+      "kind": "extensions",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
     }
   ]
 }
