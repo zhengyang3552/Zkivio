@@ -884,7 +884,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             onMouseDown={handleSettingsDragMouseDown}
           >
             <div key={activeTab} className={`settings-section-title-enter${activeTab === 'usage' ? ' settings-usage-title' : ''}`}>
-              <div className="flex items-center gap-3">
+              {/* 页头一行：返回键 + 标题 +（使用统计页的）三段切换。窄屏（360px）下
+                  不换行时标题被挤成一字一行，这里允许换行，切换器自然落到第二行。 */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 {/* 移动端二级页返回：回到一级设置列表。 */}
                 {variant === 'embedded' && paneNavigation && mobilePane !== null && (
                   <button

@@ -13,7 +13,6 @@ const PROGRESS_EVENT = 'android-rootfs-progress'
 const text = {
   zh: {
     title: '工作区',
-    lead: '工作区是一套随应用自带的 Linux rootfs：agent 在里面读写文件、执行命令，看到的 / 就是这套 rootfs。按需下载，不占安装包体积。',
     status: '状态',
     notInstalled: '尚未下载',
     ready: '已就绪',
@@ -35,7 +34,6 @@ const text = {
   },
   en: {
     title: 'Workspace',
-    lead: 'The workspace is a Linux rootfs shipped for the app: the agent reads, writes and runs commands inside it, and `/` is that rootfs. Downloaded on demand, so it costs nothing in the installer.',
     status: 'Status',
     notInstalled: 'Not downloaded',
     ready: 'Ready',
@@ -159,7 +157,8 @@ export function WorkspacePanel({ lang }: { lang: Lang }) {
 
   return (
     <SettingsGroup title={t.title}>
-      <SettingRow label={statusLabel} description={t.lead}>
+      {/* 页面副标题已经解释过 rootfs 是什么，这里只留状态，避免同一段话出现两次。 */}
+      <SettingRow label={statusLabel}>
         {status === 'ready' ? (
           <Button variant="danger" size="sm" onClick={handleUninstall} disabled={working}>
             <Trash2 size={11} />
