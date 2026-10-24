@@ -126,7 +126,20 @@ fn catalog_bytes(dir: &Path, relative: &str) -> Result<Vec<u8>, String> {
     {
         return Err(format!("目录文件路径无效：{relative}"));
     }
-    fs::read(dir.join(relative)).map_err(|e| format!("无法读取 {relative}：{e}"))
+    match fs::read(dir.join(relative)) {
+        Ok(bytes) => Ok(bytes),
+        Err(fs_err) => {
+            // Android：打包资源在 APK 的 assets 里，std::fs 读不到，走 AssetResolver。
+            // 资源映射是 resources/plugins → plugins，两种前缀都试一次。
+            let app = crate::app_data::app_handle()
+                .ok_or_else(|| format!("无法读取 {relative}：{fs_err}"))?;
+            ["plugins", "resources/plugins"]
+                .iter()
+                .find_map(|prefix| app.asset_resolver().get(format!("{prefix}/{relative}")))
+                .map(|asset| asset.data.into_owned())
+                .ok_or_else(|| format!("无法读取 {relative}：{fs_err}"))
+        }
+    }
 }
 
 fn catalog_text(dir: &Path, relative: &str) -> Result<String, String> {

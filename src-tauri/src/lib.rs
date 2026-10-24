@@ -322,6 +322,7 @@ pub fn run() {
             if let Ok(dir) = app.path().app_data_dir() {
                 app_data::remember_app_data_dir(dir);
             }
+            app_data::remember_app_handle(app.handle().clone());
             backup::apply_pending(&app.path().app_data_dir()?)
                 .map_err(std::io::Error::other)?;
             extensions::resume(app.handle().clone());

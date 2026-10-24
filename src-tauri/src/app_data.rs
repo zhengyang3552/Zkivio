@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use tauri::AppHandle;
 
 /// Tauri bundle identifier(须与 `tauri.conf.json` 一致)。
 pub const APP_IDENTIFIER: &str = "com.zmair.kivio";
@@ -13,10 +14,21 @@ pub const APP_IDENTIFIER: &str = "com.zmair.kivio";
 /// setup 阶段由 Tauri 解析一次的真实目录。没有 `AppHandle` 的调用方(插件目录、
 /// 技能发现、市场清单)优先用它，避免各自猜路径。
 static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
+static HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 /// setup 时调用一次：记住 Tauri 解析出的 per-app data 目录。
 pub fn remember_app_data_dir(dir: PathBuf) {
     let _ = RESOLVED.set(dir);
+}
+
+/// setup 时调用一次：留住 AppHandle，供没有 handle 的调用方读打包资源（AssetResolver）。
+pub fn remember_app_handle(handle: AppHandle) {
+    let _ = HANDLE.set(handle);
+}
+
+/// 供 headless 调用方读取打包资源用；setup 之前是 None。
+pub fn app_handle() -> Option<&'static AppHandle> {
+    HANDLE.get()
 }
 
 /// 与 Tauri `app_data_dir` = `dirs::data_dir()/<identifier>` 完全一致:
