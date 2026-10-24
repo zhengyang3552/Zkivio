@@ -323,6 +323,18 @@ pub fn run() {
                 app_data::remember_app_data_dir(dir);
             }
             app_data::remember_app_handle(app.handle().clone());
+            // Android 应用进程没有 HOME/TMPDIR：native tools 与项目存储按 $HOME 解析、
+            // 粘贴/临时文件按 temp_dir 解析，AI 一调用就报 "HOME is not set"。
+            // 子进程（proot 等）也会继承这里设置的值。
+            #[cfg(target_os = "android")]
+            {
+                if let Ok(dir) = app.path().app_data_dir() {
+                    std::env::set_var("HOME", &dir);
+                }
+                if let Ok(dir) = app.path().app_cache_dir() {
+                    std::env::set_var("TMPDIR", &dir);
+                }
+            }
             backup::apply_pending(&app.path().app_data_dir()?)
                 .map_err(std::io::Error::other)?;
             extensions::resume(app.handle().clone());
