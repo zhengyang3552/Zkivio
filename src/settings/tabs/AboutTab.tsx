@@ -6,6 +6,7 @@ import { useModelDatabase } from '../../data/useModelDatabase'
 import { updateModelDatabase } from '../../data/modelDatabaseSync'
 import { useLang, type I18n, type Lang } from '../../components/i18n'
 import type { Settings as SettingsData, UpdateInfo } from '../../api/tauri'
+import { isMobilePlatform } from '../../utils/windowPlatform'
 
 /** 应用信息：图标 / 名称 / 版本 / 开发者。 */
 export function AppInfoGroup({
@@ -81,6 +82,10 @@ export function UpdateGroup({
   renderReleaseNotes: (markdown: string) => ReactNode
 }) {
   const { status, info, downloadState, downloadPercent, downloadError } = update
+
+  // 更新卡片发的是桌面安装包（macOS / Windows 的 .dmg / .exe）。Android 上没有对应的
+  // 安装流程，把桌面版安装包递给手机用户只会下载无用文件；移动端整组隐藏。
+  if (isMobilePlatform) return null
 
   return (
     <SettingsGroup title={t.checkUpdate}>
