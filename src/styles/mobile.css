@@ -229,23 +229,29 @@ html.mobile .settings-mobile-back:active {
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 
-/* 宽屏（平板横屏 / 大屏移动设备）仍用桌面双栏，但指针是手指：
- * 行高与图标槽按触摸放大一档，其余保持桌面样式不变。 */
-html.mobile .settings-embedded-nav-item,
-html.mobile .settings-embedded-back {
-  min-height: 40px;
+/* 二级页内容区顶部让出状态栏。 */
+html.mobile .settings-embedded-main .settings-embedded-header {
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+}
 }
 
-html.mobile .settings-embedded-nav-icon {
-  width: 20px;
-  height: 20px;
-}
-
-/* 大屏 + 手指：桌面尺寸的控件（12px 字、30px 高）在平板上明显偏小。这里只做
- * 「放大 + 补边」两件事，配色、圆角、字号层级都不动：
+/* 宽屏（平板横屏 / 大屏移动设备）：设置页走桌面双栏，但指针是手指，桌面尺寸的控件
+ * （12px 字、30px 高、32px 行）偏小。这里只做「放大 + 补边」，配色、圆角、字号层级不动：
+ *   - 分类行 32→40px、图标槽 18→20px；
  *   - 按钮/输入/下拉整档加高 4px，左右内边距各加 2-3px；
- *   - 顶栏那几枚原本是透明胶囊，触摸时看不出边界，补一条 hairline 边。 */
+ *   - 顶栏那几枚原本是透明胶囊，触摸时看不出边界，补一条 hairline 边。
+ * 必须和窄屏的二级菜单规则互斥：两者都是 html.mobile 前缀、同特异性，后写的会赢。 */
 @media (min-width: 840px) {
+  html.mobile .settings-embedded-nav-item,
+  html.mobile .settings-embedded-back {
+    min-height: 40px;
+  }
+
+  html.mobile .settings-embedded-nav-icon {
+    width: 20px;
+    height: 20px;
+  }
+
   html.mobile .kv-btn {
     min-height: 34px;
     padding: 6px 14px;
@@ -267,8 +273,3 @@ html.mobile .settings-embedded-nav-icon {
   }
 }
 
-/* 二级页内容区顶部让出状态栏。 */
-html.mobile .settings-embedded-main .settings-embedded-header {
-  padding-top: calc(12px + env(safe-area-inset-top, 0px));
-}
-}
