@@ -539,6 +539,9 @@
 }
 
 @container settings-shell (max-width: 480px) {
+  /* 容器查询本身不加特异性：与基础规则同为 0-1-0 时，本文件先载入会被盖掉
+     （实测 .kv-row 只拿到 flex-direction，align-items 仍是 center）。加
+     .settings-embedded 前缀抬到 0-2-0，窄屏覆盖一定生效。 */
   .kv-sidebar {
     width: 52px;
     padding-left: 6px;
@@ -567,25 +570,29 @@
     display: none;
   }
 
-  .kv-page-header {
+  /* 容器查询不增加特异性：这些选择器如果和基础规则同为 0-1-0，就会因为
+     本文件先于 settings-02-pages.css 载入而被基础规则盖掉（实测 .kv-row 只拿到了
+     flex-direction，align-items 仍是 center，窄屏上行标签被居中、控件缩在下面）。
+     统一加 .settings-embedded 前缀（0-2-0），确保窄屏覆盖一定生效。 */
+  .settings-embedded .kv-page-header {
     flex-direction: column;
     align-items: flex-start;
     padding-left: 16px;
     padding-right: 16px;
   }
 
-  .kv-scroll {
+  .settings-embedded .kv-scroll {
     padding-left: 16px;
     padding-right: 16px;
   }
 
-  .kv-row {
+  .settings-embedded .kv-row {
     flex-direction: column;
     align-items: stretch;
     gap: 8px;
   }
 
-  .kv-row-control {
+  .settings-embedded .kv-row-control {
     width: 100%;
     justify-content: flex-start;
   }
