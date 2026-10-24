@@ -6,6 +6,7 @@ import { Input, Select, TextArea, Toggle } from '../public/controls'
 import { SettingRow, SettingsGroup } from '../components'
 import type { Settings } from '../../api/tauri'
 import type { Lang } from '../../components/i18n'
+import { isMobilePlatform } from '../../utils/windowPlatform'
 import { copyToClipboard } from '../../utils/clipboard'
 import { BUILTIN_THEMES, exportThemeJson, paletteVariables, parseThemeJson, resolveTheme } from '../../theme/theme'
 import { THEME_FIELDS, type ThemeDefinition, type ThemePalette } from '../../theme/types'
@@ -158,10 +159,14 @@ export function ThemeTab({ settings, lang, draft, onDraftChange, onCommit }: {
             options={[{ value: 'system', label: zh ? '跟随系统' : 'System' }, { value: 'light', label: zh ? '浅色' : 'Light' }, { value: 'dark', label: zh ? '深色' : 'Dark' }]}
             onChange={value => void run('settings', () => onCommit(current => ({ ...current, theme: value as Settings['theme'] })))} />
         </SettingRow>
-        <SettingRow label={zh ? '半透明侧边栏' : 'Translucent sidebar'}>
-          <Toggle checked={settings.translucentSidebar} disabled={Boolean(busy)} ariaLabel={zh ? '半透明侧边栏' : 'Translucent sidebar'}
-            onChange={value => void run('settings', () => onCommit(current => ({ ...current, translucentSidebar: value })))} />
-        </SettingRow>
+        {/* 半透明侧边栏靠桌面窗口的原生材质（macOS vibrancy / Windows Mica）实现，
+            手机上没有任何视觉效果，勾了也没反应。 */}
+        {!isMobilePlatform && (
+          <SettingRow label={zh ? '半透明侧边栏' : 'Translucent sidebar'}>
+            <Toggle checked={settings.translucentSidebar} disabled={Boolean(busy)} ariaLabel={zh ? '半透明侧边栏' : 'Translucent sidebar'}
+              onChange={value => void run('settings', () => onCommit(current => ({ ...current, translucentSidebar: value })))} />
+          </SettingRow>
+        )}
       </SettingsGroup>}
 
       {!draft && <section className="theme-library" aria-labelledby={`${inputId}-library`}>

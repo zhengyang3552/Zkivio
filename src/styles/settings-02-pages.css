@@ -1315,10 +1315,14 @@ input[type="password"]::-ms-clear {
 .kv-provider-add--preset {
   color: var(--accent);
   font-weight: 500;
+  /* 不支持 color-mix 的 WebView 会退回这条显式声明。用主题自带的 accent-soft 而不是
+     var(--accent)：同色底 + 同色字会让「添加驱动」整块看不见。 */
+  background: var(--accent-soft);
   background: color-mix(in srgb, var(--accent) 9%, transparent);
 }
 .kv-provider-add--preset:hover {
   color: var(--accent);
+  background: var(--accent-soft);
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .kv-provider-item svg,
