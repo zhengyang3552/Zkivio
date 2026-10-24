@@ -17,7 +17,10 @@
 set -euo pipefail
 
 TERMUX_REPO="${TERMUX_REPO:-https://packages.termux.dev/apt/termux-main}"
-PROOT_VERSION="5.1.107.98"
+# Termux 的 pool 只保留当前版本，旧版本会被删掉（5.1.107.96 / .98 都已 404）。
+# 升级前先查索引里的现版本：
+#   curl -fsSL "$TERMUX_REPO/dists/stable/main/binary-aarch64/Packages.gz" | gzip -d | grep -A3 '^Package: proot$'
+PROOT_VERSION="5.1.107.100"
 TALLOC_VERSION="2.5.0"
 ANDROID_SHMEM_VERSION="0.7"
 
