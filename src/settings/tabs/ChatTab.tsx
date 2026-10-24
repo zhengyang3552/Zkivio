@@ -1,6 +1,7 @@
 import { RefreshCw, FolderOpen } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { homeDir, join } from '@tauri-apps/api/path'
+import { appDataDir, homeDir, join } from '@tauri-apps/api/path'
+import { isMobilePlatform } from '../../chat/platform'
 import { Select, Input, SettingRow, SettingsGroup, Toggle, PromptField } from '../components'
 import { Button } from '../../components/Button'
 import type { I18n, Lang } from '../../components/i18n'
@@ -135,7 +136,11 @@ export function ChatTab({
                 size="sm"
                 className="shrink-0"
                 onClick={async () => {
-                  const defaultPath = await join(await homeDir(), 'Kivio', 'workspace')
+                  // Android 的 homeDir() 指向外部存储（应用不可写，默认目录落到
+                  // /storage/emulated/0 下会让 AI 的文件工具全部 Permission denied），
+                  // 移动端默认目录必须落在应用私有目录里。
+                  const base = isMobilePlatform ? await appDataDir() : await homeDir()
+                  const defaultPath = await join(base, 'Kivio', 'workspace')
                   onUpdateNativeTools({ workingDirectory: defaultPath })
                 }}
                 data-tauri-drag-region="false"
