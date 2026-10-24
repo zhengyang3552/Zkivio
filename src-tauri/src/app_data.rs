@@ -5,9 +5,19 @@
 //! `app_data_dir` 完全一致的纯函数实现。
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 /// Tauri bundle identifier(须与 `tauri.conf.json` 一致)。
 pub const APP_IDENTIFIER: &str = "com.zmair.kivio";
+
+/// setup 阶段由 Tauri 解析一次的真实目录。没有 `AppHandle` 的调用方(插件目录、
+/// 技能发现、市场清单)优先用它，避免各自猜路径。
+static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
+
+/// setup 时调用一次：记住 Tauri 解析出的 per-app data 目录。
+pub fn remember_app_data_dir(dir: PathBuf) {
+    let _ = RESOLVED.set(dir);
+}
 
 /// 与 Tauri `app_data_dir` = `dirs::data_dir()/<identifier>` 完全一致:
 ///   Windows: `%APPDATA%\com.zmair.kivio`(Roaming,无 `\data` 子目录)
@@ -18,5 +28,19 @@ pub const APP_IDENTIFIER: &str = "com.zmair.kivio";
 /// 后者在 Windows 会多追加一层 `\data`,导致读到错误路径。
 /// 无法确定 home/data 目录时返回 `None`。
 pub fn app_data_dir() -> Option<PathBuf> {
-    directories::BaseDirs::new().map(|base| base.data_dir().join(APP_IDENTIFIER))
+    if let Some(dir) = RESOLVED.get() {
+        return Some(dir.clone());
+    }
+    // Android 没有 XDG / 已知文件夹，`directories` 在手机上返回 None，
+    // 于是插件目录、市场清单这些 headless 路径全部报 "Application data directory
+    // unavailable"。Android 进程的 HOME 就是应用私有目录（= Tauri 的 app_data_dir，
+    // 形如 /data/user/0/com.zmair.kivio），直接用它。
+    #[cfg(target_os = "android")]
+    let resolved = std::env::var("HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    #[cfg(not(target_os = "android"))]
+    let resolved = directories::BaseDirs::new().map(|base| base.data_dir().join(APP_IDENTIFIER));
+    resolved
 }

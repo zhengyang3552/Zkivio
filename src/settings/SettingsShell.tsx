@@ -901,7 +901,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 )}
                 <div className="kv-page-title">{pageMeta[activeTab].title}</div>
                 {activeTab === 'usage' && (
-                  <div className="inline-flex items-center gap-0.5 rounded-full bg-[var(--bg-input-subtle)] p-0.5" data-tauri-drag-region="false">
+                  <div className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--bg-input-subtle)] p-0.5" data-tauri-drag-region="false">
                     {([
                       { id: 'app' as const, label: lang === 'zh' ? '应用用量' : 'App usage' },
                       { id: 'calls' as const, label: lang === 'zh' ? '调用明细' : 'Call details' },
@@ -910,7 +910,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       <button
                         key={option.id}
                         type="button"
-                        className={`rounded-full px-2.5 py-0.5 text-[12px] leading-5 ${
+                        className={`shrink-0 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[12px] leading-5 ${
                           usageView === option.id
                             ? 'bg-[var(--bg)] text-[var(--text)] shadow-sm'
                             : 'text-[var(--text-muted)]'

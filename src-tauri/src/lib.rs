@@ -316,6 +316,12 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
+            // 先钉住 per-app data 目录：Android 上 `directories` 拿不到 XDG/HOME 规范目录，
+            // 没有 AppHandle 的调用方（插件目录、市场清单、技能发现）会直接报
+            // "Application data directory unavailable"。
+            if let Ok(dir) = app.path().app_data_dir() {
+                app_data::remember_app_data_dir(dir);
+            }
             backup::apply_pending(&app.path().app_data_dir()?)
                 .map_err(std::io::Error::other)?;
             extensions::resume(app.handle().clone());
