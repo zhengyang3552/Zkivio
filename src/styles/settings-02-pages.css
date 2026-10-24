@@ -1312,18 +1312,17 @@ input[type="password"]::-ms-clear {
   color: var(--text-muted);
   gap: 6px;
 }
+/* 浅底用主题自带的 accent-soft，不用 color-mix：
+   构建器会在 color-mix 后面补一条 `background: var(--accent)` 兜底，老 WebView 恰好
+   吃到它 —— 文字与底色同为 accent，「添加驱动」整块看不见。 */
 .kv-provider-add--preset {
   color: var(--accent);
   font-weight: 500;
-  /* 不支持 color-mix 的 WebView 会退回这条显式声明。用主题自带的 accent-soft 而不是
-     var(--accent)：同色底 + 同色字会让「添加驱动」整块看不见。 */
   background: var(--accent-soft);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
 }
 .kv-provider-add--preset:hover {
   color: var(--accent);
-  background: var(--accent-soft);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  background: var(--bg-active);
 }
 .kv-provider-item svg,
 .kv-provider-add svg {
@@ -2765,9 +2764,18 @@ input[type="password"]::-ms-clear {
 
 .kv-modal-backdrop,
 dialog.kv-modal::backdrop {
-  background: color-mix(in srgb, var(--text) 30%, transparent);
+  /* 遮罩是「压暗背景」，不该跟着文字色派生：不支持 color-mix 的 WebView 会退回
+     var(--text) 纯色，暗色主题下整屏被刷成白色（截图里弹窗后面那块白底）。
+     这里改成固定的黑色半透明遮罩，明暗各一档，任何 WebView 都成立。 */
+  background: rgb(0 0 0 / 0.32);
   -webkit-backdrop-filter: blur(1px);
   backdrop-filter: blur(1px);
+}
+
+.dark .kv-modal-backdrop,
+.dark dialog.kv-modal::backdrop,
+.kv[data-theme="dark"] .kv-modal-backdrop {
+  background: rgb(0 0 0 / 0.55);
 }
 
 .kv-modal-backdrop--portal {
