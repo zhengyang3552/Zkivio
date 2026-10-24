@@ -30,15 +30,25 @@ function mountApp() {
 }
 
 if (isTauriRuntime()) {
-  void restoreBackupInterface().then(() => startModelDatabaseSync()).then((stop) => {
+  // 启动链路里的两步都是「有则更好」，任何一步失败都不该让窗口只剩一行错误：
+  //   - 备份界面状态：后端缺这条命令（旧版/不同平台的命令表不一致）时按没有备份处理；
+  //   - 模型库同步：失败就继续用磁盘上已有的目录，不把整个应用卡在启动前。
+  // 真正的加载失败由 App 自己的错误界面呈现，这里只记录原因。
+  void (async () => {
+    try {
+      await restoreBackupInterface()
+    } catch (error) {
+      console.error('[startup] could not restore the backup interface', error)
+    }
+    let stop: () => void = () => {}
+    try {
+      stop = await startModelDatabaseSync()
+    } catch (error) {
+      console.error('[startup] could not sync the model database', error)
+    }
     if (import.meta.hot) import.meta.hot.dispose(stop)
     mountApp()
-  }).catch((error) => {
-    console.error('[startup] could not load local data', error)
-    // Do not silently show bundled metadata while the backend uses a newer catalog.
-    const root = document.getElementById('root')!
-    root.textContent = '本地数据加载失败，请重新打开窗口。 / Local data failed to load. Reopen this window.'
-  })
+  })()
 } else {
   mountApp()
 }

@@ -231,7 +231,7 @@ pub(crate) async fn update_model_database(app: tauri::AppHandle) -> Result<Snaps
     let _guard = UPDATE
         .try_lock()
         .map_err(|_| "A model database update is already running")?;
-    let client = reqwest::Client::builder()
+    let client = crate::http::client_builder()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;

@@ -204,7 +204,7 @@ pub fn build_direct_http_client() -> Client {
 }
 
 fn build_client(no_proxy: bool) -> Client {
-    let builder = Client::builder()
+    let builder = crate::http::client_builder()
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
         .read_timeout(HTTP_READ_IDLE_TIMEOUT)
         .pool_idle_timeout(HTTP_POOL_IDLE_TIMEOUT)

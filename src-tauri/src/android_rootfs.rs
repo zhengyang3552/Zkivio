@@ -389,7 +389,7 @@ async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Resul
     use tokio::io::AsyncWriteExt;
 
     let host = source_host(source);
-    let client = reqwest::Client::builder()
+    let client = crate::http::client_builder()
         .connect_timeout(std::time::Duration::from_secs(20))
         .timeout(std::time::Duration::from_secs(900))
         .build()

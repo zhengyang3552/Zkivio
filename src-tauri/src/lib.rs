@@ -26,6 +26,7 @@ mod extensions;
 pub mod external_agents;
 pub mod fonts;
 mod html_preview;
+pub mod http;
 pub mod lens;
 #[cfg(not(target_os = "android"))]
 pub mod lens_commands;
@@ -1006,6 +1007,22 @@ pub fn run() {
             commands::set_favorite_models,
             commands::export_settings,
             commands::import_settings,
+            // 备份：启动时前端要读 .backup-interface.json 才能恢复 WebView 的本地偏好，
+            // 桌面与移动共用同一套实现（backup.rs 无桌面专属依赖）。缺了这条，
+            // main.tsx 的启动链路会直接失败、窗口只剩一行「本地数据加载失败」。
+            backup::backup_interface,
+            backup::backup_restore_pending,
+            backup::restart_after_restore,
+            backup::export_full_backup,
+            backup::import_full_backup,
+            backup::webdav::webdav_load,
+            backup::webdav::webdav_save,
+            backup::webdav::webdav_test,
+            backup::webdav::webdav_list,
+            backup::webdav::webdav_upload,
+            backup::webdav::webdav_download,
+            backup::webdav::webdav_release,
+            backup::webdav::webdav_delete,
             commands::open_settings_window,
             commands::open_external,
             commands::open_local_file,

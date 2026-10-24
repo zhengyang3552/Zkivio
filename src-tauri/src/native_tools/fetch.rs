@@ -179,7 +179,7 @@ fn fetch_client() -> Result<&'static Client, String> {
     static CLIENT: std::sync::OnceLock<Result<Client, String>> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            Client::builder()
+            crate::http::client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
                 .build()

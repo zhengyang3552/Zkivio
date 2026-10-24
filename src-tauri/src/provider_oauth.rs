@@ -102,7 +102,7 @@ fn token_url(provider: &str) -> &'static str {
     }
 }
 fn http(use_system_proxy: bool) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::http::client_builder()
         .user_agent(concat!("Kivio/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30));
@@ -158,7 +158,7 @@ pub fn inference_client(use_system_proxy: bool) -> &'static reqwest::Client {
     static DIRECT: OnceLock<reqwest::Client> = OnceLock::new();
     let slot = if use_system_proxy { &PROXY } else { &DIRECT };
     slot.get_or_init(|| {
-        let mut builder = reqwest::Client::builder()
+        let mut builder = crate::http::client_builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(300));

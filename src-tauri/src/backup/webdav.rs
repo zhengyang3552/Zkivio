@@ -166,7 +166,7 @@ impl Dav {
             }
             segments.push("");
         }
-        let client = Client::builder()
+        let client = crate::http::client_builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(60))

@@ -1105,7 +1105,7 @@ mod tests {
     #[tokio::test]
     async fn http_stops_reading_at_budget_without_waiting_for_eof_or_panicking_on_cjk() {
         let (url, server) = streaming_server("中".repeat(18_000).into_bytes()).await;
-        let request = reqwest::Client::builder()
+        let request = crate::http::client_builder()
             .no_proxy()
             .build()
             .unwrap()
@@ -1123,7 +1123,7 @@ mod tests {
     #[tokio::test]
     async fn http_timeout_includes_body_after_headers_have_arrived() {
         let (url, server) = streaming_server(b"partial".to_vec()).await;
-        let request = reqwest::Client::builder()
+        let request = crate::http::client_builder()
             .no_proxy()
             .build()
             .unwrap()

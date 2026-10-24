@@ -126,6 +126,17 @@ sqlite-vec = "0.1"
 
 croner = "4"
 
+# Android 专用依赖。
+#
+# reqwest 0.13 的 `rustls` feature 默认使用 rustls-platform-verifier，而它在 Android 上
+# 需要应用自带 Kotlin 组件并在 JNI 层初始化（见 crate 文档的 Android 一节）。本仓库的
+# android 工程由 CI 用 `tauri android init` 现生成，挂不上那个 AAR；未初始化时构造
+# 客户端会 panic，所有联网功能随之失效。这里让它改用内置的 Mozilla 根证书，
+# 见 src/http.rs 的说明。
+[target.'cfg(target_os = "android")'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+webpki-roots = "1"
+
 # 桌面端专用依赖：Android 上没有对应后端（托盘 / 全局热键 / 单实例 / 自启 /
 # PTY / 系统剪贴板 / 输入模拟 / 系统钥匙串 / ONNX Runtime OCR），因此只在
 # 非 Android 目标编译；对应模块在 lib.rs 里用 cfg(not(target_os = "android"))
