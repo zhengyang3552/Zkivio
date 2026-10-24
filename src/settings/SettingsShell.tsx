@@ -70,6 +70,24 @@ import {
 } from './components'
 import { WebSearchPanel } from './WebSearchPanel'
 
+/**
+ * 设置页是否折叠成「一级列表 → 二级内容」的移动形态。
+ *
+ * 判据是可用宽度而不是平台：平板横屏（>839px）有足够空间，导航列与内容区并排更好用，
+ * 和桌面端一致；窄屏手机才需要两级跳转，否则点一个分类就把导航整块顶掉。
+ */
+const COMPACT_SETTINGS_QUERY = '(max-width: 839px)'
+
+function subscribeCompactSettings(onChange: () => void) {
+  const query = window.matchMedia(COMPACT_SETTINGS_QUERY)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+function getCompactSettings() {
+  return window.matchMedia(COMPACT_SETTINGS_QUERY).matches
+}
+
 export type SettingsTab = 'general' | 'themes' | 'chat' | 'memory' | 'mixer' | 'hooks' | 'webSearch' | 'sessions' | 'usage' | 'workspace' | 'providers' | 'about'
 
 type SettingsData = SettingsType
@@ -155,9 +173,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [editorController])
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
-  // 移动端（Android）二级菜单：null = 一级设置列表；否则为已进入的子页。
-  // 桌面端不使用（桌面是常驻侧栏 + 内容区的双栏形态）。
+  // 窄屏二级菜单：null = 一级设置列表；否则为已进入的子页。
+  // 宽屏（桌面 / 平板横屏）不使用，导航列与内容区并排。
   const [mobilePane, setMobilePane] = useState<SettingsTab | null>(null)
+  const compactLayout = useSyncExternalStore(subscribeCompactSettings, getCompactSettings, getCompactSettings)
+  const paneNavigation = isMobilePlatform && compactLayout
   const [themeDraft, setThemeDraft] = useState<ThemeDefinition | null>(null)
   // 使用统计页内的视图：应用用量 / 调用明细 / 请求调试
   const [usageView, setUsageView] = useState<'app' | 'calls' | 'debug'>('app')
@@ -804,7 +824,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 onClick={() => {
                   setActiveTab(item.id)
                   // 移动端进入二级页；桌面端只切内容区。
-                  if (isMobilePlatform) setMobilePane(item.id)
+                  if (paneNavigation) setMobilePane(item.id)
                 }}
                 className={`settings-embedded-nav-item ${activeTab === item.id ? 'active' : ''}`}
                 data-tauri-drag-region="false"
@@ -866,7 +886,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             <div key={activeTab} className={`settings-section-title-enter${activeTab === 'usage' ? ' settings-usage-title' : ''}`}>
               <div className="flex items-center gap-3">
                 {/* 移动端二级页返回：回到一级设置列表。 */}
-                {variant === 'embedded' && isMobilePlatform && mobilePane !== null && (
+                {variant === 'embedded' && paneNavigation && mobilePane !== null && (
                   <button
                     type="button"
                     className="settings-mobile-back"
@@ -1247,7 +1267,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   if (variant === 'embedded') {
     // 移动端二级菜单：未选子页时只显示一级设置列表（导航列占满整屏），
     // 进入子页后隐藏导航、内容区占满，靠页头返回按钮回到一级。
-    const mobileDetail = isMobilePlatform && !hideNav && mobilePane !== null
+    const mobileDetail = paneNavigation && !hideNav && mobilePane !== null
     return (
       <div
         className={`settings-embedded kv flex min-h-0 min-w-0 flex-1 ${
@@ -1262,7 +1282,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {categoryNav}
           </aside>
         )}
-        {(!isMobilePlatform || hideNav || mobileDetail) && settingsMain}
+        {(!paneNavigation || hideNav || mobileDetail) && settingsMain}
         {settingsModals}
       </div>
     )
