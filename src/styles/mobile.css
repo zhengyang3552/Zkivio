@@ -273,3 +273,28 @@ html.mobile .settings-embedded-main .settings-embedded-header {
   }
 }
 
+/* ===== 8. 全屏去圆角 =====
+ * Android 上应用是满屏窗口，桌面版的 14px 圆角 + 边框 + 内发光会把四角裁掉，
+ * 露出 WebView 的白色底 —— 屏幕四周出现白边。移动端一律直角满屏。 */
+html.mobile .chat-window-shell {
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+}
+
+html.mobile .kv-window {
+  border-radius: 0;
+}
+
+/* ===== 8. 全屏去圆角 =====
+ * Android 上应用是满屏窗口，桌面版的 14px 圆角 + 边框 + 内发光会把四角裁掉，
+ * 露出 WebView 的白色底 —— 屏幕四周出现白边。移动端一律直角满屏。 */
+html.mobile .chat-window-shell {
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+}
+
+html.mobile .kv-window {
+  border-radius: 0;
+}
