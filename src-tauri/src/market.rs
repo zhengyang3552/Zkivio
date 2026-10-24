@@ -131,13 +131,22 @@ fn catalog_bytes(dir: &Path, relative: &str) -> Result<Vec<u8>, String> {
         Err(fs_err) => {
             // Android：打包资源在 APK 的 assets 里，std::fs 读不到，走 AssetResolver。
             // 资源映射是 resources/plugins → plugins，两种前缀都试一次。
+            // AssetResolver 对未知路径可能回退到前端 index.html，所以 .json 要先验一下
+            // 内容再采信，两个前缀都试过去仍不像样，才把原始错误报出去。
             let app = crate::app_data::app_handle()
                 .ok_or_else(|| format!("无法读取 {relative}：{fs_err}"))?;
-            ["plugins", "resources/plugins"]
-                .iter()
-                .find_map(|prefix| app.asset_resolver().get(format!("{prefix}/{relative}")))
-                .map(|asset| asset.bytes)
-                .ok_or_else(|| format!("无法读取 {relative}：{fs_err}"))
+            for prefix in ["plugins", "resources/plugins"] {
+                let Some(asset) = app.asset_resolver().get(format!("{prefix}/{relative}")) else {
+                    continue;
+                };
+                let bytes = asset.bytes;
+                let looks_right =
+                    !bytes.is_empty() && (!relative.ends_with(".json") || bytes[0] == b'{' || bytes[0] == b'[');
+                if looks_right {
+                    return Ok(bytes);
+                }
+            }
+            Err(format!("无法读取 {relative}：{fs_err}"))
         }
     }
 }
