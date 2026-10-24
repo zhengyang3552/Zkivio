@@ -1,4 +1,5 @@
 import { AppNoticeHost } from './components/AppNotice'
+import type { Lang } from './components/i18n'
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -49,6 +50,8 @@ function App() {
 
   const [mode, setMode] = useState(getMode)
   const [translucentSidebar, setTranslucentSidebar] = useState(false)
+  // 通知宿主渲染在 Chat 之外，拿不到 Chat 里的 LangContext，只能自己跟设置里的界面语言保持同步。
+  const [lang, setLang] = useState<Lang>('zh')
 
   useLayoutEffect(() => {
     const root = document.documentElement
@@ -88,6 +91,7 @@ function App() {
     if (generation !== applyGeneration.current) return
     applyThemeSettings(settings)
     setTranslucentSidebar(settings.translucentSidebar)
+    setLang(settings.settingsLanguage === 'en' ? 'en' : 'zh')
     // UI 字号（整体缩放）+ 自定义字体：仅作用于聊天窗口，保持原始几何与布局。
     // 直接读 hash（稳定的 import）而非 mode state，避免让 applyTheme 变成不稳定依赖。
     const root = document.documentElement

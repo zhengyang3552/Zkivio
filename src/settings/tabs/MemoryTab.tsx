@@ -1,12 +1,21 @@
 import { ErrorNotice } from '../../components/AppNotice'
-import { RefreshCw, FolderOpen } from 'lucide-react'
-import { SettingRow, SettingsGroup, Toggle } from '../components'
-import { Button } from '../../components/Button'
+import { useMemo, useState } from 'react'
+import { RefreshCw, FolderOpen, PencilLine, Trash2 } from 'lucide-react'
+import { SettingRow, SettingsGroup, Toggle, TextArea } from '../components'
+import { Button, IconButton } from '../../components/Button'
+import { confirmDialog } from '../../components/dialogQueue'
 import {
   MEMORY_L1_MAX_BYTES,
   utf8ByteLength,
   type MemoryLayerKey,
 } from '../memoryLayers'
+import {
+  filterMemoryEntries,
+  memoryEntryPreview,
+  parseMemoryEntries,
+  removeMemoryEntry,
+  replaceMemoryEntryBody,
+} from '../memoryEntries'
 import type { Lang } from '../../components/i18n'
 import type { ChatMemoryConfig } from '../../api/tauri'
 import { isMobilePlatform } from '../../utils/windowPlatform'
@@ -80,13 +89,13 @@ function MemoryEditor({
           </Button>
         </div>
       </div>
-      <textarea
+      <TextArea
         value={value}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={onChange}
         rows={rows}
-        className="kv-textarea mono custom-scrollbar min-h-[160px]"
+        mono
+        className="min-h-[160px]"
         spellCheck={false}
-        data-tauri-drag-region="false"
         aria-label={title}
       />
       {overLimit && (
@@ -115,6 +124,7 @@ interface MemoryTabProps {
   onOpenFolder: () => void
   onDraftChange: (layer: MemoryLayerKey, value: string) => void
   onSaveLayer: (layer: MemoryLayerKey) => void
+  onReplaceLayerContent: (layer: MemoryLayerKey, content: string) => void
 }
 
 /** 记忆标签页。纯展示；加载、保存与草稿由记忆编辑 owner 管理。 */
@@ -133,13 +143,47 @@ export function MemoryTab({
   onOpenFolder,
   onDraftChange,
   onSaveLayer,
+  onReplaceLayerContent,
 }: MemoryTabProps) {
+  const [browseLayer, setBrowseLayer] = useState<MemoryLayerKey>('l1')
+  const [query, setQuery] = useState('')
+  const [editing, setEditing] = useState<{ id: string; body: string } | null>(null)
+
+  const entries = useMemo(
+    () => ({
+      l1: parseMemoryEntries(memorySnapshots.l1),
+      l2: parseMemoryEntries(memorySnapshots.l2),
+    }),
+    [memorySnapshots.l1, memorySnapshots.l2],
+  )
+  const visible = useMemo(
+    () => filterMemoryEntries(entries[browseLayer], query),
+    [entries, browseLayer, query],
+  )
+  const dirty = memoryDrafts[browseLayer] !== memorySnapshots[browseLayer]
+  const saving = memorySavingLayer !== null
+  const zh = lang === 'zh'
+
+  const handleDelete = async (entry: { id: string; title: string }) => {
+    const confirmed = await confirmDialog({
+      title: zh ? '删除这条记忆？' : 'Delete this memory?',
+      message: zh
+        ? `「${entry.title || '未命名条目'}」会从 ${browseLayer.toUpperCase()} 里删除，且无法恢复。`
+        : `“${entry.title || 'Untitled entry'}” is removed from ${browseLayer.toUpperCase()} and cannot be recovered.`,
+      confirmLabel: zh ? '删除' : 'Delete',
+      danger: true,
+    })
+    if (!confirmed) return
+    setEditing(null)
+    onReplaceLayerContent(browseLayer, removeMemoryEntry(memorySnapshots[browseLayer], entry.id))
+  }
+
   return (
     <>
-      <SettingsGroup title={lang === 'zh' ? '记忆运行' : 'Memory runtime'}>
+      <SettingsGroup title={zh ? '记忆运行' : 'Memory runtime'}>
         <SettingRow
-          label={lang === 'zh' ? '启用记忆' : 'Enable memory'}
-          description={lang === 'zh'
+          label={zh ? '启用记忆' : 'Enable memory'}
+          description={zh
             ? '开启后注入 L1，并暴露 memory 工具。'
             : 'Injects L1 and exposes memory tools.'}
         >
@@ -148,7 +192,7 @@ export function MemoryTab({
             onChange={(enabled) => onUpdateChatMemory({ enabled })}
           />
         </SettingRow>
-        <SettingRow label={lang === 'zh' ? '记忆文件夹' : 'Memory folder'} stack>
+        <SettingRow label={zh ? '记忆文件夹' : 'Memory folder'} stack>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Button
               size="sm"
@@ -157,7 +201,7 @@ export function MemoryTab({
               data-tauri-drag-region="false"
             >
               <RefreshCw size={10} className={memoryLoading ? 'animate-spin' : ''} />
-              {lang === 'zh' ? '刷新' : 'Refresh'}
+              {zh ? '刷新' : 'Refresh'}
             </Button>
             {/* 打开文件夹依赖系统文件管理器；安卓的应用私有目录对外不可见，
                 点击只会得到 No Activity found，移动端不渲染这个按钮。 */}
@@ -168,7 +212,7 @@ export function MemoryTab({
                 data-tauri-drag-region="false"
               >
                 <FolderOpen size={11} />
-                {lang === 'zh' ? '打开文件夹' : 'Open folder'}
+                {zh ? '打开文件夹' : 'Open folder'}
               </Button>
             )}
             {memoryDir && <span className="kv-row-desc min-w-0 break-all">{memoryDir}</span>}
@@ -182,11 +226,140 @@ export function MemoryTab({
         )}
       </SettingsGroup>
 
+      {/* 已存记忆：按条目浏览、改正文、删除。整份 Markdown 的读写仍是唯一权威。 */}
+      <SettingsGroup title={zh ? '已存记忆' : 'Stored memories'}>
+        <div className="px-1 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="kv-seg w-fit">
+              {(['l1', 'l2'] as const).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={browseLayer === key ? 'active' : ''}
+                  aria-pressed={browseLayer === key}
+                  onClick={() => {
+                    setEditing(null)
+                    setBrowseLayer(key)
+                  }}
+                  data-tauri-drag-region="false"
+                >
+                  {key.toUpperCase()} · {entries[key].length}
+                </button>
+              ))}
+            </div>
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={zh ? '搜索条目' : 'Search entries'}
+              aria-label={zh ? '搜索记忆条目' : 'Search memory entries'}
+              className="kv-input ml-auto w-[160px] min-w-0 flex-1"
+              data-tauri-drag-region="false"
+            />
+          </div>
+          <p className="kv-row-desc mt-1.5">
+            {dirty
+              ? (zh
+                ? '下方编辑框有未保存的改动，先保存才能改写或删除条目。'
+                : 'Save the editor below before rewriting or deleting entries.')
+              : (zh
+                ? `${browseLayer.toUpperCase()} 共 ${entries[browseLayer].length} 条，点击可展开正文。`
+                : `${entries[browseLayer].length} entries in ${browseLayer.toUpperCase()}.`)}
+          </p>
+        </div>
+
+        {visible.length === 0 ? (
+          <div className="px-1 py-2">
+            <p className="kv-row-desc">
+              {entries[browseLayer].length === 0
+                ? (zh ? '还没有已存的记忆。代理写入后，条目会出现在这里。' : 'No stored memories yet. Entries appear here once the agent writes them.')
+                : (zh ? '没有匹配的条目。' : 'No entries match your search.')}
+            </p>
+          </div>
+        ) : (
+          <ul className="custom-scrollbar m-0 max-h-[320px] list-none overflow-y-auto p-0">
+            {visible.map((entry) => {
+              const isEditing = editing?.id === entry.id
+              return (
+                <li key={entry.id} className="border-t border-[var(--border)] px-1 py-2 first:border-t-0">
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="kv-row-label truncate">
+                        {entry.title || (zh ? '未命名条目' : 'Untitled entry')}
+                      </div>
+                      {!isEditing && (
+                        <p className="kv-row-desc mt-0.5 whitespace-pre-wrap [overflow-wrap:anywhere]">
+                          {memoryEntryPreview(entry) || (zh ? '（正文为空）' : '(empty)')}
+                        </p>
+                      )}
+                    </div>
+                    {!isEditing && (
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          disabled={dirty || saving}
+                          onClick={() => setEditing({ id: entry.id, body: entry.body })}
+                          data-tauri-drag-region="false"
+                        >
+                          <PencilLine size={11} />
+                          {zh ? '编辑' : 'Edit'}
+                        </Button>
+                        <IconButton
+                          size="xs"
+                          variant="danger"
+                          label={zh ? '删除这条记忆' : 'Delete this memory'}
+                          disabled={dirty || saving}
+                          onClick={() => void handleDelete(entry)}
+                        >
+                          <Trash2 size={13} />
+                        </IconButton>
+                      </div>
+                    )}
+                  </div>
+
+                  {isEditing && editing && (
+                    <div className="mt-2">
+                      <TextArea
+                        value={editing.body}
+                        onChange={(body) => setEditing({ id: entry.id, body })}
+                        rows={6}
+                        mono
+                        aria-label={zh ? '编辑条目正文' : 'Edit entry body'}
+                      />
+                      <div className="mt-2 flex items-center justify-end gap-1.5">
+                        <Button size="sm" onClick={() => setEditing(null)} data-tauri-drag-region="false">
+                          {zh ? '取消' : 'Cancel'}
+                        </Button>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          disabled={saving || editing.body === entry.body}
+                          onClick={() => {
+                            onReplaceLayerContent(
+                              browseLayer,
+                              replaceMemoryEntryBody(memorySnapshots[browseLayer], entry.id, editing.body),
+                            )
+                            setEditing(null)
+                          }}
+                          data-tauri-drag-region="false"
+                        >
+                          {zh ? '保存条目' : 'Save entry'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </SettingsGroup>
+
       {/* L1 / L2 编辑器自带标题+描述+按钮，面板间用 mb-2 直接留间距（无额外容器层） */}
       <MemoryEditor
         layer="l1"
-        title={lang === 'zh' ? 'L1 在线记忆' : 'L1 Online Memory'}
-        description={lang === 'zh'
+        title={zh ? 'L1 在线记忆' : 'L1 Online Memory'}
+        description={zh
           ? '每次回答都会参考的偏好与约束。'
           : 'Preferences and constraints applied to every reply.'}
         value={memoryDrafts.l1}
@@ -203,8 +376,8 @@ export function MemoryTab({
 
       <MemoryEditor
         layer="l2"
-        title={lang === 'zh' ? 'L2 长期记忆' : 'L2 Long-Term Memory'}
-        description={lang === 'zh'
+        title={zh ? 'L2 长期记忆' : 'L2 Long-Term Memory'}
+        description={zh
           ? '长期记录，按需通过 memory 工具读取。'
           : 'Long-term notes, read on demand via memory tools.'}
         value={memoryDrafts.l2}

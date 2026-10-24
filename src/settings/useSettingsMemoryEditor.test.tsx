@@ -58,4 +58,31 @@ describe('useSettingsMemoryEditor', () => {
     expect(result.current.view.drafts).toEqual({ l1: 'local', l2: 'remote-two' })
     expect(result.current.view.snapshots).toEqual({ l1: 'remote', l2: 'remote-two' })
   })
+
+  it('条目改写走同一条保存路径：写后端、推进基线、未改动的草稿跟着更新', async () => {
+    const save = vi.fn(async (layer: 'l1' | 'l2', content: string) => ({ layer, content, bytes: content.length }))
+    const memoryPort = port(undefined, save)
+    const { result } = renderHook(() => useSettingsMemoryEditor(memoryPort, 'zh', true))
+    await act(async () => { await Promise.resolve() })
+
+    await act(async () => { await result.current.replaceContent('l1', '## 只有一条') })
+
+    expect(save).toHaveBeenCalledWith('l1', '## 只有一条')
+    expect(result.current.view.snapshots.l1).toBe('## 只有一条')
+    expect(result.current.view.drafts.l1).toBe('## 只有一条')
+    expect(result.current.view.success).toBe('L1 已保存')
+  })
+
+  it('条目改写不能覆盖正在编辑、尚未保存的草稿', async () => {
+    const save = vi.fn(async (layer: 'l1' | 'l2', content: string) => ({ layer, content, bytes: content.length }))
+    const memoryPort = port(undefined, save)
+    const { result } = renderHook(() => useSettingsMemoryEditor(memoryPort, 'zh', true))
+    await act(async () => { await Promise.resolve() })
+    act(() => result.current.edit('l1', '正在输入'))
+
+    await act(async () => { await result.current.replaceContent('l1', '## 服务端版本') })
+
+    expect(result.current.view.snapshots.l1).toBe('## 服务端版本')
+    expect(result.current.view.drafts.l1).toBe('正在输入')
+  })
 })

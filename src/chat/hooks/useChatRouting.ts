@@ -46,7 +46,8 @@ interface UseChatRoutingParams {
   requestTasksLeave?: () => Promise<boolean>
 }
 
-type SettingsOpenTab = 'chat' | 'connectors' | 'sessions' | 'usage' | 'workspace' | 'about'
+/** 嵌入设置可直达的分类。跟着 SettingsShell 的 SettingsTab 走：连接器页已随桌面端移除。 */
+type SettingsOpenTab = 'chat' | 'sessions' | 'usage' | 'workspace' | 'about' | 'memory'
 
 /**
  * 聊天窗口的 hash 路由。

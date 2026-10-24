@@ -49,7 +49,6 @@ import {
   isChatSchedulesPath,
   isChatSettingsPath,
   isChatSkillCenterPath,
-  conversationHash,
   extensionsNavItemForView,
   setHash,
 } from './chatRoutes'
@@ -66,7 +65,6 @@ import { ConversationTitlebarControls } from './ConversationTitlebarControls'
 import {
   captureConversationNavigation,
   completeConversationTransition,
-  invalidateConversationTransition,
   isCurrentConversationNavigation,
 } from './conversationTransitionStore'
 import type { AssistantStreamStats, MessageListProps } from './MessageList'
@@ -1938,29 +1936,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     : NO_QUEUED_MESSAGES
   // 「立刻引导」能不能给入口，取决于这一轮由谁在跑：
   //   - 内置 agent 循环 → 能（轮首注入，见 chat/agent/steering.rs）；
-  //   - 外部 CLI → 看它的协议支不支持（`supportsSteering`，后端 RuntimeAgentDef 是唯一真源）。
-  //     codex 有 `turn/steer`；pi 有 RPC `steer`；dsh 有 bridge `session/steer`。
-  //     claude 的 stream-json 输入是顺序处理的、ACP 只有 prompt/cancel。
   //   - 多模型一问多答 → 一律不给：同会话 N 条并发 run，按 conversation 键的信箱定不到某条臂。
-  const activeExternalAgentSupportsSteering = useMemo(() => {
-    const agentId = activeAgentRuntime.externalAgentId
-    if (!agentId) return false
-    const agent = detectedExternalAgents.find((item) => item.id === agentId)
-    return Boolean(agent?.supportsSteering ?? agent?.supports_steering)
-  }, [activeAgentRuntime.externalAgentId, detectedExternalAgents])
-  const activeExternalAgentSupportsFollowUp = useMemo(() => {
-    const agentId = activeAgentRuntime.externalAgentId
-    if (!agentId) return false
-    const agent = detectedExternalAgents.find((item) => item.id === agentId)
-    return Boolean(agent?.supportsFollowUp ?? agent?.supports_follow_up)
-  }, [activeAgentRuntime.externalAgentId, detectedExternalAgents])
-  const canSteerCurrentConversation =
-    (usesExternalRuntime ? activeExternalAgentSupportsSteering : true)
-    && activeReplyModels.length < 2
-  // Prefer steering even for goals/Pi; native follow-up is only a compatibility fallback.
+  // 移动端没有外部 CLI 运行时（设置里不提供检测与绑定），这里不再区分外部协议能力。
+  const canSteerCurrentConversation = activeReplyModels.length < 2
   const canFollowUpCurrentConversation =
-    ((usesExternalRuntime && activeExternalAgentSupportsFollowUp) || goalActive)
-    && activeReplyModels.length < 2
+    (usesExternalRuntime || goalActive) && activeReplyModels.length < 2
 
   const handleSendWhileRunning = useCallback((content: string, attachments: PendingAttachment[]) => {
     const conversation = currentConversationRef.current

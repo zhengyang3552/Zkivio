@@ -1,7 +1,7 @@
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
-  Download, Upload, ArrowLeft, Palette,
+  ArrowLeft, Palette,
 } from 'lucide-react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
@@ -49,6 +49,8 @@ import { AppInfoGroup, UpdateGroup } from './tabs/AboutTab'
 import { useSettingsMemoryEditor } from './useSettingsMemoryEditor'
 import { useProviderCatalogController } from './useProviderCatalogController'
 import { useSettingsBackupController } from './useSettingsBackupController'
+import { BackupSection } from './BackupSection'
+import { captureBackupInterface } from '../api/backupInterface'
 import { useProviderModalController } from './useProviderModalController'
 import { useSettingsOnboardingController } from './useSettingsOnboardingController'
 import { ModelDetailDrawer } from './ModelDetailDrawer'
@@ -64,7 +66,7 @@ import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../api/chat
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from './uiFont'
 import {
   SettingRow,
-  SettingsGroup, FieldBlock,
+  SettingsGroup,
 } from './components'
 import { WebSearchPanel } from './WebSearchPanel'
 
@@ -189,16 +191,58 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     apply: (id, updates) => editorController.edit((current) => applyProviderDraftIntent(current, { type: 'update', id, updates })),
   })
   const settingsBackup = useSettingsBackupController({
+    webdav: {
+      load: api.webdavLoad,
+      save: api.webdavSave,
+      test: api.webdavTest,
+      list: api.webdavList,
+      upload: async (kind) => {
+        if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
+        return api.webdavUpload(kind, captureBackupInterface())
+      },
+      download: api.webdavDownload,
+      release: api.webdavRelease,
+      delete: api.webdavDelete,
+      confirmRestore: (kind) => confirmDialog({
+        title: lang === 'zh' ? '恢复远程备份' : 'Restore remote backup',
+        message: kind === 'full'
+          ? (lang === 'zh' ? '此备份将在重启后替换当前 Kivio 数据，并保留恢复前的副本。请先停止正在运行的任务。继续？' : 'This backup replaces your Kivio data after restart and retains a recovery copy. Stop active tasks first. Continue?')
+          : (lang === 'zh' ? '将覆盖当前设置，并导入备份中的助手和集。继续？' : 'This replaces current settings and imports assistants and sets. Continue?'),
+        confirmLabel: lang === 'zh' ? '继续' : 'Continue',
+        danger: true,
+      }),
+      confirmDelete: (name) => confirmDialog({
+        title: lang === 'zh' ? '删除备份' : 'Delete backup',
+        message: lang === 'zh' ? `删除远程备份 ${name}？此操作无法撤销。` : `Delete remote backup ${name}? This cannot be undone.`,
+        confirmLabel: lang === 'zh' ? '删除' : 'Delete',
+        danger: true,
+      }),
+    },
     pickImport: async () => {
-      const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
+      const selected = await open({ multiple: false, filters: [{ name: 'Kivio backup', extensions: ['json', 'kivio', 'zip'] }] })
       return typeof selected === 'string' ? selected : null
     },
-    pickExport: (share) => save({
-      defaultPath: share ? 'kivio-share.json' : 'kivio-backup.json',
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+    pickExport: (kind) => save({
+      defaultPath: kind === 'full' ? 'kivio-full-backup.kivio' : 'kivio-configuration.json',
+      filters: [{ name: 'Kivio backup', extensions: kind === 'full' ? ['kivio'] : ['json'] }],
     }),
     import: (path, trusted) => editorController.import(path, trusted),
-    export: (path, share) => api.exportSettings(path, share),
+    export: async (path, kind) => {
+      if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
+      if (kind === 'full') return api.exportFullBackup(path, captureBackupInterface())
+      await api.exportSettings(path)
+    },
+    importFull: (path, trusted) => api.importFullBackup(path, trusted),
+    confirmFullRestore: () => confirmDialog({
+      title: lang === 'zh' ? '恢复完全备份' : 'Restore full backup',
+      message: lang === 'zh'
+        ? '重启后将用备份替换当前 Kivio 数据，恢复前的数据会保留副本。请先停止正在运行的任务。继续准备恢复？'
+        : 'After restarting, this backup will replace your Kivio data. A copy of your previous data will be kept. Stop active tasks first. Prepare restore?',
+      confirmLabel: lang === 'zh' ? '准备恢复' : 'Prepare restore',
+      danger: true,
+    }),
+    restart: () => api.restartAfterRestore(),
+    pendingRestore: () => api.backupRestorePending(),
   }, lang)
   const onboarding = useSettingsOnboardingController({
     flush: () => editorController.flush(),
@@ -915,44 +959,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 </SettingsGroup>
 
                 <SettingsGroup title={lang === 'zh' ? '备份与恢复' : 'Backup & Restore'}>
-                  <FieldBlock
-                    label={lang === 'zh' ? '数据备份' : 'Data backup'}
-                    description={lang === 'zh'
-                      ? '完整备份含 API Key、OAuth 和集，请仅保存在可信位置。普通导入会禁用 MCP 和 hooks，保留本机外部 CLI 配置；可信恢复会保留执行权限。'
-                      : 'Full backups include API keys, OAuth and sets. Keep them private. Import disables MCP and hooks and keeps local CLI configuration. Trusted restore preserves execution permissions.'}
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        onClick={settingsBackup.exportBackup}
-                        disabled={settingsBackup.busy}
-                        data-tauri-drag-region="false"
-                      >
-                        <Download size={11} />
-                        {lang === 'zh' ? '导出备份' : 'Export'}
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={settingsBackup.importBackup}
-                        disabled={settingsBackup.busy}
-                        data-tauri-drag-region="false"
-                      >
-                        <Upload size={11} />
-                        {lang === 'zh' ? '导入备份' : 'Import'}
-                      </Button>
-                      <Button size="sm" onClick={settingsBackup.shareBackup} disabled={settingsBackup.busy}>
-                        {lang === 'zh' ? '导出分享配置' : 'Export for sharing'}
-                      </Button>
-                      <Button size="sm" onClick={settingsBackup.restoreBackup} disabled={settingsBackup.busy}>
-                        {lang === 'zh' ? '恢复可信备份（保留权限）' : 'Restore trusted backup (keep permissions)'}
-                      </Button>
-                      {settingsBackup.status && (
-                        <span className={`text-[12px] ${settingsBackup.status.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
-                          {settingsBackup.status.msg}
-                        </span>
-                      )}
-                    </div>
-                  </FieldBlock>
+                  {/* 备份页的信息层级（本地 / 完全 / WebDAV / 范围）由 BackupSection 独占，
+                      分类页只负责挂载它；入口按钮不再在分类页单独铺一套。 */}
+                  <BackupSection controller={settingsBackup} lang={lang} />
                 </SettingsGroup>
 
                 {(permissions.status?.platform === 'macos' || permissions.status?.platform === 'linux') && (
@@ -1008,6 +1017,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 onOpenFolder={() => void memoryEditor.openFolder()}
                 onDraftChange={memoryEditor.edit}
                 onSaveLayer={(layer) => void memoryEditor.save(layer)}
+                onReplaceLayerContent={(layer, content) => void memoryEditor.replaceContent(layer, content)}
               />
             )}
 

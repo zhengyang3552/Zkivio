@@ -80,27 +80,20 @@ export function useSettingsMemoryEditor(
     }
   }, [commit, port])
 
-  const save = useCallback(async (layer: MemoryLayerKey) => {
+  // 保存的唯一写入路径：整份内容交给后端校验并落盘，再把确认过的基线推回去。
+  // 编辑框的「保存」和条目的「改写 / 删除」都走这里，同一时刻只允许一次写入。
+  const writeLayer = useCallback(async (layer: MemoryLayerKey, next: string) => {
     if (saving.current) return
-    const submitted = viewRef.current.drafts[layer]
-    if (layer === 'l1' && utf8ByteLength(submitted) > MEMORY_L1_MAX_BYTES) {
-      commit((current) => ({
-        ...current,
-        error: lang === 'zh'
-          ? `L1 超过 ${MEMORY_L1_MAX_BYTES} 字节，请先精简或归档到 L2。`
-          : `L1 exceeds ${MEMORY_L1_MAX_BYTES} bytes. Shorten it or archive details into L2.`,
-      }))
-      return
-    }
     saving.current = true
     // A read started before this save must not restore a stale baseline later.
     refreshSequence.current += 1
     commit((current) => ({ ...current, savingLayer: layer, loading: false, error: '', success: '' }))
     try {
-      const saved = await port.save(layer, submitted)
+      const saved = await port.save(layer, next)
       commit((current) => ({
         ...current,
-        drafts: current.drafts[layer] === submitted
+        // 只有没被本地改动过的草稿才跟着新基线走，正在输入的内容不被覆盖。
+        drafts: current.drafts[layer] === current.snapshots[layer]
           ? { ...current.drafts, [layer]: saved.content }
           : current.drafts,
         snapshots: { ...current.snapshots, [layer]: saved.content },
@@ -113,6 +106,26 @@ export function useSettingsMemoryEditor(
       commit((current) => ({ ...current, savingLayer: null }))
     }
   }, [commit, lang, port])
+
+  const save = useCallback(async (layer: MemoryLayerKey) => {
+    const submitted = viewRef.current.drafts[layer]
+    if (layer === 'l1' && utf8ByteLength(submitted) > MEMORY_L1_MAX_BYTES) {
+      commit((current) => ({
+        ...current,
+        error: lang === 'zh'
+          ? `L1 超过 ${MEMORY_L1_MAX_BYTES} 字节，请先精简或归档到 L2。`
+          : `L1 exceeds ${MEMORY_L1_MAX_BYTES} bytes. Shorten it or archive details into L2.`,
+      }))
+      return
+    }
+    await writeLayer(layer, submitted)
+  }, [commit, lang, writeLayer])
+
+  /** 条目管理（浏览 / 编辑 / 删除）用：基于已保存的内容整份回写。 */
+  const replaceContent = useCallback(
+    (layer: MemoryLayerKey, content: string) => writeLayer(layer, content),
+    [writeLayer],
+  )
 
   const openFolder = useCallback(async () => {
     commit((current) => ({ ...current, error: '' }))
@@ -143,5 +156,5 @@ export function useSettingsMemoryEditor(
     }
   }, [])
 
-  return { view, edit, refresh, save, openFolder }
+  return { view, edit, refresh, save, replaceContent, openFolder }
 }

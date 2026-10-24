@@ -27,6 +27,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -73,6 +74,16 @@ const DOWNLOAD_CACHE: &str = "rootfs-download.tar.gz";
 
 /// 前端订阅的进度事件名。
 pub const PROGRESS_EVENT: &str = "android-rootfs-progress";
+
+/// 进度上报的最小间隔。原来按「累计 256KB 才报一次」节流，在手机慢网下第一段
+/// 256KB 可能要走十几秒，界面就一直停在 0%；改成按时间节流，第一个分片就能把
+/// 进度条推动起来。
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
+
+/// 单次读取允许的最长静默。源站在握手之后不再吐数据时，不该让用户对着 0% 等到
+/// 客户端的总超时（15 分钟）才换源：15 秒没新分片就判这次尝试失败，换下一个镜像。
+const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+const CHUNK_IDLE_TIMEOUT_SECS: u64 = 15;
 
 /// rootfs 用到的路径。构造本身不做 IO。
 #[derive(Clone, Debug)]
@@ -391,33 +402,59 @@ async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Resul
     if !response.status().is_success() {
         return Err(format!("{host}: HTTP {}", response.status()));
     }
-    let total = response.content_length().unwrap_or(ROOTFS_SIZE);
+    let total = response
+        .content_length()
+        .filter(|value| *value > 0)
+        .unwrap_or(ROOTFS_SIZE);
+
+    // 每个源都从 0 重新计：上一源的部分字节留在条上会让「换源」看起来像卡死在 100%。
+    update(app, |state| {
+        state.status = "downloading".to_string();
+        state.received = 0;
+        state.total = total;
+    });
 
     let mut file = tokio::fs::File::create(&layout.download)
         .await
         .map_err(|e| format!("create download: {e}"))?;
     let mut hasher = Sha256::new();
     let mut received: u64 = 0;
-    let mut last_emit: u64 = 0;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("{host}: 下载中断（{e}）"))?
-    {
+    let mut reported: u64 = 0;
+    let mut last_emit = Instant::now();
+    loop {
+        // 读分片本身也要有上限，否则源站挂住时整个下载会一直停在原地。
+        let chunk = match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, response.chunk()).await {
+            Err(_) => {
+                return Err(format!(
+                    "{host}: {CHUNK_IDLE_TIMEOUT_SECS} 秒没有收到数据（网络停滞）"
+                ))
+            }
+            Ok(Err(e)) => return Err(format!("{host}: 下载中断（{e}）")),
+            Ok(Ok(None)) => break,
+            Ok(Ok(Some(chunk))) => chunk,
+        };
         hasher.update(&chunk);
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("write download: {e}"))?;
         received += chunk.len() as u64;
-        // 每 256KB 或每 2% 报一次，别把事件通道刷爆。
-        if received - last_emit >= 262_144 || received >= total {
-            last_emit = received;
+        // 时间到了就报一次；下完最后一个分片也报，保证能走到 100%。
+        if received >= total || last_emit.elapsed() >= PROGRESS_INTERVAL {
+            last_emit = Instant::now();
+            reported = received;
             let app = app.clone();
             update(&app, |state| {
                 state.received = received;
                 state.total = total;
             });
         }
+    }
+    if reported != received {
+        let app = app.clone();
+        update(&app, |state| {
+            state.received = received;
+            state.total = total;
+        });
     }
     file.flush().await.map_err(|e| format!("flush download: {e}"))?;
     drop(file);
