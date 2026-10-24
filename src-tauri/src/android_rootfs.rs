@@ -197,7 +197,14 @@ pub fn cached_layout() -> Option<&'static RootfsLayout> {
 
 /// 工作区已就绪（用户下载过且解包完整）。
 pub fn is_installed(layout: &RootfsLayout) -> bool {
-    layout.marker().is_file() && layout.root.join("bin/sh").exists()
+    layout.marker().is_file() && has_shell(&layout.root)
+}
+
+/// rootfs 里的 `bin/sh` 是指向 `/bin/busybox` 的**绝对**软链，指向 guest 的 `/`。
+/// `Path::exists()` 会跟随软链、按宿主根解析，在 Android 上 `/bin` 不存在 → 永远判为缺失，
+/// 于是「下载成功、解包成功」也会被当成失败。这里只看链接本身在不在。
+fn has_shell(root: &Path) -> bool {
+    fs::symlink_metadata(root.join("bin/sh")).is_ok()
 }
 
 /// 工作区根（host 路径）。**不会触发下载**：没下载时返回空目录。Android 上不考虑
@@ -546,7 +553,7 @@ fn extract_rootfs(layout: &RootfsLayout) -> Result<(), String> {
         skipped += 1;
     }
 
-    if !staging.join("bin/sh").exists() {
+    if !has_shell(&staging) {
         let _ = fs::remove_dir_all(&staging);
         return Err(format!("rootfs 解包不完整（缺少 bin/sh，跳过 {skipped} 条）"));
     }

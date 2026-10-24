@@ -14,10 +14,14 @@
   --border-input: var(--theme-surface-border-strong);
   --divider: var(--theme-surface-titlebar);
   --accent-ring: color-mix(in srgb, var(--accent) 32%, transparent);
+  /* -soft 是「浅底 + 深字」标签（.kv-tag.ok / .warn）的背景色。构建器会给 color-mix
+     生成 `var(--success)` 这类纯色兜底，而 Android WebView 110 及更旧的系统 WebView 不认识
+     color-mix，会吃到纯色兜底 → 文字与背景同色，标签变成一块实心色。
+     显式写成半透明值，两条分支在老 WebView 上都能得到浅底。 */
   --warn: #b86200;
-  --warn-soft: color-mix(in srgb, var(--warn) 12%, var(--theme-surface));
+  --warn-soft: rgb(184 98 0 / 0.12);
   --success: #1f7a4d;
-  --success-soft: color-mix(in srgb, var(--success) 12%, var(--theme-surface));
+  --success-soft: rgb(31 122 77 / 0.12);
   --shadow-sm: 0 1px 1px rgba(15, 15, 20, 0.04);
   --shadow-md: 0 6px 18px rgba(15, 15, 20, 0.08), 0 1px 1px rgba(15, 15, 20, 0.04);
   --radius-sm: 5px;
@@ -35,6 +39,9 @@
   --accent-ring: color-mix(in srgb, var(--accent) 32%, transparent);
   --warn: #e6a04a;
   --success: #58c08a;
+  /* 与 .kv 的浅底同源：这里是暗色下的半透明版本，靠透明度叠加到卡片底色上。 */
+  --warn-soft: rgb(230 160 74 / 0.16);
+  --success-soft: rgb(88 192 138 / 0.16);
   --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.3);
 }

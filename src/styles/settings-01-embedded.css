@@ -70,6 +70,63 @@
   overflow-y: auto;
 }
 
+/*
+ * 分类行 / 底部「返回对话」的基础排版。
+ *
+ * 这两个类名原先只有 mobile.css 里的 html.mobile 覆盖（那层只补 justify-content、gap 和
+ * 触摸高度，默认基础布局缺失），于是按钮退回浏览器默认：图标与文字各占一行、文字居中，
+ * 手机上的设置一级菜单变成「大标题居中 + 左侧孤立图标」。这里补上图标 + 文字同排的
+ * 基础行，移动端的覆盖规则才有东西可覆盖。
+ */
+.settings-embedded-nav-item,
+.settings-embedded-back {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: default;
+}
+
+.settings-embedded-nav-item:hover,
+.settings-embedded-back:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.settings-embedded-nav-item.active {
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* 图标槽固定宽高：SVG 与文字基线对齐，行内不会被文字挤扁。 */
+.settings-embedded-nav-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+
+.settings-embedded-nav-item > span:not(.settings-embedded-nav-icon),
+.settings-embedded-back > span:not(.settings-embedded-nav-icon) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 底部「返回对话」：负边距抵掉 aside 内边距 → 分隔线通栏 */
 .settings-embedded-nav-list--footer {
   flex-shrink: 0;

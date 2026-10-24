@@ -5,6 +5,7 @@ import { Button } from '../../components/Button'
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from '../uiFont'
 import type { I18n, Lang } from '../../components/i18n'
 import type { Settings as SettingsData, PermissionStatus } from '../../api/tauri'
+import { isMobilePlatform } from '../../utils/windowPlatform'
 
 /**
  * 可搜索字体选择器：聚焦展开、输入过滤，每项以自身字体预览。界面字体/代码字体共用。
@@ -177,25 +178,31 @@ export function BehaviorGroup({
 }) {
   return (
     <SettingsGroup title={lang === 'zh' ? '行为' : 'Behavior'}>
-      <SettingRow label={t.launchAtStartup}>
-        <Toggle
-          checked={settings.launchAtStartup}
-          onChange={(v) => onUpdateSettings({ launchAtStartup: v })}
-        />
-      </SettingRow>
-      <SettingRow label={t.launchMinimizedToTray} description={t.launchMinimizedToTrayDesc}>
-        <Toggle
-          checked={settings.launchMinimizedToTray}
-          onChange={(v) => onUpdateSettings({ launchMinimizedToTray: v })}
-        />
-      </SettingRow>
-      <SettingRow label={t.keepChatWindowAlive} description={t.keepChatWindowAliveDesc}>
-        <Toggle
-          checked={settings.keepChatWindowAlive ?? false}
-          onChange={(v) => onUpdateSettings({ keepChatWindowAlive: v })}
-          ariaLabel={t.keepChatWindowAlive}
-        />
-      </SettingRow>
+      {/* 开机启动 / 托盘 / 关窗保活都是桌面进程行为：移动端没有托盘、没有多窗口，
+          App 的生命周期由系统管理，这三项勾了也不会发生任何事。 */}
+      {!isMobilePlatform && (
+        <>
+          <SettingRow label={t.launchAtStartup}>
+            <Toggle
+              checked={settings.launchAtStartup}
+              onChange={(v) => onUpdateSettings({ launchAtStartup: v })}
+            />
+          </SettingRow>
+          <SettingRow label={t.launchMinimizedToTray} description={t.launchMinimizedToTrayDesc}>
+            <Toggle
+              checked={settings.launchMinimizedToTray}
+              onChange={(v) => onUpdateSettings({ launchMinimizedToTray: v })}
+            />
+          </SettingRow>
+          <SettingRow label={t.keepChatWindowAlive} description={t.keepChatWindowAliveDesc}>
+            <Toggle
+              checked={settings.keepChatWindowAlive ?? false}
+              onChange={(v) => onUpdateSettings({ keepChatWindowAlive: v })}
+              ariaLabel={t.keepChatWindowAlive}
+            />
+          </SettingRow>
+        </>
+      )}
       <SettingRow label={t.chatCompletionNotifications} description={t.chatCompletionNotificationsDesc}>
         <Toggle
           checked={settings.chatCompletionNotifications}

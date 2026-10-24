@@ -1046,6 +1046,13 @@ pub fn run() {
             chat::protocol::chat_protocol_subscribe,
             // Chat 模块命令
             chat::commands::catalog::chat_get_conversations,
+            // 对话技能目录、内置模型库、生成 HTML 预览：三者都是跨平台实现，
+            // 桌面命令表里有而移动端漏登记，前端调用会得到 "Command ... not found"。
+            chat::commands::catalog::chat_session_skills,
+            chat::model_database::get_model_database,
+            chat::model_database::update_model_database,
+            html_preview::create_html_preview,
+            html_preview::release_html_preview,
             chat::commands::interaction::chat_list_background_tasks,
             chat::commands::interaction::chat_clear_finished_background_tasks,
             chat::commands::interaction::chat_stop_external_background_task,

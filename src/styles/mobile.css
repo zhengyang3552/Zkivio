@@ -70,23 +70,27 @@ html.mobile .chat-composer-shell {
 /* 展开态：脱离文档流浮在内容之上。收起态沿用原有 .is-collapsed（宽度 0 + 透明）。 */
 html.mobile .chat-sidebar-shell:not(.is-collapsed) {
   position: fixed;
-  top: 0;
+  /* 从标题栏下沿开始：42-44px 的顶栏里有模型/思考等级/审批策略三枚控件，抽屉压上去
+     只会把它们截成半截（截图里「模型」只露出后两个字），读起来像排版错位。放在顶栏
+     之下，顶栏保持完整可用，抽屉覆盖会话区。 */
+  top: calc(44px + env(safe-area-inset-top, 0px));
   bottom: 0;
   left: 0;
   z-index: 60;
   width: min(86vw, 320px);
   max-width: 320px;
   background: var(--theme-surface);
-  padding-top: env(safe-area-inset-top, 0px);
+  padding-top: 0;
   padding-bottom: env(safe-area-inset-bottom, 0px);
   padding-left: env(safe-area-inset-left, 0px);
   box-shadow: 0 18px 48px rgb(0 0 0 / 0.32);
 }
 
-/* 抽屉遮罩：点它收起侧栏。由 Chat.tsx 仅在「移动端 + 侧栏展开」时渲染。 */
+/* 抽屉遮罩：点它收起侧栏。由 Chat.tsx 仅在「移动端 + 侧栏展开」时渲染。
+   与抽屉同起点，顶栏不压暗也不会被误触。 */
 html.mobile .chat-mobile-scrim {
   position: fixed;
-  inset: 0;
+  inset: calc(44px + env(safe-area-inset-top, 0px)) 0 0 0;
   z-index: 55;
   background: rgb(0 0 0 / 0.4);
   animation: chat-mobile-scrim-in var(--kv-dur-normal, 160ms) var(--kv-ease-out, ease-out);
