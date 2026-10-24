@@ -241,6 +241,32 @@ html.mobile .settings-embedded-nav-icon {
   height: 20px;
 }
 
+/* 大屏 + 手指：桌面尺寸的控件（12px 字、30px 高）在平板上明显偏小。这里只做
+ * 「放大 + 补边」两件事，配色、圆角、字号层级都不动：
+ *   - 按钮/输入/下拉整档加高 4px，左右内边距各加 2-3px；
+ *   - 顶栏那几枚原本是透明胶囊，触摸时看不出边界，补一条 hairline 边。 */
+@media (min-width: 840px) {
+  html.mobile .kv-btn {
+    min-height: 34px;
+    padding: 6px 14px;
+  }
+
+  html.mobile .kv-btn.sm {
+    min-height: 30px;
+    padding: 4px 12px;
+  }
+
+  html.mobile .kv-input,
+  html.mobile .kv-select {
+    min-height: 34px;
+  }
+
+  html.mobile .chat-titlebar-pill {
+    min-height: 36px;
+    border-color: var(--theme-surface-border);
+  }
+}
+
 /* 二级页内容区顶部让出状态栏。 */
 html.mobile .settings-embedded-main .settings-embedded-header {
   padding-top: calc(12px + env(safe-area-inset-top, 0px));
