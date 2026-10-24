@@ -136,7 +136,7 @@ fn catalog_bytes(dir: &Path, relative: &str) -> Result<Vec<u8>, String> {
             ["plugins", "resources/plugins"]
                 .iter()
                 .find_map(|prefix| app.asset_resolver().get(format!("{prefix}/{relative}")))
-                .map(|asset| asset.data.into_owned())
+                .map(|asset| asset.bytes)
                 .ok_or_else(|| format!("无法读取 {relative}：{fs_err}"))
         }
     }
