@@ -12,8 +12,8 @@
 
 use serde::Deserialize;
 use tauri::{
-    plugin::{Builder, PluginApi, PluginHandle},
-    AppHandle, Manager, Runtime, TauriPlugin,
+    plugin::{Builder, PluginApi, PluginHandle, TauriPlugin},
+    AppHandle, Manager, Runtime,
 };
 
 #[derive(Debug, Deserialize)]
@@ -34,9 +34,9 @@ mod imp {
     pub fn init<R: Runtime, C: DeserializeOwned>(
         _app: &AppHandle<R>,
         api: PluginApi<R, C>,
-    ) -> FolderPicker<R> {
+    ) -> Result<FolderPicker<R>, tauri::plugin::Error> {
         let handle = api.register_android_plugin(IDENTIFIER, "FolderPickerPlugin")?;
-        FolderPicker(handle)
+        Ok(FolderPicker(handle))
     }
 
     pub struct FolderPicker<R: Runtime>(PluginHandle<R>);
@@ -60,8 +60,8 @@ mod imp {
     pub fn init<R: Runtime, C: DeserializeOwned>(
         _app: &AppHandle<R>,
         _api: PluginApi<R, C>,
-    ) -> FolderPicker<R> {
-        FolderPicker(PhantomData)
+    ) -> Result<FolderPicker<R>, tauri::plugin::Error> {
+        Ok(FolderPicker(PhantomData))
     }
 
     pub struct FolderPicker<R: Runtime>(PhantomData<R>);
@@ -90,7 +90,7 @@ pub async fn pick_folder(
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("folder-picker")
         .setup(|app, api| {
-            let picker = imp::init(app.handle(), api)?;
+            let picker = imp::init(app, api)?;
             app.manage(picker);
             Ok(())
         })
