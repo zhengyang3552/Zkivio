@@ -153,7 +153,15 @@ html.windows body {
   --bg-hover: var(--theme-surface-hover);
   --border-input: var(--theme-surface-border-strong);
   --shadow-sm: 0 1px 1px color-mix(in srgb, var(--text) 8%, transparent);
+  /* 交互 tint（hover/选中/禁用遮罩）在无 color-mix WebView 上的兜底：
+     明色板淡黑、暗色板淡白。vite 构建时把「var(--text) 纯色兜底」改写到它，
+     见 vite.config.ts::stripColorMixSolidFallbacks。 */
+  --tint-overlay: rgba(0, 0, 0, 0.06);
   color: var(--text);
+}
+
+html.dark {
+  --tint-overlay: rgba(255, 255, 255, 0.09);
 }
 
 /* ===== Motion tokens =====

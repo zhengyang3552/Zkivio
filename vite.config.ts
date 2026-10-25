@@ -108,7 +108,16 @@ function stripColorMixSolidFallbacks(): Plugin {
       (match, prop: string) => {
         const isTextColor =
           prop === 'color' || prop === 'fill' || prop === 'stroke' || prop.startsWith('--')
-        return isTextColor ? match : `${prop}:transparent}@supports (color:color-mix`
+        if (isTextColor) return match
+        // 兜底值不能给 transparent：老 WebView 上 hover/选中反馈会完全消失
+        //（用户实测反馈「选中色改没了」）。按语义换成主题自适应的淡色：
+        //   --text  → --tint-overlay（明色板淡黑 / 暗色板淡白，见 index.css）
+        //   --accent/--success/--warn → 各自的 -soft 实色 token（本就是淡色）
+        let fallback = 'var(--tint-overlay)'
+        if (match.includes('var(--accent)')) fallback = 'var(--accent-soft)'
+        else if (match.includes('var(--success)')) fallback = 'var(--success-soft)'
+        else if (match.includes('var(--warn)')) fallback = 'var(--warn-soft)'
+        return `${prop}:${fallback}}@supports (color:color-mix`
       },
     )
 
