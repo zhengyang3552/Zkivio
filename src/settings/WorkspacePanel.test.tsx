@@ -35,6 +35,7 @@ function rootfs(patch: Partial<AndroidRootfsState> = {}): AndroidRootfsState {
     message: null,
     root: '/data/user/0/io.kivio/files/rootfs',
     version: '3.24.2',
+    variant: 'Alpine 3.24（轻量 ~4MB）',
     ...patch,
   }
 }

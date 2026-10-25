@@ -45,19 +45,75 @@ const PROOT_LOADER: &[u8] = include_bytes!("../android-assets/proot-loader");
 const PROOT_LIBTALLOC: &[u8] = include_bytes!("../android-assets/libtalloc.so.2");
 const PROOT_LIBANDROID_SHMEM: &[u8] = include_bytes!("../android-assets/libandroid-shmem.so");
 
-/// 工作区版本：改这里就要同步改下面的文件名、大小与 sha256。
-pub const ROOTFS_VERSION: &str = "3.24.2";
-const ROOTFS_SIZE: u64 = 4_028_030;
-const ROOTFS_SHA256: &str = "9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773";
-const ROOTFS_FILE: &str = "alpine-minirootfs-3.24.2-aarch64.tar.gz";
-/// 官方源在前，国内镜像在后：国内网络下官方 CDN 常慢或不通，失败即换。
-/// 多个镜像互为备份（清华 / 中科大 / 阿里云），手机网络下总有一个能通。
-const ROOTFS_SOURCES: &[&str] = &[
-    "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
-    "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
-    "https://mirrors.ustc.edu.cn/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
-    "https://mirrors.aliyun.com/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+/// 可选的 rootfs 发行版。size / sha256 / sources 与版本一一对应；换版本要同步改。
+/// sha256 取自官方发布包（本仓库构建时已核对），镜像只做传输加速，校验不过即换源。
+pub struct RootfsVariant {
+    pub id: &'static str,
+    /// 状态行 / 提示里显示的名字。
+    pub label: &'static str,
+    pub version: &'static str,
+    pub file: &'static str,
+    pub size: u64,
+    pub sha256: &'static str,
+    /// 官方源在前，国内镜像在后：国内网络下官方源常慢或不通，失败即换。
+    pub sources: &'static [&'static str],
+}
+
+pub const ROOTFS_VARIANTS: &[RootfsVariant] = &[
+    RootfsVariant {
+        id: "alpine",
+        label: "Alpine 3.24（轻量 ~4MB）",
+        version: "3.24.2",
+        file: "alpine-minirootfs-3.24.2-aarch64.tar.gz",
+        size: 4_028_030,
+        sha256: "9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773",
+        sources: &[
+            "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+            "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+            "https://mirrors.ustc.edu.cn/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+            "https://mirrors.aliyun.com/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+        ],
+    },
+    RootfsVariant {
+        // merged-usr 布局：/bin/bash 实际在 /usr/bin/bash（bin 是指向 usr/bin 的软链），
+        // 自带 apt / 终端工具链。注意：其命令是私有目录里的真实 ELF —— 部分 ROM 对
+        // 私有目录 exec 有系统级限制（见 proot_command 的 W^X 注释），装完若 shell
+        // 全部 EACCES，换回 alpine（busybox 从允许 exec 的目录绑定，一定可用）。
+        id: "ubuntu",
+        label: "Ubuntu 24.04（~30MB，bash/apt 齐全）",
+        version: "24.04.3",
+        file: "ubuntu-base-24.04.3-base-arm64.tar.gz",
+        size: 29_865_086,
+        sha256: "7b2dced6dd56ad5e4a813fa25c8de307b655fdabc6ea9213175a92c48dabb048",
+        sources: &[
+            "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz",
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz",
+        ],
+    },
 ];
+
+pub fn find_variant(id: &str) -> Option<&'static RootfsVariant> {
+    ROOTFS_VARIANTS.iter().find(|variant| variant.id == id)
+}
+
+/// 记录当前装的是哪个发行版（runtime 目录，不进 rootfs —— 那会出现在 agent 看到的 `/`）。
+const META_FILE: &str = "rootfs-meta.json";
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct RootfsMeta {
+    id: String,
+    label: String,
+    version: String,
+}
+
+fn meta_path(layout: &RootfsLayout) -> PathBuf {
+    layout.runtime.join(META_FILE)
+}
+
+fn read_meta(layout: &RootfsLayout) -> Option<RootfsMeta> {
+    let text = fs::read_to_string(meta_path(layout)).ok()?;
+    serde_json::from_str(&text).ok()
+}
 
 /// 从下载 URL 取主机名，用于失败信息（完整 URL 太长，前端展示不下）。
 fn source_host(url: &str) -> String {
@@ -130,6 +186,8 @@ pub struct RootfsState {
     pub message: Option<String>,
     pub root: String,
     pub version: String,
+    /// 当前安装的发行版显示名（如「Ubuntu 24.04（~30MB，bash/apt 齐全）」）。
+    pub variant: String,
 }
 
 fn state_cell() -> &'static Mutex<RootfsState> {
@@ -189,9 +247,17 @@ pub fn init(app: &AppHandle) {
     let _ = fs::create_dir_all(&layout.root);
     let _ = fs::create_dir_all(&layout.workspace);
     {
+        let meta = read_meta(&layout);
         let mut state = state_cell().lock().unwrap();
         state.root = layout.root.to_string_lossy().to_string();
-        state.version = ROOTFS_VERSION.to_string();
+        state.version = meta
+            .as_ref()
+            .map(|meta| meta.version.clone())
+            .unwrap_or_default();
+        state.variant = meta
+            .as_ref()
+            .map(|meta| meta.label.clone())
+            .unwrap_or_default();
         state.status = if is_installed(&layout) {
             "ready".to_string()
         } else {
@@ -327,17 +393,38 @@ pub fn android_rootfs_state(app: AppHandle) -> RootfsState {
             } else {
                 "absent".to_string()
             };
+            if let Some(meta) = read_meta(&layout) {
+                state.version = meta.version;
+                state.variant = meta.label;
+            }
         }
     }
     state
 }
 
-/// 下载并解包工作区。可重复调用：已就绪时直接返回。
+/// 下载并解包工作区。`variant` 为空时用默认（alpine）。
+/// 已装了**另一个**发行版时自动重装系统本体（`workspace/` 文件区不动）；
+/// 同发行版重复调用直接返回就绪状态。
 #[tauri::command]
-pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, String> {
+pub async fn android_rootfs_install(
+    app: AppHandle,
+    variant: Option<String>,
+) -> Result<RootfsState, String> {
+    let chosen = match variant.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        Some(id) => find_variant(id).ok_or_else(|| format!("未知的发行版: {id}"))?,
+        None => &ROOTFS_VARIANTS[0],
+    };
     let layout = layout(&app)?;
     prepare_runtime(&layout)?;
-    if is_installed(&layout) {
+    let installed_meta = if is_installed(&layout) {
+        read_meta(&layout)
+    } else {
+        None
+    };
+    let same_variant = installed_meta
+        .as_ref()
+        .is_some_and(|meta| meta.id == chosen.id);
+    if is_installed(&layout) && same_variant {
         update(&app, |state| {
             state.status = "ready".to_string();
             state.message = None;
@@ -347,11 +434,13 @@ pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, Strin
     if busy() {
         return Err("工作区正在处理中".to_string());
     }
+    // 换发行版：rootfs/ 会被新系统整体替换，workspace/ 文件区不动。
 
     update(&app, |state| {
         state.status = "downloading".to_string();
         state.received = 0;
-        state.total = ROOTFS_SIZE;
+        state.total = chosen.size;
+        state.variant = chosen.label.to_string();
         state.message = None;
     });
 
@@ -359,8 +448,8 @@ pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, Strin
     // 便于区分「网络不通」还是「校验失败」。
     let mut failures: Vec<String> = Vec::new();
     let mut verified = false;
-    for source in ROOTFS_SOURCES {
-        match download(&app, &layout, source).await {
+    for source in chosen.sources {
+        match download(&app, &layout, source, chosen).await {
             Ok(()) => {
                 verified = true;
                 break;
@@ -393,7 +482,18 @@ pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, Strin
     let unpacked = tauri::async_runtime::spawn_blocking(move || {
         extract_rootfs(&unpack_layout)?;
         fs::write(unpack_layout.marker(), b"1")
-            .map_err(|e| format!("write rootfs marker: {e}"))
+            .map_err(|e| format!("write rootfs marker: {e}"))?;
+        // 记录发行版：状态展示 + 「换发行版」判断都以此为准。
+        let meta = RootfsMeta {
+            id: chosen.id.to_string(),
+            label: chosen.label.to_string(),
+            version: chosen.version.to_string(),
+        };
+        fs::write(
+            meta_path(&unpack_layout),
+            serde_json::to_string(&meta).map_err(|e| format!("serialize rootfs meta: {e}"))?,
+        )
+        .map_err(|e| format!("write rootfs meta: {e}"))
     })
     .await
     .map_err(|e| format!("rootfs 解包任务失败: {e}"))?;
@@ -405,6 +505,8 @@ pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, Strin
                 state.status = "ready".to_string();
                 state.message = None;
                 state.received = state.total;
+                state.version = chosen.version.to_string();
+                state.variant = chosen.label.to_string();
             });
             Ok(snapshot())
         }
@@ -442,17 +544,25 @@ pub async fn android_rootfs_uninstall(app: AppHandle) -> Result<RootfsState, Str
     .map_err(|e| format!("卸载任务失败: {e}"))??;
     let _ = fs::remove_file(&marker);
     let _ = fs::remove_file(&layout.download);
+    let _ = fs::remove_file(meta_path(&layout));
 
     update(&app, |state| {
         state.status = "absent".to_string();
         state.received = 0;
         state.message = None;
+        state.version = String::new();
+        state.variant = String::new();
     });
     Ok(snapshot())
 }
 
 /// 下载到 runtime 目录并校验 sha256。返回 Ok 表示字节可信（已落盘等解包）。
-async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Result<(), String> {
+async fn download(
+    app: &AppHandle,
+    layout: &RootfsLayout,
+    source: &str,
+    variant: &RootfsVariant,
+) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
 
     let host = source_host(source);
@@ -472,7 +582,7 @@ async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Resul
     let total = response
         .content_length()
         .filter(|value| *value > 0)
-        .unwrap_or(ROOTFS_SIZE);
+        .unwrap_or(variant.size);
 
     // 每个源都从 0 重新计：上一源的部分字节留在条上会让「换源」看起来像卡死在 100%。
     update(app, |state| {
@@ -527,10 +637,10 @@ async fn download(app: &AppHandle, layout: &RootfsLayout, source: &str) -> Resul
     drop(file);
 
     let digest = heap_hex(hasher.finalize().as_slice());
-    if digest != ROOTFS_SHA256 {
+    if digest != variant.sha256 {
         return Err(format!(
             "{host}: 校验不通过（期望 {}，实际 {digest}）",
-            &ROOTFS_SHA256[..16]
+            &variant.sha256[..16]
         ));
     }
     Ok(())
@@ -998,9 +1108,14 @@ pub fn proot_command(layout: &RootfsLayout, script: &str) -> Command {
             GUEST_WORKSPACE_DIR
         ));
     if let Some(dir) = &native {
-        command
-            .arg("-b")
-            .arg(format!("{}/libbusybox.so:/bin/busybox", dir.display()));
+        // busybox 绑定只对自带 busybox 的 rootfs（Alpine）有意义：它的全部命令都是
+        // 指向 /bin/busybox 的软链，绑到允许 exec 的目录才能过 W^X。Ubuntu 没有
+        // busybox，bash/apt 等真实 ELF 走 proot loader 的用户态加载路径。
+        if fs::symlink_metadata(layout.root.join("bin/busybox")).is_ok() {
+            command
+                .arg("-b")
+                .arg(format!("{}/libbusybox.so:/bin/busybox", dir.display()));
+        }
     }
     command
         .arg("--kill-on-exit")
@@ -1022,10 +1137,22 @@ pub fn proot_command(layout: &RootfsLayout, script: &str) -> Command {
         .arg("NO_COLOR=1")
         .arg("FORCE_COLOR=0")
         .arg("PAGER=cat")
-        .arg("/bin/sh")
+        // shell：Alpine 只有 busybox sh；Ubuntu/Debian 有真 bash。
+        .arg(guest_shell(layout))
         .arg("-c")
         .arg(script);
     command
+}
+
+/// guest 里的 shell：有 bash 用 bash（Ubuntu/Debian），否则 busybox sh（Alpine）。
+/// 判据用 bin/bash 的 symlink_metadata（merged-usr 下 /bin/bash → /usr/bin/bash，
+/// 相对软链宿主侧也能成立）。
+fn guest_shell(layout: &RootfsLayout) -> &'static str {
+    if fs::symlink_metadata(layout.root.join("bin/bash")).is_ok() {
+        "/bin/bash"
+    } else {
+        "/bin/sh"
+    }
 }
 
 /// Android 上可 exec 的本机库目录（nativeLibraryDir）。
@@ -1073,8 +1200,19 @@ pub fn workspace_prompt_segment() -> Option<String> {
     if !is_installed(layout) {
         return None;
     }
-    let distro = read_distro_name(layout)
-        .unwrap_or_else(|| "Alpine Linux".to_string());
+    let distro = read_distro_name(layout).unwrap_or_else(|| "Linux".to_string());
+    let has_bash = fs::symlink_metadata(layout.root.join("bin/bash")).is_ok();
+    let (shell_line, package_line) = if has_bash {
+        (
+            "The shell is bash.".to_string(),
+            "Install extra tooling with `apt install <package>` when needed.".to_string(),
+        )
+    } else {
+        (
+            "The shell is BusyBox /bin/sh, not bash: avoid bash-only syntax (arrays, here-strings, brace expansion).".to_string(),
+            "Install extra tooling with `apk add <package>` when needed.".to_string(),
+        )
+    };
     Some(format!(
         "<workspace>\n\
          You are running inside a sandboxed {distro} rootfs (proot) on Android.\n\
@@ -1082,9 +1220,8 @@ pub fn workspace_prompt_segment() -> Option<String> {
            user-facing files there; files persist for this conversation.\n\
          - File tools accept absolute paths under {GUEST_WORKSPACE_DIR} (for example\n\
            {GUEST_WORKSPACE_DIR}/notes.md) and report paths in the same form.\n\
-         - Shell commands run inside the rootfs as root. The shell is BusyBox /bin/sh,\n\
-           not bash: avoid bash-only syntax (arrays, here-strings, brace expansion).\n\
-         - Install extra tooling with `apk add <package>` when needed.\n\
+         - Shell commands run inside the rootfs as root. {shell_line}\n\
+         - {package_line}\n\
          - /root is HOME; treat /etc and /usr as system files and do not modify them.\n\
          </workspace>"
     ))

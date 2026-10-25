@@ -1571,13 +1571,16 @@ export type AndroidRootfsState = {
   message: string | null
   root: string
   version: string
+  /** 当前安装的发行版显示名（如「Ubuntu 24.04（~30MB，bash/apt 齐全）」）。 */
+  variant: string
 }
 
 export const api = {
   /** 工作区状态：进页面读一次，之后靠 android-rootfs-progress 事件推送。 */
   androidRootfsState: () => invoke<AndroidRootfsState>('android_rootfs_state'),
-  /** 下载并解包工作区（已就绪时直接返回当前状态）。 */
-  androidRootfsInstall: () => invoke<AndroidRootfsState>('android_rootfs_install'),
+  /** 下载并解包工作区（variant: alpine | ubuntu；已就绪时直接返回当前状态）。 */
+  androidRootfsInstall: (variant?: string) =>
+    invoke<AndroidRootfsState>('android_rootfs_install', { variant }),
   /** 卸载（格式化）：清掉工作区里的全部内容，包含 agent 写过的文件。 */
   androidRootfsUninstall: () => invoke<AndroidRootfsState>('android_rootfs_uninstall'),
   chatArtifactsList: (importHistory = true) => invoke<ArtifactLibraryPage>('chat_artifacts_list', { importHistory }),

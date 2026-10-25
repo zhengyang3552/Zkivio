@@ -21,7 +21,11 @@ const text = {
     extractingHint: '正在把解开的文件写进工作区',
     failed: '下载失败',
     download: '下载工作区',
-    downloadHint: '约 4 MB（Alpine minirootfs），从官方源与国内镜像依次尝试。',
+    downloadHint: '从官方源与国内镜像依次尝试，下载后校验 SHA-256。',
+    distro: '发行版',
+    variantAlpine: 'Alpine（~4MB）',
+    variantUbuntu: 'Ubuntu（~30MB）',
+    ubuntuHint: 'Ubuntu 自带 bash/apt，但部分机型的系统限制会让其自带命令无法执行；若 shell 全部报 Permission denied，换回 Alpine 即可。',
     uninstall: '卸载 rootfs（保留文件区）',
     uninstallHint: '卸载 Linux 系统本体；agent 写在 /workspace 的文件会保留',
     location: '位置',
@@ -42,7 +46,11 @@ const text = {
     extractingHint: 'Writing the unpacked files into the workspace',
     failed: 'Download failed',
     download: 'Download workspace',
-    downloadHint: 'about 4 MB (Alpine minirootfs), tries the official source and mirrors in order.',
+    downloadHint: 'Tries the official source and mirrors in order; SHA-256 is verified after download.',
+    distro: 'Distro',
+    variantAlpine: 'Alpine (~4MB)',
+    variantUbuntu: 'Ubuntu (~30MB)',
+    ubuntuHint: 'Ubuntu ships bash/apt, but some ROMs block executing their bundled binaries; if every shell call fails with Permission denied, switch back to Alpine.',
     uninstall: 'Uninstall rootfs (keep files)',
     uninstallHint: 'Removes the Linux system; files under /workspace are kept',
     location: 'Location',
@@ -75,6 +83,7 @@ export function WorkspacePanel({ lang }: { lang: Lang }) {
   const t = text[lang]
   const [state, setState] = useState<AndroidRootfsState | null>(null)
   const [busy, setBusy] = useState(false)
+  const [variant, setVariant] = useState<'alpine' | 'ubuntu'>('alpine')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -124,8 +133,8 @@ export function WorkspacePanel({ lang }: { lang: Lang }) {
   }, [])
 
   const handleDownload = useCallback(() => {
-    void run(api.androidRootfsInstall)
-  }, [run])
+    void run(() => api.androidRootfsInstall(variant))
+  }, [run, variant])
 
   const handleUninstall = useCallback(() => {
     void (async () => {
@@ -176,13 +185,27 @@ export function WorkspacePanel({ lang }: { lang: Lang }) {
         )}
       </SettingRow>
 
+      {/* 发行版选择：下载前可挑；就绪后只读展示（换发行版 = 卸载后重下）。 */}
+      {status !== 'ready' && !working && (
+        <SettingRow label={t.distro}>
+          <div className="flex gap-2">
+            <Button size="sm" variant={variant === 'alpine' ? 'primary' : 'default'} onClick={() => setVariant('alpine')}>
+              {t.variantAlpine}
+            </Button>
+            <Button size="sm" variant={variant === 'ubuntu' ? 'primary' : 'default'} onClick={() => setVariant('ubuntu')}>
+              {t.variantUbuntu}
+            </Button>
+          </div>
+        </SettingRow>
+      )}
+
       <SettingRow label={t.location} stack>
         <p className="kv-row-desc break-all font-mono">{state?.root ?? '—'}</p>
       </SettingRow>
 
-      {state?.version && (
-        <SettingRow label={t.version} stack>
-          <p className="kv-row-desc font-mono">{state.version}</p>
+      {state?.variant && (
+        <SettingRow label={t.distro} stack>
+          <p className="kv-row-desc">{state.variant}</p>
         </SettingRow>
       )}
 
@@ -212,7 +235,11 @@ export function WorkspacePanel({ lang }: { lang: Lang }) {
 
       <div className="px-1 pb-2">
         <p className="kv-row-desc">
-          {status === 'ready' ? t.uninstallHint : t.downloadHint}
+          {status === 'ready'
+            ? t.uninstallHint
+            : variant === 'ubuntu'
+              ? t.ubuntuHint
+              : t.downloadHint}
         </p>
         {error && (
           <p role="alert" className="kv-inline-error mt-2">
