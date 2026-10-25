@@ -1,5 +1,6 @@
 import { homeDir } from '@tauri-apps/api/path'
 import { open } from '@tauri-apps/plugin-dialog'
+import { pickFolder } from '../utils/pickFolder'
 import { api, isTauriRuntime, type Settings, type SkillMeta } from '../api/tauri'
 import { updateSettingsCached } from '../api/settingsCache'
 import { confirmDialog } from '../components/dialogQueue'
@@ -503,7 +504,7 @@ async function importSkillPath(
 
 export function importSkillFolder(failedLabel: string): Promise<void> {
   return importSkillPath('import-folder', failedLabel, async () => {
-    const selected = await open({ directory: true, multiple: false })
+    const selected = await pickFolder()
     return typeof selected === 'string' ? selected : null
   })
 }

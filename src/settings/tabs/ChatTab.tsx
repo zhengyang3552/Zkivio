@@ -1,5 +1,5 @@
 import { RefreshCw, FolderOpen } from 'lucide-react'
-import { open } from '@tauri-apps/plugin-dialog'
+import { pickFolder } from '../../utils/pickFolder'
 import { appDataDir, homeDir, join } from '@tauri-apps/api/path'
 import { isMobilePlatform } from '../../chat/platform'
 import { Select, Input, SettingRow, SettingsGroup, Toggle, PromptField } from '../components'
@@ -123,7 +123,7 @@ export function ChatTab({
                 size="sm"
                 className="shrink-0"
                 onClick={async () => {
-                  const selected = await open({ directory: true, multiple: false })
+                  const selected = await pickFolder()
                   if (!selected || typeof selected !== 'string') return
                   onUpdateNativeTools({ workingDirectory: selected })
                 }}
