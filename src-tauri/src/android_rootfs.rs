@@ -578,8 +578,30 @@ fn extract_rootfs(layout: &RootfsLayout) -> Result<(), String> {
 ///   rootfs 根，调用方设的 cwd 一定在这棵树里。
 /// - `PROOT_NO_SECCOMP=1`：Android 的 seccomp 过滤器会让 ptrace 型 proot 在某些
 ///   机型上直接失败，关掉这条优化换取能跑。
+///
+/// **W^X 与 jniLibs**：targetSdk>=29 的真机禁止 exec/dlopen 应用私有目录里的文件
+/// （shell 一调用就报 "Permission denied"）。CI 把 proot / loader / busybox /
+/// 动态库塞进 jniLibs（`scripts/install-android-jni-libs.sh`），系统解包到
+/// nativeLibraryDir —— 那里允许 exec；本函数从 /proc/self/maps 解析该目录并优先
+/// 使用。解析不到（老模拟器 ROM 未 enforce，或布局未就绪）则回退私有目录布局。
+/// busybox 同时被 proot 绑定到 rootfs 的 /bin/busybox —— rootfs 里那份同样在
+/// 私有目录里，`/bin/ls`（指向 /bin/busybox 的符号链接）的最终 execve 落点
+/// 必须落在 nativeLibraryDir 才能通过。
 pub fn proot_command(layout: &RootfsLayout, script: &str) -> Command {
-    let mut command = Command::new(&layout.proot);
+    let native = native_lib_dir();
+    let (proot, loader, lib_dir) = match &native {
+        Some(dir) => (
+            dir.join("libproot.so"),
+            dir.join("libproot_loader.so"),
+            dir.clone(),
+        ),
+        None => (
+            layout.proot.clone(),
+            layout.loader.clone(),
+            layout.lib_dir.clone(),
+        ),
+    };
+    let mut command = Command::new(&proot);
     command
         .arg(format!("--rootfs={}", layout.root.display()))
         .arg("-0")
@@ -588,15 +610,21 @@ pub fn proot_command(layout: &RootfsLayout, script: &str) -> Command {
         .arg("-b")
         .arg("/proc")
         .arg("-b")
-        .arg("/sys")
+        .arg("/sys");
+    if let Some(dir) = &native {
+        command
+            .arg("-b")
+            .arg(format!("{}/libbusybox.so:/bin/busybox", dir.display()));
+    }
+    command
         .arg("--kill-on-exit")
         .arg("/bin/sh")
         .arg("-c")
         .arg(script)
         .env("PROOT_TMP_DIR", &layout.tmp)
         .env("PROOT_NO_SECCOMP", "1")
-        .env("PROOT_LOADER", &layout.loader)
-        .env("LD_LIBRARY_PATH", &layout.lib_dir)
+        .env("PROOT_LOADER", &loader)
+        .env("LD_LIBRARY_PATH", &lib_dir)
         .env("HOME", "/root")
         .env("TERM", "xterm-256color")
         .env("LANG", "C.UTF-8")
@@ -605,4 +633,41 @@ pub fn proot_command(layout: &RootfsLayout, script: &str) -> Command {
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         );
     command
+}
+
+/// Android 上可 exec 的本机库目录（nativeLibraryDir）。
+///
+/// 没法走 JNI：linker 把主 so 从 nativeLibraryDir 映射进进程，/proc/self/maps
+/// 里必然有 `<dir>/libkivio.so` 这样的行，取目录即可。要求 CI 侧
+/// extractNativeLibs=true（见 scripts/install-android-jni-libs.sh），否则原生库
+/// 直接从 APK 里映射，路径带 `base.apk!/`，不是真目录。
+#[cfg(target_os = "android")]
+fn native_lib_dir() -> Option<PathBuf> {
+    static CACHE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let maps = fs::read_to_string("/proc/self/maps").ok()?;
+            for line in maps.lines() {
+                let Some(path) = line.split_whitespace().last() else {
+                    continue;
+                };
+                if !path.ends_with(".so") {
+                    continue;
+                }
+                let Some(idx) = path.find("/lib/arm64/") else {
+                    continue;
+                };
+                let dir = PathBuf::from(&path[..idx]).join("lib").join("arm64");
+                if dir.join("libproot.so").is_file() {
+                    return Some(dir);
+                }
+            }
+            None
+        })
+        .clone()
+}
+
+#[cfg(not(target_os = "android"))]
+fn native_lib_dir() -> Option<PathBuf> {
+    None
 }

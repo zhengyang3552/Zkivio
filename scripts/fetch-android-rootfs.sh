@@ -80,6 +80,16 @@ fetch_deb "pool/main/liba/libandroid-shmem/libandroid-shmem_${ANDROID_SHMEM_VERS
 
 install -m 0755 "$WORK/proot/$PREFIX/bin/proot" "$OUT/proot"
 install -m 0755 "$WORK/proot/$PREFIX/libexec/proot/loader" "$OUT/proot-loader"
+
+# jniLibs 只解包 lib*.so 命名的文件，而 proot 的 DT_NEEDED 写死 libtalloc.so.2。
+# 两者只能活一个：把 DT_NEEDED 原地补成 libtalloc.so（等长，NUL 补齐），
+# jniLibs 侧的文件名就叫 libtalloc.so。补完自检，没改到就炸在构建期。
+perl -0777 -pi -e 's/libtalloc\.so\.2\x00/libtalloc.so\x00\x00\x00/g' "$OUT/proot"
+if grep -qa "libtalloc.so.2" "$OUT/proot"; then
+    echo "✗ proot 的 DT_NEEDED 打补丁失败（仍引用 libtalloc.so.2）" >&2
+    exit 1
+fi
+echo "→ proot DT_NEEDED 已改为 libtalloc.so（jniLibs 命名约束）"
 install -m 0644 \
     "$WORK/talloc/$PREFIX/lib/libtalloc.so.${TALLOC_VERSION}" "$OUT/libtalloc.so.2"
 install -m 0644 "$WORK/shmem/$PREFIX/lib/libandroid-shmem.so" "$OUT/libandroid-shmem.so"
@@ -94,6 +104,37 @@ case "$PROOT_TYPE" in
     *aarch64*) ;;
     *) echo "✗ proot 不是 aarch64 ELF（file: ${PROOT_TYPE:-无 file 命令}）" >&2; exit 1 ;;
 esac
+
+# busybox 必须单独塞进 jniLibs：targetSdk>=29 的真机禁止 exec/dlopen 应用私有目录
+# 里的文件（rootfs 里那份 /bin/busybox 因此跑不起来 —— 「ls Permission denied」）。
+# jniLibs 里的库会被系统解包到 nativeLibraryDir（允许 exec），Rust 侧再用 proot
+# 的绑定把它挂到 rootfs 的 /bin/busybox 上（见 android_rootfs.rs::proot_command）。
+# tar 包与 Rust 侧同一份（sha256 见 android_rootfs.rs::ROOTFS_SHA256）。
+ROOTFS_SHA256="9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773"
+ROOTFS_NAME="alpine-minirootfs-3.24.2-aarch64.tar.gz"
+ROOTFS_URLS=(
+    "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/$ROOTFS_NAME"
+    "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/releases/aarch64/$ROOTFS_NAME"
+    "https://mirrors.ustc.edu.cn/alpine/v3.24/releases/aarch64/$ROOTFS_NAME"
+    "https://mirrors.aliyun.com/alpine/v3.24/releases/aarch64/$ROOTFS_NAME"
+)
+rootfs_ok=""
+for url in "${ROOTFS_URLS[@]}"; do
+    if fetch "$url" "$WORK/rootfs.tar.gz"; then
+        if echo "$ROOTFS_SHA256  $WORK/rootfs.tar.gz" | sha256sum -c - >/dev/null 2>&1; then
+            rootfs_ok="$url"
+            break
+        fi
+        echo "  …sha256 不符，换源: $url" >&2
+    fi
+done
+if [ -z "$rootfs_ok" ]; then
+    echo "✗ 所有镜像的 rootfs 都拉不到或校验失败" >&2
+    exit 1
+fi
+mkdir -p "$WORK/rootfs"
+tar -xzf "$WORK/rootfs.tar.gz" -C "$WORK/rootfs" bin/busybox
+install -m 0755 "$WORK/rootfs/bin/busybox" "$OUT/busybox"
 
 echo
 echo "已就绪（src-tauri/android-assets/）："

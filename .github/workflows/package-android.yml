@@ -149,6 +149,9 @@ jobs:
       - name: Init Android project
         run: npx tauri android init --ci --skip-targets-install
 
+      - name: Install exec assets into jniLibs and patch manifest
+        run: bash scripts/install-android-jni-libs.sh
+
       - name: Build debug APK (arm64)
         run: |
           npx tauri android build --apk --debug --target aarch64
