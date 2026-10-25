@@ -21,6 +21,7 @@ import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
 import type { MarkdownHeadingOutlineItem } from './markdownHeadingOutline'
 import { MessageContextMenu, type MessageMenuAnchor } from './MessageContextMenu'
 import { AddSelectionToChat } from './AddSelectionToChat'
+import { isMobilePlatform } from './platform'
 import { copyToClipboard } from '../utils/clipboard'
 import { CompactionDivider } from './CompactionDivider'
 import { CompactionInProgress } from './CompactionInProgress'
@@ -2506,7 +2507,8 @@ function MessageListBase({
           onClose={closeMsgMenu}
         />
       )}
-      <AddSelectionToChat containerEl={viewportEl} lang={lang} />
+      {/* 划词浮出按钮是桌面交互；触屏上系统自带选择工具条，浮层只会碍事。 */}
+      {!isMobilePlatform && <AddSelectionToChat containerEl={viewportEl} lang={lang} />}
     </div>
   )
 }

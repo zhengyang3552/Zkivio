@@ -55,6 +55,12 @@ if ! grep -q "windowSoftInputMode" "$MANIFEST"; then
     echo "→ manifest: windowSoftInputMode=adjustResize"
 fi
 
+# 工作区 DocumentsProvider：MT 管理器 / 系统文件管理器经 SAF 读写工作区。
+if ! grep -q "WorkspaceDocumentsProvider" "$MANIFEST"; then
+    sed -i 's#</manifest>#    <uses-permission android:name="android.permission.MANAGE_DOCUMENTS" />\n    <provider\n        android:name="com.zmair.kivio.WorkspaceDocumentsProvider"\n        android:authorities="com.zmair.kivio.documents"\n        android:grantUriPermissions="true"\n        android:exported="true"\n        android:permission="android.permission.MANAGE_DOCUMENTS">\n        <intent-filter>\n            <action android:name="android.content.action.DOCUMENTS_PROVIDER" />\n        </intent-filter>\n    </provider>\n</manifest>#' "$MANIFEST"
+    echo "→ manifest: WorkspaceDocumentsProvider"
+fi
+
 # 目录选择器插件：tauri-plugin-dialog 移动端没有实现目录选择（2.8.3 亦然），
 # 这里补一个自有插件。ACTION_OPEN_DOCUMENT_TREE 返回 tree URI，映射回
 # primary 存储的真实路径；写入外部存储需要「所有文件访问」，未授权时先跳设置页。
@@ -134,6 +140,222 @@ class FolderPickerPlugin(private val activity: Activity) : Plugin(activity) {
 }
 KOTLIN
 echo "→ Kotlin: FolderPickerPlugin.kt"
+# ── 工作区 DocumentsProvider（参考 RikkaHub）──────────────────────────────
+# 应用私有目录（/data/user/0/<pkg>）别的应用读不到，MT 管理器等文件管理器
+# 想浏览/编辑工作区只能走 SAF：注册一个 DocumentsProvider 把 rootfs 与
+# Kivio 工作区以「文档根」暴露出去，系统文件管理器和支持 SAF 的工具都能挂载。
+cat > "$KOTLIN_DIR/WorkspaceDocumentsProvider.kt" <<'KOTLIN'
+package com.zmair.kivio
+
+import android.database.Cursor
+import android.database.MatrixCursor
+import android.os.CancellationSignal
+import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
+import android.provider.DocumentsProvider
+import java.io.File
+import java.io.FileNotFoundException
+import java.io.IOException
+
+/**
+ * 把应用私有目录里的工作区（rootfs 与 ~/Kivio）经 SAF 暴露给其它应用
+ * （MT 管理器、系统文件管理器等）。documentId 直接用绝对路径，简单可靠。
+ */
+class WorkspaceDocumentsProvider : DocumentsProvider() {
+  companion object {
+    const val ROOT_DOC = "workspace-root"
+    const val AUTHORITY = "com.zmair.kivio.documents"
+
+    private val DEFAULT_ROOT_PROJECTION = arrayOf(
+      DocumentsContract.Root.COLUMN_ROOT_ID,
+      DocumentsContract.Root.COLUMN_ICON,
+      DocumentsContract.Root.COLUMN_TITLE,
+      DocumentsContract.Root.COLUMN_SUMMARY,
+      DocumentsContract.Root.COLUMN_FLAGS,
+      DocumentsContract.Root.COLUMN_DOCUMENT_ID,
+    )
+    private val DEFAULT_DOCUMENT_PROJECTION = arrayOf(
+      DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+      DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+      DocumentsContract.Document.COLUMN_MIME_TYPE,
+      DocumentsContract.Document.COLUMN_FLAGS,
+      DocumentsContract.Document.COLUMN_SIZE,
+      DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+    )
+    /** 根目录下只暴露工作区相关的两棵树，避免把 settings.json（含密钥）等一并晒出去。 */
+    private val EXPOSED_ROOT_ENTRIES = arrayOf("rootfs", "Kivio")
+  }
+
+  private lateinit var dataDir: File
+
+  override fun onCreate(): Boolean {
+    // 应用私有数据根 /data/user/0/<pkg>（rootfs 与 ~/Kivio 都在这里）
+    dataDir = File(context!!.applicationInfo.dataDir)
+    return true
+  }
+
+  private fun rootFileFor(name: String): File = File(dataDir, name)
+
+  override fun queryRoots(projection: Array<out String>?): Cursor {
+    val result = MatrixCursor(resolveRootProjection(projection))
+    result.newRow().apply {
+      add(DocumentsContract.Root.COLUMN_ROOT_ID, ROOT_DOC)
+      add(DocumentsContract.Root.COLUMN_ICON, android.R.drawable.sym_def_app_icon)
+      add(DocumentsContract.Root.COLUMN_TITLE, "Kivio 工作区")
+      add(DocumentsContract.Root.COLUMN_SUMMARY, "rootfs 与 Kivio 工作区文件")
+      add(DocumentsContract.Root.COLUMN_FLAGS,
+        DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD or DocumentsContract.Root.FLAG_LOCAL_ONLY)
+      add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, ROOT_DOC)
+    }
+    return result
+  }
+
+  override fun isChildDocument(parentDocumentId: String?, documentId: String?): Boolean =
+    documentId!!.startsWith(parentDocumentId!!)
+
+  override fun queryDocument(documentId: String?, projection: Array<out String>?): Cursor {
+    val result = MatrixCursor(resolveDocumentProjection(projection))
+    if (documentId == ROOT_DOC) {
+      result.newRow().apply {
+        add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, ROOT_DOC)
+        add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, "Kivio 工作区")
+        add(DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.MIME_TYPE_DIR)
+        add(DocumentsContract.Document.COLUMN_FLAGS, DocumentsContract.Document.FLAG_DIR_PREFERS_GRID)
+      }
+    } else {
+      includeFile(result, documentId ?: ROOT_DOC)
+    }
+    return result
+  }
+
+  override fun queryChildDocuments(
+    parentDocumentId: String?,
+    projection: Array<out String>?,
+    sortOrder: String?,
+  ): Cursor {
+    val result = MatrixCursor(resolveDocumentProjection(projection))
+    if (parentDocumentId == ROOT_DOC) {
+      // 根下只挂工作区两棵树
+      for (name in EXPOSED_ROOT_ENTRIES) {
+        val dir = rootFileFor(name)
+        if (!dir.exists()) dir.mkdirs()
+        includeFile(result, dir.absolutePath)
+      }
+      return result
+    }
+    val parent = getFileForDocId(parentDocumentId ?: ROOT_DOC)
+    val children = parent.listFiles() ?: throw FileNotFoundException(parent.canonicalPath)
+    for (file in children.sortedBy { it.name.lowercase() }) {
+      includeFile(result, file.absolutePath)
+    }
+    return result
+  }
+
+  override fun openDocument(
+    documentId: String?,
+    mode: String?,
+    signal: CancellationSignal?,
+  ): ParcelFileDescriptor {
+    val file = getFileForDocId(documentId ?: ROOT_DOC)
+    val accessMode = ParcelFileDescriptor.parseMode(mode)
+    val isWrite = mode!!.indexOf('w') != -1
+    if (isWrite) {
+      // 附件写入时先确保父目录存在
+      file.parentFile?.mkdirs()
+    }
+    return ParcelFileDescriptor.open(file, accessMode)
+  }
+
+  override fun createDocument(parentDocumentId: String?, mimeType: String, displayName: String): String {
+    val parent = getFileForDocId(parentDocumentId ?: ROOT_DOC)
+    var name = displayName
+    var target = File(parent, name)
+    var noConflict = 0
+    while (target.exists()) {
+      noConflict++
+      val dot = displayName.lastIndexOf('.')
+      name = if (dot > 0) {
+        displayName.substring(0, dot) + " ($noConflict)" + displayName.substring(dot)
+      } else {
+        "$displayName ($noConflict)"
+      }
+      target = File(parent, name)
+    }
+    try {
+      val ok = if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) target.mkdirs() else target.createNewFile()
+      if (!ok) throw IOException("create failed: ${target.canonicalPath}")
+    } catch (e: IOException) {
+      throw FileNotFoundException("create ${target.canonicalPath}: ${e.message}")
+    }
+    return target.absolutePath
+  }
+
+  override fun deleteDocument(documentId: String?) {
+    val file = getFileForDocId(documentId ?: ROOT_DOC)
+    file.deleteRecursively()
+  }
+
+  override fun renameDocument(documentId: String?, displayName: String): String {
+    val file = getFileForDocId(documentId ?: ROOT_DOC)
+    val target = File(file.parentFile, displayName)
+    if (!file.renameTo(target)) throw FileNotFoundException("rename ${file.canonicalPath} failed")
+    return target.absolutePath
+  }
+
+  private fun getFileForDocId(documentId: String): File {
+    if (documentId == ROOT_DOC) throw FileNotFoundException("root is virtual")
+    val file = File(documentId)
+    if (!file.exists()) throw FileNotFoundException(documentId)
+    // 防目录穿越：只允许暴露两棵工作区树
+    val allowed = EXPOSED_ROOT_ENTRIES.any { name ->
+      val root = rootFileFor(name).canonicalPath + File.separator
+      file.canonicalPath.startsWith(root)
+    }
+    if (!allowed) throw FileNotFoundException("outside workspace: $documentId")
+    return file
+  }
+
+  private fun includeFile(result: MatrixCursor, documentId: String) {
+    val file = getFileForDocId(documentId)
+    result.newRow().apply {
+      add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, file.absolutePath)
+      add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, file.name)
+      add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, file.lastModified())
+      add(DocumentsContract.Document.COLUMN_SIZE, if (file.isDirectory) null else file.length())
+      if (file.isDirectory) {
+        add(DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.MIME_TYPE_DIR)
+        add(DocumentsContract.Document.COLUMN_FLAGS,
+          DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE or
+            DocumentsContract.Document.FLAG_SUPPORTS_DELETE or
+            DocumentsContract.Document.FLAG_SUPPORTS_RENAME or
+            DocumentsContract.Document.FLAG_SUPPORTS_WRITE)
+      } else {
+        val name = file.name
+        val dot = name.lastIndexOf('.')
+        val mime = if (dot > 0) {
+          val ext = name.substring(dot + 1).lowercase()
+          android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+        } else {
+          "application/octet-stream"
+        }
+        add(DocumentsContract.Document.COLUMN_MIME_TYPE, mime)
+        add(DocumentsContract.Document.COLUMN_FLAGS,
+          DocumentsContract.Document.FLAG_SUPPORTS_WRITE or
+            DocumentsContract.Document.FLAG_SUPPORTS_DELETE or
+            DocumentsContract.Document.FLAG_SUPPORTS_RENAME)
+      }
+    }
+  }
+
+  private fun resolveRootProjection(projection: Array<out String>?): Array<out String> =
+    projection ?: DEFAULT_ROOT_PROJECTION
+
+  private fun resolveDocumentProjection(projection: Array<out String>?): Array<out String> =
+    projection ?: DEFAULT_DOCUMENT_PROJECTION
+}
+KOTLIN
+echo "→ Kotlin: WorkspaceDocumentsProvider.kt"
+
 
 # 外部存储权限（MANAGE_EXTERNAL_STORAGE 走设置页授权；≤32 的运行时权限一并声明）。
 if ! grep -q "MANAGE_EXTERNAL_STORAGE" "$MANIFEST"; then
