@@ -1312,10 +1312,15 @@ function MessageBubbleComponent({
   // 旧画面滞留不消；提升为合成层后 opacity 由合成器每帧应用，不走重绘路径。
   const hoverRootRef = useRef<HTMLDivElement>(null)
   const hoverMoveCleanupRef = useRef<(() => void) | null>(null)
+  const hoverHideTimerRef = useRef<number | null>(null)
   const setBubbleHovered = (on: boolean) => {
     // 先清后挂（幂等）：重复 enter、或悬停期间根元素被 React 重挂，都不会漏掉旧监听。
     hoverMoveCleanupRef.current?.()
     hoverMoveCleanupRef.current = null
+    if (hoverHideTimerRef.current != null) {
+      window.clearTimeout(hoverHideTimerRef.current)
+      hoverHideTimerRef.current = null
+    }
     const root = hoverRootRef.current
     if (!root) return
     root.toggleAttribute('data-msg-hovered', on)
@@ -1333,10 +1338,21 @@ function MessageBubbleComponent({
   useEffect(() => () => {
     hoverMoveCleanupRef.current?.()
     hoverMoveCleanupRef.current = null
+    if (hoverHideTimerRef.current != null) window.clearTimeout(hoverHideTimerRef.current)
   }, [])
   const hoverProps = {
     ref: hoverRootRef,
-    onPointerEnter: () => setBubbleHovered(true),
+    onPointerEnter: (event: React.PointerEvent) => {
+      setBubbleHovered(true)
+      // 触屏/笔没有 hover-out：tap 触发的 enter 会把元信息条（含 token 用量）永久挂着
+      // ——移动端"一直显示"的来源。非鼠标指针改为短暂显示后自动收起；鼠标不变。
+      if (event.pointerType !== 'mouse') {
+        hoverHideTimerRef.current = window.setTimeout(() => {
+          hoverHideTimerRef.current = null
+          setBubbleHovered(false)
+        }, 3000)
+      }
+    },
     // 快路径：leave 真来了立刻收；没来由上面的 pointermove 兜底。
     onPointerLeave: () => setBubbleHovered(false),
   }

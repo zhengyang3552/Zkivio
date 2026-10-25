@@ -2021,6 +2021,11 @@ function MessageListBase({
 
   // 消息区右键：读取当前选中文本 + 命中的消息，弹内置菜单。两者都空则不弹（放行给全局屏蔽）。
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    // 触屏长按会触发 contextmenu：弹的是这套自定义菜单（复制/复制整条消息），和系统
+    // 文本选择菜单叠在一起。移动端不弹，长按交给原生选择/复制菜单。
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) {
+      return
+    }
     const selectionText = (window.getSelection()?.toString() ?? '').trim()
     const targetEl = (e.target as Element | null)?.closest?.('[data-message-id]') as HTMLElement | null
     const id = targetEl?.dataset.messageId ?? null

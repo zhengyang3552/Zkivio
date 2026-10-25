@@ -173,6 +173,36 @@ class FolderPickerPlugin(private val activity: Activity) : Plugin(activity) {
 }
 KOTLIN
 echo "→ Kotlin: FolderPickerPlugin.kt"
+# ── MainActivity：edge-to-edge 下跟随软键盘 ─────────────────────────────────
+# 模板 MainActivity 里 enableEdgeToEdge() 之后，adjustResize 不再为窗口让位
+# （Android 15+ 强制 edge-to-edge，窗口不 resize），软键盘直接盖在 WebView 上，
+# 且 WebView 的 visualViewport 不变化 —— 前端 useKeyboardInset 的 --kb-inset
+# 方案永远算出 0。这里覆写 MainActivity：把 IME insets 转成 content view 的
+# padding，效果等同 adjustResize —— WebView 高度收缩，输入栏被抬到键盘上方，
+# 前端零感知（--kb-inset 自动归零）。非 edge-to-edge 时 ime inset 为 0，不叠加。
+cat > "$GEN/app/src/main/java/com/zmair.kivio/MainActivity.kt" <<'KOTLIN'
+package com.zmair.kivio
+
+import android.os.Bundle
+import android.view.View
+import androidx.activity.enableEdgeToEdge
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+
+class MainActivity : TauriActivity() {
+  override fun onCreate(savedInstanceState: Bundle?) {
+    enableEdgeToEdge()
+    super.onCreate(savedInstanceState)
+    val content = findViewById<View>(android.R.id.content)
+    ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+      val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+      view.setPadding(0, 0, 0, ime)
+      insets
+    }
+  }
+}
+KOTLIN
+echo "→ Kotlin: MainActivity.kt（IME insets → padding，跟随软键盘）"
 # ── 工作区 DocumentsProvider（参考 RikkaHub）──────────────────────────────
 # 应用私有目录（/data/user/0/<pkg>）别的应用读不到，MT 管理器等文件管理器
 # 想浏览/编辑工作区只能走 SAF：注册一个 DocumentsProvider 把 rootfs 与
