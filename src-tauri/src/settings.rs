@@ -1331,6 +1331,14 @@ impl Default for ChatNativeToolsConfig {
 }
 
 pub fn default_chat_working_directory() -> String {
+    // Android：与 rootfs 工作区共用同一个用户文件区（proot 挂载为 /workspace），
+    // shell、文件工具、SAF 看到的是同一份文件；桌面端保持 ~/Kivio/workspace。
+    #[cfg(target_os = "android")]
+    {
+        if let Some(root) = crate::android_rootfs::cached_workspace_root() {
+            return root.to_string_lossy().into_owned();
+        }
+    }
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join("Kivio").join("workspace"))
         .unwrap_or_else(|| std::path::PathBuf::from("Kivio").join("workspace"))

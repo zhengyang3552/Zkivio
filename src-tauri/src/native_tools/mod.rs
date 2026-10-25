@@ -201,6 +201,15 @@ fn resolve_tool_path(
     if expanded.trim().is_empty() {
         return Err("File path cannot be empty".to_string());
     }
+    // Android：proot 把用户文件区挂载为 guest 的 `/workspace`，模型看到并传来的
+    // 都是 /workspace/...；这里统一翻译成 host 路径（android_rootfs::map_guest_path）。
+    // 非工作区路径返回 None，继续走下面的宿主解析（桌面端整体不编译这段）。
+    #[cfg(target_os = "android")]
+    {
+        if let Some(host) = crate::android_rootfs::map_guest_path(&expanded) {
+            return canonicalize_existing_or_missing(&host, allow_missing);
+        }
+    }
     let raw = Path::new(&expanded);
     if raw.is_absolute() {
         return canonicalize_existing_or_missing(raw, allow_missing);
@@ -287,6 +296,13 @@ pub fn workspace_display_path(workspace: &NativeToolWorkspace, path: &Path) -> S
                     };
                 }
             }
+        }
+    }
+    // Android：文件区对模型显示为 /workspace（proot 挂载点），而不是宿主私有路径。
+    #[cfg(target_os = "android")]
+    {
+        if let Some(guest) = crate::android_rootfs::guest_display_path(path) {
+            return guest;
         }
     }
     path.display().to_string()

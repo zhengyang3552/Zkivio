@@ -215,8 +215,8 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
       DocumentsContract.Document.COLUMN_SIZE,
       DocumentsContract.Document.COLUMN_LAST_MODIFIED,
     )
-    /** 根目录下只暴露工作区相关的两棵树，避免把 settings.json（含密钥）等一并晒出去。 */
-    private val EXPOSED_ROOT_ENTRIES = arrayOf("rootfs", "Kivio")
+    /** 根目录下只暴露工作区相关的树，避免把 settings.json（含密钥）等一并晒出去。 */
+    private val EXPOSED_ROOT_ENTRIES = arrayOf("rootfs", "workspace", "Kivio")
   }
 
   private lateinit var dataDir: File

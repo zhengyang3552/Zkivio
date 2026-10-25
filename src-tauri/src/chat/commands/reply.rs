@@ -645,8 +645,25 @@ pub(super) async fn complete_assistant_reply_inner(
         conversation,
         &settings.chat_tools.native_tools.working_directory,
     )
-    .ok()
-    .map(|path| path.display().to_string());
+    .ok();
+    // 提示词里的工作目录：Android 上模型看到的是 proot 里的 /workspace，而不是
+    // 宿主私有路径；hooks 等真实文件操作继续用 workbench_dir（宿主路径）。
+    let workbench_prompt_dir = {
+        #[cfg(target_os = "android")]
+        {
+            if let Some(guest) = workbench_dir
+                .as_deref()
+                .and_then(crate::android_rootfs::guest_display_path)
+            {
+                Some(guest)
+            } else {
+                workbench_dir.clone().map(|path| path.display().to_string())
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        workbench_dir.clone().map(|path| path.display().to_string())
+    };
+    let workbench_dir = workbench_dir.map(|path| path.display().to_string());
     // 集的系统提示词：按对话 set_id 实时取（不冻结），随集编辑立即对集内对话生效。
     let set_system_prompt = live_set_system_prompt(app, conversation);
     let study_source_prompt = crate::reading::chat::source_prompt(app, &conversation.id)?;
@@ -677,7 +694,7 @@ pub(super) async fn complete_assistant_reply_inner(
         runtime_prompts.agent_plan_prompt.as_deref(),
         Some(&agent_ask_user_prompt),
         project_prompt_context.as_ref(),
-        workbench_dir.as_deref(),
+        workbench_prompt_dir.as_deref(),
         knowledge_base_prompt.as_deref(),
         &conversation.additional_directories,
     );
@@ -744,7 +761,7 @@ pub(super) async fn complete_assistant_reply_inner(
         runtime_prompts.agent_plan_prompt.as_deref(),
         Some(&crate::chat::ask_user::format_prompt(false)),
         project_prompt_context.as_ref(),
-        workbench_dir.as_deref(),
+        workbench_prompt_dir.as_deref(),
         knowledge_base_prompt.as_deref(),
         &conversation.additional_directories,
     );

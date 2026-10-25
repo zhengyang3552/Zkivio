@@ -575,6 +575,23 @@ pub fn build_chat_system_prompt_with_segments(
             text,
         );
     }
+    // Android rootfs 工作区：告知模型运行环境（proot Alpine）与 /workspace 路径约定，
+    // 与 native_tools 的 guest 路径翻译（android_rootfs::map_guest_path）配套。
+    // rootfs 未就绪时返回 None 整段跳过，与 shell 工具的可用条件保持一致。
+    #[cfg(target_os = "android")]
+    {
+        if tools_available {
+            if let Some(text) = crate::android_rootfs::workspace_prompt_segment() {
+                append_context_segment(
+                    &mut prompt,
+                    &mut segments,
+                    "runtime_context",
+                    "Runtime context",
+                    &text,
+                );
+            }
+        }
+    }
     (prompt, merge_context_segments(segments))
 }
 

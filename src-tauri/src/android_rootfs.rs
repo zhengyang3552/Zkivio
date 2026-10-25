@@ -15,10 +15,12 @@
 //!
 //! 两条路径互相配合：
 //!
-//! - **文件工具**直接按 host 路径读写 `{app_data}/rootfs/...`，不经过 proot。
+//! - **文件工具**直接按 host 路径读写 `{app_data}/workspace/...`（agent 侧显示为
+//!   `/workspace`，见 `map_guest_path` / `guest_display_path`），不经过 proot。
 //!   这是应用私有目录，读写权限齐全；没下载时它就是个空目录，照样能写。
 //! - **执行命令**（agent 的 shell 工具，以后 Dock 里的 git / 终端）走
-//!   `proot_command()`，进去以后 `/` 就是这套 rootfs。没下载时回退宿主 sh。
+//!   `proot_command()`，进去以后 `/` 是 rootfs、`/workspace` 是用户文件区。
+//!   没下载时回退宿主 sh。
 //!
 //! 下载源与校验值固定在这里（官方 CDN + 清华镜像，两者 sha256 已核对一致）：
 //! 校验不通过就换下一个源，全部失败则状态置为 failed，绝不解包来历不明的字节。
@@ -67,10 +69,15 @@ fn source_host(url: &str) -> String {
 }
 
 const ROOT_DIR: &str = "rootfs";
+/// 用户文件区目录（host）。proot 把它挂到 guest 的 [`GUEST_WORKSPACE_DIR`]。
+const WORKSPACE_DIR: &str = "workspace";
 const RUNTIME_DIR: &str = "rootfs-runtime";
 /// 就绪标记放在 runtime 目录，不要放进 rootfs 里 —— 那会出现在 agent 看到的 `/`。
 const READY_MARKER: &str = "rootfs-ready";
 const DOWNLOAD_CACHE: &str = "rootfs-download.tar.gz";
+
+/// guest 内用户文件区的挂载点。提示词、文件工具的路径翻译都用这一个常量。
+pub const GUEST_WORKSPACE_DIR: &str = "/workspace";
 
 /// 前端订阅的进度事件名。
 pub const PROGRESS_EVENT: &str = "android-rootfs-progress";
@@ -89,6 +96,9 @@ const CHUNK_IDLE_TIMEOUT_SECS: u64 = 15;
 #[derive(Clone, Debug)]
 pub struct RootfsLayout {
     pub root: PathBuf,
+    /// 用户文件区（host 路径），proot 里挂载为 `/workspace`。
+    /// 与 rootfs 分离：重装系统不动用户文件，agent 也不能借 shell 改坏发行版本体。
+    pub workspace: PathBuf,
     pub runtime: PathBuf,
     pub proot: PathBuf,
     pub loader: PathBuf,
@@ -155,6 +165,7 @@ pub fn layout(app: &AppHandle) -> Result<RootfsLayout, String> {
     // 找 loader；lib 放自家目录，靠 LD_LIBRARY_PATH 命中。
     Ok(RootfsLayout {
         root: base.join(ROOT_DIR),
+        workspace: base.join(WORKSPACE_DIR),
         proot: runtime.join("bin").join("proot"),
         loader: runtime.join("libexec").join("proot").join("loader"),
         lib_dir: runtime.join("lib"),
@@ -176,6 +187,7 @@ pub fn init(app: &AppHandle) {
     let _ = LAYOUT.set(layout.clone());
     // 工作区目录先建出来：没下载时它就是个空目录，agent 照样有 cwd 可写。
     let _ = fs::create_dir_all(&layout.root);
+    let _ = fs::create_dir_all(&layout.workspace);
     {
         let mut state = state_cell().lock().unwrap();
         state.root = layout.root.to_string_lossy().to_string();
@@ -207,12 +219,59 @@ fn has_shell(root: &Path) -> bool {
     fs::symlink_metadata(root.join("bin/sh")).is_ok()
 }
 
-/// 工作区根（host 路径）。**不会触发下载**：没下载时返回空目录。Android 上不考虑
-/// 项目根 —— 没有目录选择器可用，「工作区 = rootfs 根」是定下来的唯一形态。
+/// 工作区根（host 路径）＝**用户文件区**，proot 里挂载为 `/workspace`。
+/// **不会触发下载**：没下载时它就是个空目录，agent 照样有 cwd 可写。
+/// Android 上不考虑项目根 —— 没有目录选择器可用。
+///
+/// 与 `rootfs/`（发行版本体）分离：重装系统、卸载都不碰这里，agent 写的文件
+/// （报告、脚本、导出物）只落在这个目录，SAF 也按这个目录暴露。
 pub fn workspace_root(app: &AppHandle) -> Result<PathBuf, String> {
     let layout = layout(app)?;
-    fs::create_dir_all(&layout.root).map_err(|e| format!("create workspace: {e}"))?;
-    Ok(layout.root)
+    fs::create_dir_all(&layout.workspace)
+        .map_err(|e| format!("create workspace: {e}"))?;
+    Ok(layout.workspace)
+}
+
+/// init 之后可用的用户文件区（host 路径）。桌面端 / 未 setup 时为 None，
+/// 调用方（native_tools 的路径翻译）据此整体跳过。
+pub fn cached_workspace_root() -> Option<&'static Path> {
+    LAYOUT.get().map(|layout| layout.workspace.as_path())
+}
+
+/// guest 的 `/workspace[/相对路径]` → host 用户文件区里的真实路径。
+/// 不是工作区路径（`/etc`、`/root`、任意绝对路径）返回 None，调用方按原逻辑处理。
+pub fn map_guest_path(raw: &str) -> Option<PathBuf> {
+    map_guest_path_with(cached_workspace_root()?, raw)
+}
+
+fn map_guest_path_with(root: &Path, raw: &str) -> Option<PathBuf> {
+    let rest = raw.trim().strip_prefix(GUEST_WORKSPACE_DIR)?;
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return None; // "/workspacefoo" 这类前缀混淆，按非工作区路径处理
+    }
+    let relative = rest.trim_start_matches('/');
+    if relative.split('/').any(|segment| segment == "..") {
+        return None; // 越界交给调用方按原逻辑报错
+    }
+    Some(if relative.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(relative)
+    })
+}
+
+/// host 路径 → guest 显示路径（`/workspace/...`）。不在文件区内返回 None。
+pub fn guest_display_path(path: &Path) -> Option<String> {
+    guest_display_path_with(cached_workspace_root()?, path)
+}
+
+fn guest_display_path_with(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?.to_string_lossy().into_owned();
+    Some(if relative.is_empty() {
+        GUEST_WORKSPACE_DIR.to_string()
+    } else {
+        format!("{GUEST_WORKSPACE_DIR}/{relative}")
+    })
 }
 
 /// 把 proot / loader / 动态库落到 runtime 目录。幂等，内容不一致才重写。
@@ -359,8 +418,9 @@ pub async fn android_rootfs_install(app: AppHandle) -> Result<RootfsState, Strin
     }
 }
 
-/// 卸载（格式化）：清掉工作区里的全部内容，连同 agent 写过的文件。
-/// proot 运行时不属于工作区，保留（下次下载即可用）。
+/// 卸载：只清发行版本体（rootfs/，连同 apk 装进去的包），用户文件区
+/// `workspace/` **保留** —— 那是 agent 写的报告 / 脚本 / 导出物。proot 运行时
+/// 不属于工作区，也保留（下次下载即可用）。
 #[tauri::command]
 pub async fn android_rootfs_uninstall(app: AppHandle) -> Result<RootfsState, String> {
     if busy() {
@@ -927,7 +987,16 @@ pub fn proot_command(layout: &RootfsLayout, script: &str) -> Command {
         .arg("-b")
         .arg("/proc")
         .arg("-b")
-        .arg("/sys");
+        .arg("/sys")
+        // 用户文件区：host 的 workspace/ 挂为 guest 的 /workspace。与 rootfs 分离，
+        // 重装系统 / 卸载都不碰用户文件；agent 的 cwd（调用方设的 current_dir）
+        // 落在这棵树里时 proot 会自动翻译成 /workspace/...。
+        .arg("-b")
+        .arg(format!(
+            "{}:{}",
+            layout.workspace.display(),
+            GUEST_WORKSPACE_DIR
+        ));
     if let Some(dir) = &native {
         command
             .arg("-b")
@@ -994,4 +1063,110 @@ fn native_lib_dir() -> Option<PathBuf> {
 #[cfg(not(target_os = "android"))]
 fn native_lib_dir() -> Option<PathBuf> {
     None
+}
+
+/// 系统提示里的 `<workspace>` 段：告诉模型它在 proot 的 Alpine 里、文件区在
+/// `/workspace`、文件工具收什么路径。rootfs 未就绪时返回 None（调用方整段跳过，
+/// 与 shell 工具的注入条件一致）。桌面端 LAYOUT 未初始化，恒 None。
+pub fn workspace_prompt_segment() -> Option<String> {
+    let layout = LAYOUT.get()?;
+    if !is_installed(layout) {
+        return None;
+    }
+    let distro = read_distro_name(layout)
+        .unwrap_or_else(|| "Alpine Linux".to_string());
+    Some(format!(
+        "<workspace>\n\
+         You are running inside a sandboxed {distro} rootfs (proot) on Android.\n\
+         - The user's file area is mounted at {GUEST_WORKSPACE_DIR}. Create and edit all\n\
+           user-facing files there; files persist for this conversation.\n\
+         - File tools accept absolute paths under {GUEST_WORKSPACE_DIR} (for example\n\
+           {GUEST_WORKSPACE_DIR}/notes.md) and report paths in the same form.\n\
+         - Shell commands run inside the rootfs as root. The shell is BusyBox /bin/sh,\n\
+           not bash: avoid bash-only syntax (arrays, here-strings, brace expansion).\n\
+         - Install extra tooling with `apk add <package>` when needed.\n\
+         - /root is HOME; treat /etc and /usr as system files and do not modify them.\n\
+         </workspace>"
+    ))
+}
+
+/// 发行版名：读 rootfs 里的 os-release（`/etc/os-release` 是指向
+/// `../usr/lib/os-release` 的**相对**软链，宿主侧解析不会跑出 rootfs）。
+fn read_distro_name(layout: &RootfsLayout) -> Option<String> {
+    for path in ["etc/os-release", "usr/lib/os-release"] {
+        let Ok(text) = fs::read_to_string(layout.root.join(path)) else {
+            continue;
+        };
+        let values: std::collections::HashMap<&str, &str> = text
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.starts_with('#') {
+                    return None;
+                }
+                let (key, value) = line.split_once('=')?;
+                Some((key, value.trim().trim_matches(['"', '\''])))
+            })
+            .collect();
+        let name = values
+            .get("PRETTY_NAME")
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_string())
+            .or_else(|| {
+                match (values.get("NAME"), values.get("VERSION_ID")) {
+                    (Some(name), Some(version)) => Some(format!("{name} {version}")),
+                    (Some(name), None) => Some(name.to_string()),
+                    _ => None,
+                }
+            })?;
+        let name: String = name.chars().filter(|c| !c.is_control()).collect();
+        let name = name.trim().to_string();
+        if !name.is_empty() {
+            return Some(name.chars().take(80).collect());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod guest_path_tests {
+    use super::*;
+
+    fn root() -> PathBuf {
+        PathBuf::from("/data/user/0/com.zmair.kivio/files/workspace")
+    }
+
+    #[test]
+    fn guest_paths_map_into_the_workspace_dir() {
+        assert_eq!(map_guest_path_with(&root(), "/workspace"), Some(root()));
+        assert_eq!(
+            map_guest_path_with(&root(), "/workspace/notes.md"),
+            Some(root().join("notes.md"))
+        );
+        assert_eq!(
+            map_guest_path_with(&root(), "/workspace/a/b/c.txt"),
+            Some(root().join("a/b/c.txt"))
+        );
+    }
+
+    #[test]
+    fn non_workspace_and_unsafe_paths_are_rejected() {
+        assert_eq!(map_guest_path_with(&root(), "/etc/passwd"), None);
+        assert_eq!(map_guest_path_with(&root(), "/workspacefoo/x"), None);
+        assert_eq!(map_guest_path_with(&root(), "/workspace/../etc/passwd"), None);
+        assert_eq!(map_guest_path_with(&root(), "notes.md"), None);
+    }
+
+    #[test]
+    fn display_paths_round_trip() {
+        assert_eq!(
+            guest_display_path_with(&root(), &root()),
+            Some("/workspace".to_string())
+        );
+        assert_eq!(
+            guest_display_path_with(&root(), &root().join("out/deck.pptx")),
+            Some("/workspace/out/deck.pptx".to_string())
+        );
+        assert_eq!(guest_display_path_with(&root(), Path::new("/etc/passwd")), None);
+    }
 }
