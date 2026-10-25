@@ -93,30 +93,34 @@ function stripColorMixSolidFallbacks(): Plugin {
 
   const strip = (css: string): string =>
     // Tailwind/Lightning 给每条 color-mix 生成「纯色兜底 + @supports 包裹的正主」。
-    // 兜底值恰为 var(--text)/var(--accent) 这类纯色：不支持 color-mix 的 WebView
-    // （如 Android System WebView 110）会命中它 —— 深色主题里点一下按钮/选中一行，
-    // 背景变成一块白色、文字同色不可见（白色胶囊截图）。
+    // 在不支持 color-mix 的 WebView（Android System WebView 110 等）上会命中兜底。
     //
-    // 只把「背景/边框/阴影」类兜底改写成 transparent：老 WebView 上回落为无色
-    // （没有反馈但可读），现代 WebView 仍走 color-mix 分支，视觉不变。
-    // 文字类属性（color/fill/stroke）与自定义属性（--*，消费方不固定、很可能是文字色）
-    // 必须保留纯色兜底 —— 上一版把它们也改成了 transparent，结果 WebView 110 上
-    // 文字整片透明（「字没了」），比白色色块更糟。
-    // 形态限定「属性:var(--x)} + 紧跟 @supports」，不会误伤普通引用这些变量的声明。
+    // 按兜底的语义分三类处理（前两版的教训：全 transparent → 选中反馈消失；
+    // 全保留纯色 → 深色主题里 hover/选中变成纯白/纯黑反色块，文字同色不可见）：
+    //   1) 文字类属性（color/fill/stroke）与自定义属性（--*）：保留纯色兜底
+    //      —— 文字必须可见，宁可对比度略偏；
+    //   2) 背景/边框/阴影类，且 color-mix 是「带 alpha 的淡色」（...N%,transparent）
+    //      —— 即交互 tint（hover/选中/高亮）：换成主题自适应淡色
+    //      var(--tint-overlay)（明色板淡黑 .06 / 暗色板淡白 .09，见 index.css）
+    //      或 accent/success/warn 的 -soft 实色淡色 token；
+    //   3) 其余（实色面板等）：保留纯色兜底。
+    //   兜底的值可能是 var(--text) 直引，也可能是 var(--color-neutral-900) 这类
+    //   「text 派生 token」（如 bg-neutral-900/[0.06] 的兜底），两者都要认。
     css.replace(
-      /([-a-z]+)\s*:\s*var\(--(?:text|accent|success|warn)\)\}@supports \(color:color-mix/g,
-      (match, prop: string) => {
+      // 前缀匹配 + 前瞻「N%,transparent」：mix 里还有 var() 的括号，直接捕获
+      // 到 ) 会断在半截，用前瞻判断这是不是「alpha 淡色」更稳。
+      /([-a-z]+)\s*:\s*var\(--([a-z0-9-]+)\)\}@supports \(color:color-mix(?=[^}]*%,\s*transparent)/g,
+      (match, prop: string, baseVar: string) => {
         const isTextColor =
           prop === 'color' || prop === 'fill' || prop === 'stroke' || prop.startsWith('--')
         if (isTextColor) return match
-        // 兜底值不能给 transparent：老 WebView 上 hover/选中反馈会完全消失
-        //（用户实测反馈「选中色改没了」）。按语义换成主题自适应的淡色：
-        //   --text  → --tint-overlay（明色板淡黑 / 暗色板淡白，见 index.css）
-        //   --accent/--success/--warn → 各自的 -soft 实色 token（本就是淡色）
+
         let fallback = 'var(--tint-overlay)'
-        if (match.includes('var(--accent)')) fallback = 'var(--accent-soft)'
-        else if (match.includes('var(--success)')) fallback = 'var(--success-soft)'
-        else if (match.includes('var(--warn)')) fallback = 'var(--warn-soft)'
+        if (baseVar === 'accent') fallback = 'var(--accent-soft)'
+        else if (baseVar === 'success') fallback = 'var(--success-soft)'
+        else if (baseVar === 'warn') fallback = 'var(--warn-soft)'
+        // text 派生中性色（neutral/zinc/gray/slate/stone 700–950 与 text 本体）
+        // 的淡色都是「交互 tint」语义，统一走 --tint-overlay。
         return `${prop}:${fallback}}@supports (color:color-mix`
       },
     )
