@@ -66,7 +66,9 @@ MEMORY.md
 /test-ZMGID/
 
 # Android rootfs 素材：由 scripts/fetch-android-rootfs.sh 在构建前拉取，不入库。
-src-tauri/android-assets/
+# 例外：固定签名的 keystore 必须入库（所有 debug 包共享同一签名才能覆盖安装）。
+src-tauri/android-assets/*
+!src-tauri/android-assets/kivio-signing.jks
 
 # Impeccable platform executables and local review/session artifacts
 /.github/skills/impeccable/scripts/bin/

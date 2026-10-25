@@ -21,9 +21,9 @@ GEN="$REPO_ROOT/src-tauri/gen/android"
 JNILIBS="$GEN/app/src/main/jniLibs/arm64-v8a"
 MANIFEST="$GEN/app/src/main/AndroidManifest.xml"
 
-for f in proot proot-loader libtalloc.so.2 libandroid-shmem.so busybox; do
+for f in proot proot-loader libtalloc.so.2 libandroid-shmem.so busybox kivio-signing.jks; do
     if [ ! -f "$ASSETS/$f" ]; then
-        echo "✗ 缺少 $ASSETS/$f —— 先跑 scripts/fetch-android-rootfs.sh" >&2
+        echo "✗ 缺少 $ASSETS/$f —— proot 素材先跑 scripts/fetch-android-rootfs.sh；签名库由仓库自带" >&2
         exit 1
     fi
 done
@@ -39,10 +39,30 @@ install -m 0755 "$ASSETS/busybox" "$JNILIBS/libbusybox.so"
 install -m 0644 "$ASSETS/libtalloc.so.2" "$JNILIBS/libtalloc.so"
 install -m 0644 "$ASSETS/libandroid-shmem.so" "$JNILIBS/libandroid-shmem.so"
 
+# 图标：`tauri icon` 在 CI 里跑在 `tauri android init` 之前，此时 gen/android 还不
+# 存在，图标只落到 src-tauri/icons/android/；而 init 只渲染模板自带的默认图标
+# （Tauri 的黄青 logo），不读 icons/android —— 不覆盖的话装出来就是默认图标。
+if [ -d "$REPO_ROOT/src-tauri/icons/android" ]; then
+    cp -a "$REPO_ROOT/src-tauri/icons/android/." "$GEN/app/src/main/res/"
+    echo "→ res: launcher 图标覆盖为项目图标（icons/android）"
+fi
+
+# 固定签名：debug 构建默认用 runner 上随机生成的 ~/.android/debug.keystore，每次
+# 构建签名都不同，永远无法覆盖安装。仓库自带 kivio-signing.jks 并注入
+# signingConfigs.debug，所有 debug 包共享同一签名。
+# 注意：keystore 入库 = 任何拿到仓库的人都能签同名应用，个人分发可接受；
+# 以后要上商店再换成 secrets 注入的正式签名。
+KEYSTORE="$ASSETS/kivio-signing.jks"
+install -m 0644 "$KEYSTORE" "$GEN/app/kivio-signing.jks"
+
 # 原生库必须落盘（解包到 nativeLibraryDir）。AGP 4.2+ 已经不认 manifest 里的
 # extractNativeLibs，改由 gradle 的 useLegacyPackaging 控制（默认 false =
 # 库留在 APK 内不解包，nativeLibraryDir 是空目录，proot 没 exec 可言）。
 GRADLE="$GEN/app/build.gradle.kts"
+if [ -f "$GRADLE" ] && ! grep -q "kivio-signing.jks" "$GRADLE"; then
+    sed -i '0,/^android {/s//android {\n    signingConfigs {\n        getByName("debug") {\n            storeFile = file("kivio-signing.jks")\n            storePassword = "kivio-android"\n            keyAlias = "kivio"\n            keyPassword = "kivio-android"\n        }\n    }/' "$GRADLE"
+    echo "→ gradle: 固定 debug 签名（kivio-signing.jks）"
+fi
 if [ -f "$GRADLE" ] && ! grep -q "useLegacyPackaging" "$GRADLE"; then
     sed -i '0,/^android {/s//android {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }/' "$GRADLE"
     echo "→ gradle: jniLibs.useLegacyPackaging=true"
