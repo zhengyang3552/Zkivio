@@ -24,10 +24,12 @@ TERMUX_REPO="${TERMUX_REPO:-https://packages.termux.dev/apt/termux-main}"
 #   curl -fsSL "$TERMUX_REPO/dists/stable/main/binary-aarch64/Packages.gz" | gzip -d | grep -A3 '^Package: proot$'
 resolve_pool_version() {
     local pkg="$1"
+    # 不能在 awk 里提前 exit：pipefail 下 awk 提前退出会给 gzip 发 SIGPIPE，
+    # 整条管道被判失败（gzip: stdout: Broken pipe）。只停打印、读完全量。
     curl -fsSL --retry 3 --connect-timeout 20 \
         "$TERMUX_REPO/dists/stable/main/binary-aarch64/Packages.gz" \
         | gzip -d \
-        | awk -v want="Package: $pkg" '$0 == want {f=1; next} f && /^Version:/ {print $2; exit} f && /^$/ {f=0}'
+        | awk -v want="Package: $pkg" '$0 == want {f=1; next} f && /^Version:/ && !done {print $2; done=1} f && /^$/ {f=0}'
 }
 
 PROOT_VERSION="${PROOT_VERSION:-$(resolve_pool_version proot)}"
