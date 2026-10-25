@@ -123,6 +123,16 @@ impl NativeToolWorkspace {
 
 /// Shared working directory for ordinary chats. Resolving it never creates it.
 pub fn default_working_directory(working_directory: &str) -> Result<PathBuf, String> {
+    // Android：工作目录固定为 rootfs 工作区的用户文件区（proot 挂载为 /workspace）。
+    // 历史设置里可能持久化过旧默认（~/Kivio/workspace）——它不在任何 proot 绑定里，
+    // shell 一进来就 `can't chdir` 退回 `/`；移动端也没有目录选择器可以改配置，
+    // 所以配置值在这里不生效（与「工作区 = 内置 rootfs」的既定形态一致）。
+    #[cfg(target_os = "android")]
+    {
+        if let Some(root) = crate::android_rootfs::cached_workspace_root() {
+            return Ok(root.to_path_buf());
+        }
+    }
     let configured = working_directory.trim();
     let fallback = crate::settings::default_chat_working_directory();
     let root = candidate_path(if configured.is_empty() {
@@ -138,6 +148,13 @@ pub fn ordinary_workspace_directory(
     working_directory: &str,
     conversation_id: &str,
 ) -> Result<PathBuf, String> {
+    // Android：固定共享文件区，不做 legacy 会话目录检查 —— 旧路径不在 proot 绑定里。
+    #[cfg(target_os = "android")]
+    {
+        if crate::android_rootfs::cached_workspace_root().is_some() {
+            return default_working_directory(working_directory);
+        }
+    }
     let legacy = conversation_workspace_directory(working_directory, conversation_id)?;
     if legacy.exists() {
         Ok(legacy)

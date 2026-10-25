@@ -31,6 +31,18 @@ fn sanitize_conv_part(value: &str) -> String {
         .collect()
 }
 
+/// Android：工作根固定为 rootfs 工作区的用户文件区（proot 挂载为 /workspace）。
+/// 历史设置里持久化的旧默认（~/Kivio/workspace）不在任何 proot 绑定里，不能用。
+fn effective_root(working_directory: &str) -> String {
+    #[cfg(target_os = "android")]
+    {
+        if let Some(root) = crate::android_rootfs::cached_workspace_root() {
+            return root.to_string_lossy().into_owned();
+        }
+    }
+    working_directory.to_string()
+}
+
 pub fn workspace_for_conversation(
     working_directory: &str,
     conversation_id: &str,
@@ -46,7 +58,8 @@ pub fn workspace_for_conversation(
     {
         return Some(Err("invalid automation workspace id".to_string()));
     }
-    let root = working_directory.trim();
+    let root = effective_root(working_directory);
+    let root = root.trim();
     if root.is_empty() {
         return Some(Ok(NativeToolWorkspace::standalone()));
     }
@@ -58,7 +71,8 @@ pub fn workspace_for_conversation(
 }
 
 pub fn workbench_dir(working_directory: &str, automation_id: &str) -> Option<PathBuf> {
-    let root = working_directory.trim();
+    let root = effective_root(working_directory);
+    let root = root.trim();
     if root.is_empty() {
         return None;
     }

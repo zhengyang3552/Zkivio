@@ -328,6 +328,16 @@ fn deny_unsafe_command(
 ) -> Result<(), String> {
     let lowered = command.to_ascii_lowercase();
     for denied in COMMAND_DENYLIST {
+        // Android：命令跑在 proot rootfs 里，写不进宿主系统盘 —— `dd if=/dev/zero`、
+        // `> /dev/sd` 这两条防的是宿主磁盘破坏，在这里只会拦住正常的压测/造大文件
+        // 流程（写入目标都在绑定目录内）。其余条目保留：`rm -rf /` 依旧会毁掉
+        // rootfs 本体，`sudo`/`mkfs.` 同样不放行。
+        #[cfg(target_os = "android")]
+        {
+            if matches!(*denied, "dd if=/dev/zero" | "> /dev/sd") {
+                continue;
+            }
+        }
         if lowered.contains(denied) {
             return Err("command is blocked by safety policy".to_string());
         }
