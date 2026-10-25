@@ -59,7 +59,7 @@ fi
 if ! grep -q "WorkspaceDocumentsProvider" "$MANIFEST"; then
     # <provider> 是 <application> 的子元素，且 uses-permission 要在 application 之前
     sed -i 's#</application>#        <provider\n            android:name="com.zmair.kivio.WorkspaceDocumentsProvider"\n            android:authorities="com.zmair.kivio.documents"\n            android:grantUriPermissions="true"\n            android:exported="true"\n            android:permission="android.permission.MANAGE_DOCUMENTS">\n            <intent-filter>\n                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />\n            </intent-filter>\n        </provider>\n    </application>#' "$MANIFEST"
-    sed -i '0,/<application/s/<application/<application\n        <uses-permission android:name="android.permission.MANAGE_DOCUMENTS" />/' "$MANIFEST"
+    sed -i '0,/<application/s#<application#<application\n        <uses-permission android:name="android.permission.MANAGE_DOCUMENTS" />/' "$MANIFEST"
     echo "→ manifest: WorkspaceDocumentsProvider + MANAGE_DOCUMENTS"
 fi
 
