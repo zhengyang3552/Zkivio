@@ -17,12 +17,27 @@
 set -euo pipefail
 
 TERMUX_REPO="${TERMUX_REPO:-https://packages.termux.dev/apt/termux-main}"
-# Termux 的 pool 只保留当前版本，旧版本会被删掉（5.1.107.96 / .98 都已 404）。
-# 升级前先查索引里的现版本：
+# Termux 的 pool 只保留当前版本，旧版本会被删掉（5.1.107.96 / .98 / .100 都已 404，
+# 固定版本号隔三差五就把构建打挂）。因此默认从索引自动解析现版本；
+# 需要可复现构建时用环境变量覆盖（如 PROOT_VERSION=5.1.107.101）。
+# 手动查索引：
 #   curl -fsSL "$TERMUX_REPO/dists/stable/main/binary-aarch64/Packages.gz" | gzip -d | grep -A3 '^Package: proot$'
-PROOT_VERSION="5.1.107.100"
-TALLOC_VERSION="2.5.0"
-ANDROID_SHMEM_VERSION="0.7"
+resolve_pool_version() {
+    local pkg="$1"
+    curl -fsSL --retry 3 --connect-timeout 20 \
+        "$TERMUX_REPO/dists/stable/main/binary-aarch64/Packages.gz" \
+        | gzip -d \
+        | awk -v want="Package: $pkg" '$0 == want {f=1; next} f && /^Version:/ {print $2; exit} f && /^$/ {f=0}'
+}
+
+PROOT_VERSION="${PROOT_VERSION:-$(resolve_pool_version proot)}"
+TALLOC_VERSION="${TALLOC_VERSION:-$(resolve_pool_version libtalloc)}"
+ANDROID_SHMEM_VERSION="${ANDROID_SHMEM_VERSION:-$(resolve_pool_version libandroid-shmem)}"
+if [ -z "$PROOT_VERSION" ] || [ -z "$TALLOC_VERSION" ] || [ -z "$ANDROID_SHMEM_VERSION" ]; then
+    echo "✗ 无法从 Termux 索引解析包版本（proot=$PROOT_VERSION talloc=$TALLOC_VERSION shmem=$ANDROID_SHMEM_VERSION）" >&2
+    exit 1
+fi
+echo "→ 版本: proot=$PROOT_VERSION libtalloc=$TALLOC_VERSION libandroid-shmem=$ANDROID_SHMEM_VERSION"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO_ROOT/src-tauri/android-assets"
