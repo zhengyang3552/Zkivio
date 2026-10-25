@@ -1,4 +1,4 @@
-import { open } from '@tauri-apps/plugin-dialog'
+import { pickFolder } from '../../utils/pickFolder'
 import { isTauriRuntime } from '../../api/tauri'
 import { marketApi, marketplaceApi, type Marketplace, type MarketplacePlugin, type MarketPlugin, type MarketSnapshot } from '../../api/market'
 import { packageApi, type PluginPackage } from '../../api/pluginPackages'
@@ -402,7 +402,7 @@ export function runPickMarketplaceFolder() {
   return marketWindow.run(flight(epoch, 'marketplace-picker'), async () => {
     if (abandoned(epoch)) return
     try {
-      const selected = await open({ directory: true, multiple: false })
+      const selected = await pickFolder()
       if (abandoned(epoch)) return
       marketWindow.setState(s => {
         if (s.market.picker !== token || typeof selected !== 'string') return s
@@ -444,7 +444,7 @@ export function runPickImportFolder(kind: ImportKind) {
   return marketWindow.run(flight(epoch, `plugin-import-picker:${kind}`), async () => {
     if (abandoned(epoch)) return
     try {
-      const selected = await open({ directory: true, multiple: false })
+      const selected = await pickFolder()
       if (abandoned(epoch)) return
       marketWindow.setState(s => {
         const current = s.imports[kind]

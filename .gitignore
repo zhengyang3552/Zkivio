@@ -80,3 +80,7 @@ src/data/modelDatabase.json.source.json
 
 # Built Word task pane (npm run build:word)
 /src-tauri/resources/word/
+
+# 本地调试 / 构建产物（不入库）
+build-artifacts/
+Netease/

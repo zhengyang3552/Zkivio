@@ -12,7 +12,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { open } from '@tauri-apps/plugin-dialog'
+import { pickFolder } from '../utils/pickFolder'
 import { ChatMarkdown } from './ChatMarkdown'
 import {
   api,
@@ -837,7 +837,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                     ))}
                     <Button
                       onClick={async () => {
-                        const selected = await open({ directory: true, multiple: false })
+                        const selected = await pickFolder()
                         if (typeof selected === 'string') {
                           const next = [...skillScanPaths, selected]
                           persistChatTools({ skillScanPaths: next })

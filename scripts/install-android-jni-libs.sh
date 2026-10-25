@@ -55,5 +55,90 @@ if ! grep -q "windowSoftInputMode" "$MANIFEST"; then
     echo "→ manifest: windowSoftInputMode=adjustResize"
 fi
 
+# 目录选择器插件：tauri-plugin-dialog 移动端没有实现目录选择（2.8.3 亦然），
+# 这里补一个自有插件。ACTION_OPEN_DOCUMENT_TREE 返回 tree URI，映射回
+# primary 存储的真实路径；写入外部存储需要「所有文件访问」，未授权时先跳设置页。
+KOTLIN_DIR="$GEN/app/src/main/java/com/zmair.kivio"
+mkdir -p "$KOTLIN_DIR"
+cat > "$KOTLIN_DIR/FolderPickerPlugin.kt" <<'KOTLIN'
+package com.zmair.kivio
+
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.os.Environment
+import android.provider.Settings
+import app.tauri.annotation.ActivityCallback
+import app.tauri.annotation.Command
+import app.tauri.annotation.TauriPlugin
+import app.tauri.plugin.Invoke
+import app.tauri.plugin.JSObject
+import app.tauri.plugin.Plugin
+
+@TauriPlugin
+class FolderPickerPlugin(private val activity: Activity) : Plugin(activity) {
+
+  @Command
+  fun pickFolder(invoke: Invoke) {
+    try {
+      // 原始路径读写外部存储需要「所有文件访问」；没授权先去设置页开，回来重选。
+      if (!Environment.isExternalStorageManager()) {
+        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+        intent.data = Uri.parse("package:com.zmair.kivio")
+        activity.startActivity(intent)
+        invoke.reject("请在设置中允许「所有文件访问」后重试")
+        return
+      }
+      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+      startActivityForResult(invoke, intent, "folderPickerResult")
+    } catch (ex: Exception) {
+      invoke.reject(ex.message ?: "Failed to pick folder")
+    }
+  }
+
+  @ActivityCallback
+  fun folderPickerResult(invoke: Invoke, result: ActivityResult) {
+    try {
+      when (result.resultCode) {
+        Activity.RESULT_OK -> {
+          val uri: Uri? = result.data?.data
+          if (uri == null) {
+            invoke.resolve(JSObject())
+            return
+          }
+          try {
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            activity.contentResolver.takePersistableUriPermission(uri, flags)
+          } catch (_: Exception) {
+          }
+          val callResult = JSObject()
+          callResult.put("path", treeUriToPath(uri))
+          invoke.resolve(callResult)
+        }
+        Activity.RESULT_CANCELED -> invoke.resolve(JSObject())
+        else -> invoke.reject("Failed to pick folder")
+      }
+    } catch (ex: Exception) {
+      invoke.reject(ex.message ?: "Failed to read folder pick result")
+    }
+  }
+
+  private fun treeUriToPath(uri: Uri): String? {
+    if (!uri.toString().contains("externalstorage.documents")) return null
+    val path = uri.path ?: return null
+    if (!path.startsWith("/tree/primary:")) return null
+    val rest = path.removePrefix("/tree/primary:")
+    return Environment.getExternalStorageDirectory().absolutePath + "/" + rest
+  }
+}
+KOTLIN
+echo "→ Kotlin: FolderPickerPlugin.kt"
+
+# 外部存储权限（MANAGE_EXTERNAL_STORAGE 走设置页授权；≤32 的运行时权限一并声明）。
+if ! grep -q "MANAGE_EXTERNAL_STORAGE" "$MANIFEST"; then
+    sed -i 's#</manifest>#    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n</manifest>#' "$MANIFEST"
+    echo "→ manifest: 外部存储权限"
+fi
+
 echo "已就绪（jniLibs/arm64-v8a）："
 ls -l "$JNILIBS"

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { open } from '@tauri-apps/plugin-dialog'
+import { pickFolder } from '../utils/pickFolder'
 import { ChevronLeft, ChevronRight, FolderPlus, Folders, Paperclip, Plus, SlidersHorizontal, X } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { ComposerAddMenuCloseContext } from './composerAddMenuContext'
@@ -118,11 +118,7 @@ export function ComposerAddMenu({
     if (disabled || atLimit || !canAttachDirs) return
     closeMenu()
     try {
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: t.chatAddAdditionalDirectory,
-      })
+      const picked = await pickFolder({ title: t.chatAddAdditionalDirectory })
       const rootPath = Array.isArray(picked) ? picked[0] : picked
       if (!rootPath) return
       addEntry(rootPath)

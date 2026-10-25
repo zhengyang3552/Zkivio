@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { createWindowStore, useWindowStore } from '../utils/windowStore'
-import { open, save } from '@tauri-apps/plugin-dialog'
+import { save } from '@tauri-apps/plugin-dialog'
+import { pickFolder } from '../utils/pickFolder'
 import { CheckSquare, Code2, Download, ExternalLink, File, FileText, FolderOpen, Image, Layers, LayoutGrid, List, MessageSquare, MoreHorizontal, Music2, Pencil, Presentation, RefreshCw, Search, Table2, Trash2, X } from 'lucide-react'
 import { api, type ArtifactLibraryItem, type ArtifactLibraryPage } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
@@ -215,7 +216,7 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
         await api.chatArtifactAction(items[0].id, 'export', destination)
         return
       }
-      const dir = await open({ directory: true, multiple: false, title: zh ? '选择保存目录' : 'Choose a folder' })
+      const dir = await pickFolder({ title: zh ? '选择保存目录' : 'Choose a folder' })
       if (typeof dir !== 'string') return
       for (const item of items) {
         if (!item.available || worksWindow.getSnapshot().deletedIds.includes(item.id)) continue

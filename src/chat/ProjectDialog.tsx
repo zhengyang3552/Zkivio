@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { open } from '@tauri-apps/plugin-dialog'
+import { pickFolder as pickFolderNative } from '../utils/pickFolder'
 import { FolderOpen, X } from 'lucide-react'
 import type { ChatProject } from './types'
 import { useCloseAnimation } from './useCloseAnimation'
@@ -48,11 +48,7 @@ export function ProjectDialog({
   const pickFolder = async () => {
     if (saving) return
     try {
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: '选择项目文件夹',
-      })
+      const picked = await pickFolderNative({ title: '选择项目文件夹' })
       const path = Array.isArray(picked) ? picked[0] : picked
       if (!path) return
       setRootPath(path)

@@ -1,6 +1,7 @@
 import { ErrorNotice } from '../components/AppNotice'
 import { cloneElement, isValidElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
+import { pickFolder } from '../utils/pickFolder'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
@@ -732,11 +733,7 @@ export const InputBar = memo(function InputBar({
     setProjectCreating(true)
     try {
       // 空白项目必须落到真实文件夹：先选父目录，再在其中 mkdir 并登记项目。
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: t.chatPickBlankProjectLocation,
-      })
+      const picked = await pickFolder({ title: t.chatPickBlankProjectLocation })
       const parentPath = Array.isArray(picked) ? picked[0] : picked
       if (!parentPath) return
 
@@ -763,11 +760,7 @@ export const InputBar = memo(function InputBar({
     setProjectOptionsError('')
     setProjectCreating(true)
     try {
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: t.chatPickProjectFolder,
-      })
+      const picked = await pickFolder({ title: t.chatPickProjectFolder })
       const rootPath = Array.isArray(picked) ? picked[0] : picked
       if (!rootPath) return
       const project = await chatApi.createProject(pathTail(rootPath), null, null, rootPath)

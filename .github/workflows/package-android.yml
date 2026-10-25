@@ -146,6 +146,9 @@ jobs:
           npx tauri android init --help || true
           npx tauri android build --help || true
 
+      - name: Generate launcher icons from project logo
+        run: npx tauri icon src-tauri/icons/icon.png
+
       - name: Init Android project
         run: npx tauri android init --ci --skip-targets-install
 

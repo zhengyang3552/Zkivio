@@ -5,6 +5,7 @@ pub mod agents;
 pub mod android;
 #[cfg(target_os = "android")]
 pub mod android_rootfs;
+pub mod folder_picker;
 #[cfg(target_os = "android")]
 mod android_keyring;
 pub mod api;
@@ -227,6 +228,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(folder_picker::init())
         .register_uri_scheme_protocol("kivio-preview", |_context, request| html_preview::serve(request));
     // 单实例 / 全局热键 / 开机自启都是桌面概念（多实例、系统级热键、登录项），
     // Android 上不注册这三个插件，其余流程共用。
@@ -1001,6 +1003,7 @@ pub fn run() {
         let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             extensions::extensions_list,
             extensions::extensions_set_enabled,
+            folder_picker::pick_folder,
             android_rootfs::android_rootfs_state,
             android_rootfs::android_rootfs_install,
             android_rootfs::android_rootfs_uninstall,
