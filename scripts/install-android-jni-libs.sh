@@ -39,10 +39,13 @@ install -m 0755 "$ASSETS/busybox" "$JNILIBS/libbusybox.so"
 install -m 0644 "$ASSETS/libtalloc.so.2" "$JNILIBS/libtalloc.so"
 install -m 0644 "$ASSETS/libandroid-shmem.so" "$JNILIBS/libandroid-shmem.so"
 
-# extractNativeLibs：<application> 上补一个属性（已存在则跳过）。
-if ! grep -q "extractNativeLibs" "$MANIFEST"; then
-    sed -i '0,/<application/s/<application /<application\n        android:extractNativeLibs="true" /' "$MANIFEST"
-    echo "→ manifest: extractNativeLibs=true"
+# 原生库必须落盘（解包到 nativeLibraryDir）。AGP 4.2+ 已经不认 manifest 里的
+# extractNativeLibs，改由 gradle 的 useLegacyPackaging 控制（默认 false =
+# 库留在 APK 内不解包，nativeLibraryDir 是空目录，proot 没 exec 可言）。
+GRADLE="$GEN/app/build.gradle.kts"
+if [ -f "$GRADLE" ] && ! grep -q "useLegacyPackaging" "$GRADLE"; then
+    sed -i '0,/^android {/s//android {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }/' "$GRADLE"
+    echo "→ gradle: jniLibs.useLegacyPackaging=true"
 fi
 
 # 软输入模式：MainActivity 上补 adjustResize（已设置则跳过）。
