@@ -362,7 +362,7 @@ echo "→ Kotlin: WorkspaceDocumentsProvider.kt"
 # 外部存储权限（MANAGE_EXTERNAL_STORAGE 走设置页授权；≤32 的运行时权限一并声明）。
 # AGP 校验元素顺序：uses-permission 必须在 <application> 之前。
 if ! grep -q "MANAGE_EXTERNAL_STORAGE" "$MANIFEST"; then
-    sed -i '0,/<application/s/<application/<application\n        <!-- om:external-storage -->\n        <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n        <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n        <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />/' "$MANIFEST"
+    sed -i '0,/<application/s#<application#<application\n        <!-- om:external-storage -->\n        <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n        <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n        <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />#' "$MANIFEST"
     echo "→ manifest: 外部存储权限"
 fi
 
