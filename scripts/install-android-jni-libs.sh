@@ -49,8 +49,9 @@ if [ -f "$GRADLE" ] && ! grep -q "useLegacyPackaging" "$GRADLE"; then
 fi
 
 # 软输入模式：MainActivity 上补 adjustResize（已设置则跳过）。
+# 注意生成出来的 <activity 标签后直接换行，不能匹配 "<activity "（带空格）。
 if ! grep -q "windowSoftInputMode" "$MANIFEST"; then
-    sed -i '0,/<activity/s/<activity /<activity\n            android:windowSoftInputMode="adjustResize" /' "$MANIFEST"
+    sed -i '0,/<activity/s/<activity/<activity\n            android:windowSoftInputMode="adjustResize"/' "$MANIFEST"
     echo "→ manifest: windowSoftInputMode=adjustResize"
 fi
 
