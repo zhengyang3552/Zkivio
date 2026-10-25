@@ -133,7 +133,8 @@ if [ -z "$rootfs_ok" ]; then
     exit 1
 fi
 mkdir -p "$WORK/rootfs"
-tar -xzf "$WORK/rootfs.tar.gz" -C "$WORK/rootfs" bin/busybox
+# alpine 的 tar 成员带 ./ 前缀
+ tar -xzf "$WORK/rootfs.tar.gz" -C "$WORK/rootfs" ./bin/busybox
 install -m 0755 "$WORK/rootfs/bin/busybox" "$OUT/busybox"
 
 echo
