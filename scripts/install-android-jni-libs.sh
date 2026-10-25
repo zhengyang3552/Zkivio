@@ -47,6 +47,15 @@ if [ -d "$REPO_ROOT/src-tauri/icons/android" ]; then
     echo "→ res: launcher 图标覆盖为项目图标（icons/android）"
 fi
 
+# 应用显示名：productName 是 "Kivio Desktop"（桌面 deb 包名 / /opt/kivio-desktop
+# / /usr/bin/kivio-desktop 都依赖这个名字，不能全局改），Android 端的安装器、
+# launcher 与最近任务显示名统一为 "Kivio"。strings.xml 的 app_name /
+# main_activity_title 都由 productName 渲染而来，一并替换。
+if grep -rq "Kivio Desktop" "$GEN/app/src/main/res" 2>/dev/null; then
+    find "$GEN/app/src/main/res" -name 'strings.xml' -exec sed -i 's/Kivio Desktop/Kivio/g' {} +
+    echo "→ res: 应用显示名改为 Kivio（去掉 Desktop）"
+fi
+
 # 固定签名：debug 构建默认用 runner 上随机生成的 ~/.android/debug.keystore，每次
 # 构建签名都不同，永远无法覆盖安装。仓库自带 kivio-signing.jks 并注入
 # signingConfigs.debug，所有 debug 包共享同一签名。
