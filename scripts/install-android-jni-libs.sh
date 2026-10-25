@@ -180,7 +180,7 @@ echo "→ Kotlin: FolderPickerPlugin.kt"
 # 方案永远算出 0。这里覆写 MainActivity：把 IME insets 转成 content view 的
 # padding，效果等同 adjustResize —— WebView 高度收缩，输入栏被抬到键盘上方，
 # 前端零感知（--kb-inset 自动归零）。非 edge-to-edge 时 ime inset 为 0，不叠加。
-cat > "$GEN/app/src/main/java/com/zmair.kivio/MainActivity.kt" <<'KOTLIN'
+cat > "$GEN/app/src/main/java/com/zmair/kivio/MainActivity.kt" <<'KOTLIN'
 package com.zmair.kivio
 
 import android.os.Bundle
