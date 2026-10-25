@@ -57,8 +57,10 @@ fi
 
 # 工作区 DocumentsProvider：MT 管理器 / 系统文件管理器经 SAF 读写工作区。
 if ! grep -q "WorkspaceDocumentsProvider" "$MANIFEST"; then
-    sed -i 's#</manifest>#    <uses-permission android:name="android.permission.MANAGE_DOCUMENTS" />\n    <provider\n        android:name="com.zmair.kivio.WorkspaceDocumentsProvider"\n        android:authorities="com.zmair.kivio.documents"\n        android:grantUriPermissions="true"\n        android:exported="true"\n        android:permission="android.permission.MANAGE_DOCUMENTS">\n        <intent-filter>\n            <action android:name="android.content.action.DOCUMENTS_PROVIDER" />\n        </intent-filter>\n    </provider>\n</manifest>#' "$MANIFEST"
-    echo "→ manifest: WorkspaceDocumentsProvider"
+    # <provider> 是 <application> 的子元素，且 uses-permission 要在 application 之前
+    sed -i 's#</application>#        <provider\n            android:name="com.zmair.kivio.WorkspaceDocumentsProvider"\n            android:authorities="com.zmair.kivio.documents"\n            android:grantUriPermissions="true"\n            android:exported="true"\n            android:permission="android.permission.MANAGE_DOCUMENTS">\n            <intent-filter>\n                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />\n            </intent-filter>\n        </provider>\n    </application>#' "$MANIFEST"
+    sed -i '0,/<application/s/<application/<application\n        <uses-permission android:name="android.permission.MANAGE_DOCUMENTS" />/' "$MANIFEST"
+    echo "→ manifest: WorkspaceDocumentsProvider + MANAGE_DOCUMENTS"
 fi
 
 # 目录选择器插件：tauri-plugin-dialog 移动端没有实现目录选择（2.8.3 亦然），
@@ -358,8 +360,9 @@ echo "→ Kotlin: WorkspaceDocumentsProvider.kt"
 
 
 # 外部存储权限（MANAGE_EXTERNAL_STORAGE 走设置页授权；≤32 的运行时权限一并声明）。
+# AGP 校验元素顺序：uses-permission 必须在 <application> 之前。
 if ! grep -q "MANAGE_EXTERNAL_STORAGE" "$MANIFEST"; then
-    sed -i 's#</manifest>#    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\n</manifest>#' "$MANIFEST"
+    sed -i '0,/<application/s/<application/<application\n        <!-- om:external-storage -->\n        <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n        <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n        <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />/' "$MANIFEST"
     echo "→ manifest: 外部存储权限"
 fi
 
