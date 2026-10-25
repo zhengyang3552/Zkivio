@@ -34,7 +34,7 @@ mod imp {
     pub fn init<R: Runtime, C: DeserializeOwned>(
         _app: &AppHandle<R>,
         api: PluginApi<R, C>,
-    ) -> Result<FolderPicker<R>, tauri::plugin::Error> {
+    ) -> Result<FolderPicker<R>, Box<dyn std::error::Error>> {
         let handle = api.register_android_plugin(IDENTIFIER, "FolderPickerPlugin")?;
         Ok(FolderPicker(handle))
     }
@@ -60,7 +60,7 @@ mod imp {
     pub fn init<R: Runtime, C: DeserializeOwned>(
         _app: &AppHandle<R>,
         _api: PluginApi<R, C>,
-    ) -> Result<FolderPicker<R>, tauri::plugin::Error> {
+    ) -> Result<FolderPicker<R>, Box<dyn std::error::Error>> {
         Ok(FolderPicker(PhantomData))
     }
 
