@@ -2,7 +2,7 @@
 [package]
 # v3.1.5 发行说明见 docs/releases/v3.1.5.md（本提交仅用于触发 push 型打包，产物与 tag v3.1.5 一致）。
 name = "kivio"
-version = "3.1.6"
+version = "3.1.7"
 description = "Kivio Desktop - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 license = "GPL-3.0-or-later"
