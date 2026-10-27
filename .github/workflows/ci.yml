@@ -34,7 +34,10 @@ on:
 jobs:
   app-checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # apt 装 Tauri 系统依赖在慢镜像上能吃掉 15 分钟,typecheck 里的
+    # protocol:check 还要 cargo 冷编译一次;30 分钟会在 typecheck 阶段被截断
+    # (v3.1.6 同步时实测)。放宽到 45 分钟。
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v5
