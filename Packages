@@ -378,3 +378,22 @@ Filename: pool/kivio-desktop_3.1.6_amd64.deb
 Size: 21342492
 SHA256: 24ab35bce4cad30e52d0ce0ffe1acc7056ac1c158dce18c7b49478b6a9289cca
 
+Package: kivio-desktop
+Version: 3.1.7
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: zhengyang3552 <zhengyang3552@users.noreply.github.com>
+Installed-Size: 58528
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0t64 | libgtk-3-0, librsvg2-2
+Homepage: https://github.com/zhengyang3552/kivio-linux
+Description: Kivio Desktop — screen-level AI assistant for Linux
+ Screen-level AI assistant built with Tauri. Installs the main binary
+ with skills resources under /opt/kivio-desktop; the frontend is
+ embedded in the binary. The OCR sidecar is macOS-only and ships as
+ a disabled stub on Linux. Data is stored in
+ ~/.local/share/com.zmair.kivio (managed by Tauri).
+Filename: pool/kivio-desktop_3.1.7_amd64.deb
+Size: 21366822
+SHA256: d43b9c6f19b314335c633c6d822ceb19682c9d22d348ffc7294bc4154694bc43
+
