@@ -774,7 +774,7 @@ fn remove_officecli_residuals() -> Vec<String> {
 
     let skill_roots = [
         home.join(".agents").join("skills"),
-        home.join(".kivio").join("skills"),
+        home.join(crate::app_data::user_home_name()).join("skills"),
         home.join(".claude").join("skills"),
         home.join(".cursor").join("skills"),
         home.join(".copilot").join("skills"),
@@ -881,7 +881,7 @@ fn home_agent_skill_parents() -> Vec<PathBuf> {
     };
     vec![
         home.join(".agents").join("skills"),
-        home.join(".kivio").join("skills"),
+        home.join(crate::app_data::user_home_name()).join("skills"),
         home.join(".claude").join("skills"),
         home.join(".cursor").join("skills"),
         home.join(".codex").join("skills"),
@@ -1121,29 +1121,22 @@ mod skill_sync_tests {
         assert_eq!(officecli_skill_folder("officecli"), "officecli");
     }
 
-    #[test]
-    fn officecli_brief_still_lists_domain_skills() {
-        let brief = get_install_brief("officecli").expect("brief");
-        assert!(brief.user_message.contains("pitch-deck"));
-        assert!(brief.user_message.contains("officecli skills install"));
-    }
-
-    #[test]
-    fn officecli_skill_install_uses_the_official_command() {
-        let office = catalog_plugin("officecli").expect("officecli");
-        assert_eq!(
-            official_skill_install_argvs(office),
-            vec![vec!["skills", "install"]]
-        );
-        let ego = catalog_plugin("ego-lite").expect("ego-lite");
+    #[tokio::test]
+    async fn retired_officecli_cannot_be_listed_or_installed() {
+        assert!(get_install_brief("officecli").is_err());
+        assert!(super::run_official_install("officecli").await.is_err());
+        assert!(!super::list_plugin_statuses_cached()
+            .unwrap()
+            .iter()
+            .any(|status| status.id == "officecli"));
+        let ego = catalog_plugin("ego-lite").unwrap();
         assert!(official_skill_install_argvs(ego).is_empty());
         assert!(!official_skills_need_install(ego));
-        assert!(office.skill_ids.len() > 1);
     }
 
     #[test]
     fn plugin_status_does_not_expose_install_command() {
-        let catalog = catalog_plugin("officecli").expect("officecli");
+        let catalog = catalog_plugin("ego-lite").expect("ego-lite");
         let status = build_status(catalog, &None, None, false, None);
         let value = serde_json::to_value(&status).expect("serialize");
         assert!(value.get("installCommand").is_none());
