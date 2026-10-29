@@ -39,9 +39,13 @@ on:
   workflow_dispatch:
     inputs:
       build_mode:
-        description: 'debug(默认,免签名) 或 release(需要签名 secrets)'
+        description: 'release(默认,仓库自带 kivio-signing.jks 签名) 或 debug'
         required: false
-        default: 'debug'
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
 
 concurrency:
   group: package-android-${{ github.ref }}
@@ -54,6 +58,8 @@ env:
   NODE_VERSION: '20'
   NDK_VERSION: '27.0.12077973'
   JAVA_VERSION: '17'
+  # push 触发时没有 inputs，默认出 release 包；workflow_dispatch 可显式选 debug。
+  BUILD_MODE: ${{ github.event.inputs.build_mode || 'release' }}
 
 jobs:
   apk:
@@ -155,9 +161,28 @@ jobs:
       - name: Install exec assets into jniLibs and patch manifest
         run: bash scripts/install-android-jni-libs.sh
 
-      - name: Build debug APK (arm64)
+      # 只出一份包：release 走 gradle 的 release buildType（install-android-jni-libs.sh
+      # 已把 kivio-signing.jks 注入 signingConfigs.release），debug 保留作快速自测。
+      - name: Build APK (arm64, ${{ env.BUILD_MODE }})
         run: |
-          npx tauri android build --apk --debug --target aarch64
+          set -euo pipefail
+          if [ "${BUILD_MODE}" = "release" ]; then
+            echo "→ release 构建（kivio-signing.jks 签名）"
+            npx tauri android build --apk --target aarch64
+          else
+            echo "→ debug 构建"
+            npx tauri android build --apk --debug --target aarch64
+          fi
+
+      # 签名自证：release 包必须能通过 apksigner verify，且证书是仓库那把 kivio。
+      - name: Verify APK signature
+        if: success()
+        run: |
+          set -euo pipefail
+          APK=$(find "src-tauri/gen/android/app/build/outputs/apk/${BUILD_MODE}" -name '*.apk' | head -1)
+          test -n "$APK" || { echo "::error::找不到 ${BUILD_MODE} APK"; exit 1; }
+          echo "APK=$APK ($(stat -c %s "$APK") bytes)"
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --print-certs "$APK"
 
       - name: List APK outputs
         if: always()
@@ -167,6 +192,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: kivio-android-arm64-debug-apk
+          name: kivio-android-arm64-${{ env.BUILD_MODE }}-apk
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error

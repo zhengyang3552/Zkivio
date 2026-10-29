@@ -69,8 +69,8 @@ install -m 0644 "$KEYSTORE" "$GEN/app/kivio-signing.jks"
 # 库留在 APK 内不解包，nativeLibraryDir 是空目录，proot 没 exec 可言）。
 GRADLE="$GEN/app/build.gradle.kts"
 if [ -f "$GRADLE" ] && ! grep -q "kivio-signing.jks" "$GRADLE"; then
-    sed -i '0,/^android {/s//android {\n    signingConfigs {\n        getByName("debug") {\n            storeFile = file("kivio-signing.jks")\n            storePassword = "kivio-android"\n            keyAlias = "kivio"\n            keyPassword = "kivio-android"\n        }\n    }/' "$GRADLE"
-    echo "→ gradle: 固定 debug 签名（kivio-signing.jks）"
+    sed -i '0,/^android {/s//android {\n    signingConfigs {\n        getByName("debug") {\n            storeFile = file("kivio-signing.jks")\n            storePassword = "kivio-android"\n            keyAlias = "kivio"\n            keyPassword = "kivio-android"\n        }\n        create("release") {\n            storeFile = file("kivio-signing.jks")\n            storePassword = "kivio-android"\n            keyAlias = "kivio"\n            keyPassword = "kivio-android"\n        }\n    }\n    buildTypes {\n        getByName("release") {\n            signingConfig = signingConfigs.getByName("release")\n        }\n    }/' "$GRADLE"
+    echo "→ gradle: 固定 debug/release 签名（kivio-signing.jks）"
 fi
 if [ -f "$GRADLE" ] && ! grep -q "useLegacyPackaging" "$GRADLE"; then
     sed -i '0,/^android {/s//android {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }/' "$GRADLE"
