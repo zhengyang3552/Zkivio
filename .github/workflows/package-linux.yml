@@ -469,7 +469,10 @@ jobs:
   # 你下载测试过的包 = 发布出去的包。说明由你在 Release 里写,这里只挂资产。
   publish:
     name: Attach latest CI build to Release
-    if: github.event_name == 'release' || github.event.inputs.tag != ''
+    # 安卓正式版（tag 形如 v0.0.2-app）与桌面端版本线无关，不要拉 Linux 打包/apt 作业
+    if: |
+      (github.event_name == 'release' && !endsWith(github.event.release.tag_name, '-app')) ||
+      github.event.inputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -589,7 +592,10 @@ jobs:
   apt:
     name: Update apt repository
     needs: publish
-    if: github.event_name == 'release' || github.event.inputs.tag != ''
+    # 安卓正式版（tag 形如 v0.0.2-app）与桌面端版本线无关，不要拉 Linux 打包/apt 作业
+    if: |
+      (github.event_name == 'release' && !endsWith(github.event.release.tag_name, '-app')) ||
+      github.event.inputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
