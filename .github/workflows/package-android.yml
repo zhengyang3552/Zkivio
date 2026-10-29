@@ -201,7 +201,8 @@ jobs:
         id: apk
         run: |
           set -euo pipefail
-          SRC=$(find "src-tauri/gen/android/app/build/outputs/apk/${BUILD_MODE}" -name '*.apk' | head -1)
+          # tauri android build --apk（不带 --split-per-abi）产物在 apk/universal/<buildtype>/
+          SRC=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -path "*/${BUILD_MODE}/*" | head -1)
           test -n "$SRC" || { echo "::error::找不到 ${BUILD_MODE} APK"; exit 1; }
           mkdir -p out
           NAME="kivio-${VERSION}-arm64-${BUILD_MODE}.apk"
