@@ -6,8 +6,15 @@ name: Package Android
 #
 # 与桌面端的差异（见 src-tauri/src/android.rs 的模块注释）：
 #   托盘 / 全局热键 / 单实例 / 开机自启 / 多窗口 / Dock 终端 / Lens 浮层 /
-#   离线 RapidOCR 全部不参与编译。首版只出 debug APK（Gradle 自动用 debug
-#   keystore 签名，可直接安装）；release APK 需要签名 secrets，另开一步做。
+#   离线 RapidOCR 全部不参与编译。
+#
+# 两种产物，按触发方式自动区分：
+#   push 到 App 分支      → debug 包（快速自测，artifact: ...-debug-apk）
+#   push tag v*-app       → 正式版（release buildType + kivio-signing.jks 签名，
+#                           artifact: ...-release-apk，并自动发到该 tag 的 Release）
+#   workflow_dispatch     → 手动选 build_mode（默认 debug）
+# 版本号唯一来源：src-tauri/tauri.android.conf.json（安卓端独立版本线，
+# 桌面端的 3.1.x 在 tauri.conf.json 里不受影响）。
 #
 # Android 工程（src-tauri/gen/android）由 `tauri android init` 在本流程生成，
 # 不入库：它含二进制 gradle-wrapper.jar，每次由 CLI 生成更可靠。
@@ -15,6 +22,9 @@ name: Package Android
 on:
   push:
     branches: [App]
+    # 打 tag 即发正式版；tag push 不评估 paths 过滤，必定触发。
+    tags:
+      - 'v*-app'
     # 只有会改变 APK 的提交才重新打包（与 package-linux.yml 同一套白名单思路）。
     # 额外带上本文件自身：安卓端还在搭建期，改流水线必须能立刻自测；
     # 稳定后可以像 package-linux.yml 那样把它去掉，只留 workflow_dispatch。
@@ -39,9 +49,9 @@ on:
   workflow_dispatch:
     inputs:
       build_mode:
-        description: 'release(默认,仓库自带 kivio-signing.jks 签名) 或 debug'
+        description: 'debug(默认,快速自测) 或 release(正式版,自动发 Release)'
         required: false
-        default: 'release'
+        default: 'debug'
         type: choice
         options:
           - release
@@ -52,19 +62,20 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  # 打 tag 的正式版流程要用 GITHUB_TOKEN 建 Release / 上传附件
+  contents: write
 
 env:
   NODE_VERSION: '20'
   NDK_VERSION: '27.0.12077973'
   JAVA_VERSION: '17'
-  # push 触发时没有 inputs，默认出 release 包；workflow_dispatch 可显式选 debug。
-  BUILD_MODE: ${{ github.event.inputs.build_mode || 'release' }}
+  # 手动触发用输入；tag 触发一律正式版；普通分支 push 一律 debug。
+  BUILD_MODE: ${{ github.event.inputs.build_mode || (startsWith(github.ref, 'refs/tags/v') && 'release') || 'debug' }}
 
 jobs:
   apk:
     # 打包按分支分开：App 分支只出 APK；Linux 分支的提交永不触发这里。
-    if: github.ref == 'refs/heads/App'
+    if: github.ref == 'refs/heads/App' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -161,37 +172,110 @@ jobs:
       - name: Install exec assets into jniLibs and patch manifest
         run: bash scripts/install-android-jni-libs.sh
 
+      # 版本号单一来源：src-tauri/tauri.android.conf.json 是 Tauri v2 的平台配置，
+      # 安卓构建时覆盖 tauri.conf.json 的 version，桌面端的 3.1.x 不受影响。
+      - name: Read Android version
+        id: ver
+        run: |
+          set -euo pipefail
+          V=$(node -p "require('./src-tauri/tauri.android.conf.json').version")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "安卓端版本 = $V（构建模式 ${BUILD_MODE}）"
+
       # 只出一份包：release 走 gradle 的 release buildType（install-android-jni-libs.sh
       # 已把 kivio-signing.jks 注入 signingConfigs.release），debug 保留作快速自测。
       - name: Build APK (arm64, ${{ env.BUILD_MODE }})
         run: |
           set -euo pipefail
           if [ "${BUILD_MODE}" = "release" ]; then
-            echo "→ release 构建（kivio-signing.jks 签名）"
-            npx tauri android build --apk --target aarch64
+            echo "→ 正式版构建（kivio-signing.jks 签名）"
+            npx tauri android build --apk --target aarch64 --config src-tauri/tauri.android.conf.json
           else
             echo "→ debug 构建"
-            npx tauri android build --apk --debug --target aarch64
+            npx tauri android build --apk --debug --target aarch64 --config src-tauri/tauri.android.conf.json
           fi
 
-      # 签名自证：release 包必须能通过 apksigner verify，且证书是仓库那把 kivio。
-      - name: Verify APK signature
-        if: success()
+      # 产物统一改名落到 out/：正式版 = kivio-<版本>-arm64-release.apk
+      - name: Stage APK
+        id: apk
         run: |
           set -euo pipefail
-          APK=$(find "src-tauri/gen/android/app/build/outputs/apk/${BUILD_MODE}" -name '*.apk' | head -1)
-          test -n "$APK" || { echo "::error::找不到 ${BUILD_MODE} APK"; exit 1; }
-          echo "APK=$APK ($(stat -c %s "$APK") bytes)"
-          "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --print-certs "$APK"
+          SRC=$(find "src-tauri/gen/android/app/build/outputs/apk/${BUILD_MODE}" -name '*.apk' | head -1)
+          test -n "$SRC" || { echo "::error::找不到 ${BUILD_MODE} APK"; exit 1; }
+          mkdir -p out
+          NAME="kivio-${VERSION}-arm64-${BUILD_MODE}.apk"
+          cp "$SRC" "out/$NAME"
+          echo "path=out/$NAME" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          ( cd out && sha256sum "$NAME" > ../SHA256SUMS.txt )
+          echo "APK = out/$NAME ($(stat -c %s "out/$NAME") bytes)"
+
+      # 签名与版本自证：证书必须是仓库那把 kivio，versionName 必须等于 tauri.android.conf.json
+      - name: Verify APK
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_SDK_ROOT/build-tools/35.0.0"
+          APK="${{ steps.apk.outputs.path }}"
+          "$BT/apksigner" verify --print-certs "$APK"
+          BADGING=$("$BT/aapt2" dump badging "$APK")
+          VN=$(echo "$BADGING" | sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p")
+          VC=$(echo "$BADGING" | sed -n "s/^package:.*versionCode='\([^']*\)'.*/\1/p")
+          echo "versionName=$VN versionCode=$VC"
+          echo "VERSION_CODE=$VC" >> "$GITHUB_ENV"
+          if [ "$VN" != "${VERSION}" ]; then
+            echo "::error::versionName=$VN 与 tauri.android.conf.json=${VERSION} 不一致"
+            exit 1
+          fi
+          cat SHA256SUMS.txt
 
       - name: List APK outputs
         if: always()
         run: find src-tauri/gen/android/app/build/outputs -name '*.apk' -print 2>/dev/null || true
 
-      - name: Upload APK
+      - name: Upload APK artifact
         if: success()
         uses: actions/upload-artifact@v7
         with:
           name: kivio-android-arm64-${{ env.BUILD_MODE }}-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: |
+            out/*.apk
+            SHA256SUMS.txt
           if-no-files-found: error
+
+      # 打 tag（v*-app）才发正式版：把 out/ 里的正式包挂到该 tag 的 Release 上。
+      # 已存在同名 Release 时只替换附件，不重建（tag 唯一，见 Release 与 tag 的一对一约束）。
+      - name: Publish GitHub Release
+        if: success() && env.BUILD_MODE == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          APK="${{ steps.apk.outputs.path }}"
+          {
+            echo "Kivio 安卓端正式版 $TAG"
+            echo
+            echo "## 安装"
+            echo "- 架构：arm64-v8a"
+            echo "- 签名：\`kivio-signing.jks\`（与 debug 包同一把，可直接覆盖升级）"
+            echo "- 首次安装需在系统设置里给 Kivio 授予「所有文件访问」，rootfs 才能解压运行"
+            echo
+            echo "## 构建"
+            echo "- 版本：$VERSION（versionCode ${VERSION_CODE:-1}）"
+            echo "- 提交：\`${GITHUB_SHA}\`"
+            echo "- 流水线：[run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo
+            echo "## 校验"
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "→ Release $TAG 已存在，替换附件"
+            gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            echo "→ 创建 Release $TAG"
+            gh release create "$TAG" "$APK" SHA256SUMS.txt --title "Kivio Android $TAG" --notes-file notes.md --latest
+          fi
