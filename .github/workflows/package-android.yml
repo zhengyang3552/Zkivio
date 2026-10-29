@@ -254,29 +254,23 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           APK="${{ steps.apk.outputs.path }}"
-          {
-            echo "Kivio 安卓端正式版 $TAG"
-            echo
-            echo "## 安装"
-            echo "- 架构：arm64-v8a"
-            echo "- 签名：\`kivio-signing.jks\`（与 debug 包同一把，可直接覆盖升级）"
-            echo "- 首次安装需在系统设置里给 Kivio 授予「所有文件访问」，rootfs 才能解压运行"
-            echo
-            echo "## 构建"
-            echo "- 版本：$VERSION（versionCode ${VERSION_CODE:-1}）"
-            echo "- 提交：\`${GITHUB_SHA}\`"
-            echo "- 流水线：[run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
-            echo
-            echo "## 校验"
-            echo '```'
-            cat SHA256SUMS.txt
-            echo '```'
-          } > notes.md
+          # 发行说明以仓库为准：docs/releases/<tag>.md，与桌面端 docs/releases/vX.Y.Z.md
+          # 同一体例（下载 / 亮点 / 限制 / 校验，中英对照）。没有就退回 GitHub 自动生成，
+          # 不要把 CI 的构建信息当成版本说明写进 Release。
+          NOTES="docs/releases/${TAG}.md"
+          TITLE="Kivio Android ${TAG%-app}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "→ Release $TAG 已存在，替换附件"
             gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
-            gh release edit "$TAG" --notes-file notes.md
+            if [ -f "$NOTES" ]; then
+              gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES"
+            else
+              gh release edit "$TAG" --title "$TITLE"
+            fi
+          elif [ -f "$NOTES" ]; then
+            echo "→ 创建 Release $TAG（说明取自 $NOTES）"
+            gh release create "$TAG" "$APK" SHA256SUMS.txt --title "$TITLE" --notes-file "$NOTES" --latest=false
           else
-            echo "→ 创建 Release $TAG"
-            gh release create "$TAG" "$APK" SHA256SUMS.txt --title "Kivio Android $TAG" --notes-file notes.md --latest=false
+            echo "::warning::$NOTES 不存在，回退到自动生成的发行说明"
+            gh release create "$TAG" "$APK" SHA256SUMS.txt --title "$TITLE" --generate-notes --latest=false
           fi
