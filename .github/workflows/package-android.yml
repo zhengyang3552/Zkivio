@@ -278,5 +278,5 @@ jobs:
             gh release edit "$TAG" --notes-file notes.md
           else
             echo "→ 创建 Release $TAG"
-            gh release create "$TAG" "$APK" SHA256SUMS.txt --title "Kivio Android $TAG" --notes-file notes.md --latest
+            gh release create "$TAG" "$APK" SHA256SUMS.txt --title "Kivio Android $TAG" --notes-file notes.md --latest=false
           fi
