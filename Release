@@ -1,16 +1,16 @@
-Date: Tue, 27 Oct 2026 17:51:43 +0000
+Date: Sun, 08 Nov 2026 05:48:07 +0000
 Description: Kivio Desktop Linux packages
 Label: kivio-desktop
 Origin: kivio-desktop
 MD5Sum:
- 60044c42f5bba3aeecf929e8b6638a89            16926 Packages
- 61167241ea146746d4659a76b646efb7             1853 Packages.gz
+ ef07657a73f67a0e4b9a8023316749ca            17732 Packages
+ 8b75fc687f6bd7977fc4a6bca01375b3             1914 Packages.gz
 SHA1:
- af5701d163cdec2c8cd2b51fb8a79b0fa9e1af7d            16926 Packages
- 8db98d04d2f419f85e7aec3bab1a29fe93e86139             1853 Packages.gz
+ c45b1f64f522e2c4a22a9df4bf31c864861deea5            17732 Packages
+ 6e07cf42b9040754e4239fe3c743d0b7f6d11052             1914 Packages.gz
 SHA256:
- 4b7ee91b9246ef1dd8c44e402b7ce542ba1428764eae92dd43b0a59d4318e786            16926 Packages
- cc5ea61eae2384188ebe9555f63141e4944a33f85bbd679b9230d8c1510e0393             1853 Packages.gz
+ 5233a26b56ad548424d45945a8a4386105b11a576b5f25c0d1de622910e7b759            17732 Packages
+ 61c35f9d5b343f4c50e39ac6e1d383911b360237043380c33312dcf6a1a6e44d             1914 Packages.gz
 SHA512:
- fc824a04382617253430ed141ba5e5b08891aedf8a1f1549cfcc0d871ecaecb2395a905619a47c4bf400ca3b6eafd85532981d175e6d00c7985eff4355d2ed67            16926 Packages
- afd81bd4b06abc27feab99df7f97e7dce10b69e5d4d48799a27bee9486cd37d0549459bef9f8cd16e3e7c14d84f276130ff85fdcb8b5cdbcdf25501c759080ff             1853 Packages.gz
+ ed5bb7cd06cf14e16b333dbb2bc44ea95a2581cc561008bdca7240c4ff8fc7e557bd42ca11e28da65bd506308477c1ca90d17f8ef3fe278d87793ef5ef23eadb            17732 Packages
+ f1b4cb4c5124dd6bd07a58709fa48ca02ddaa936058936cfe0c21ac45d986b4d4489195b9f7fe864f9a4375df9911466c0027d73c89666ff3418b2cea32fc8cd             1914 Packages.gz
