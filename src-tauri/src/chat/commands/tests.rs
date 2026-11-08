@@ -32,7 +32,7 @@ use super::mutations::{
 };
 use super::reply_runtime::resolve_reply_arms;
 use super::sanitization::sanitize_image_payloads_for_model;
-use super::title::{build_title_summary_prompt, generate_title, sanitize_generated_title};
+use super::title::{generate_title, sanitize_generated_title};
 use super::tooling::{
     apply_agent_plan_tool_filter, apply_chat_mode_tool_filter,
     apply_inline_code_request_tool_filter, resolve_request_skill,
@@ -664,6 +664,8 @@ fn chat_mode_tool_filter_keeps_research_tools_only() {
         crate::mcp::types::native_memory_modify_tool(),
         crate::mcp::types::native_skill_activate_tool(),
         crate::chat::ask_user::ask_user_tool(),
+        crate::mcp::types::native_html_render_tool(),
+        crate::mcp::types::native_html_preview_tool(),
         crate::chat::todo::todo_write_tool(),
         readonly_mcp_tool,
         write_mcp_tool,
@@ -690,6 +692,8 @@ fn chat_mode_tool_filter_keeps_research_tools_only() {
     assert!(!names.contains(&"automation_run".to_string()));
     assert!(names.contains(&"memory_read".to_string()));
     assert!(names.contains(&"ask_user".to_string()));
+    assert!(names.contains(&"html_render".to_string()));
+    assert!(names.contains(&"html_preview".to_string()));
     assert!(names.contains(&"mcp__docs__search".to_string()));
     assert!(!names.contains(&"read".to_string()));
     assert!(!names.contains(&"write".to_string()));
@@ -790,15 +794,6 @@ fn agent_run_entry_label_distinguishes_regenerate() {
         agent_run_entry_label(crate::chat::agent::AgentRunEntry::Regenerate),
         "regenerate"
     );
-}
-
-#[test]
-fn build_title_summary_prompt_uses_first_turn_context() {
-    let user = "今天下雨吗，吉林市。天气怎么样？";
-    let assistant = "吉林市今天有小雨，建议带伞。";
-    let prompt = build_title_summary_prompt(user, assistant, "zh-CN");
-    assert!(prompt.contains(user));
-    assert!(prompt.contains(assistant));
 }
 
 #[test]

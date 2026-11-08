@@ -4,7 +4,7 @@ import { useModelDatabase } from '../data/useModelDatabase'
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
-  ArrowLeft, Palette, CloudUpload, PanelLeftClose, PanelLeftOpen,
+  ArrowLeft, Palette, CloudUpload,
 } from 'lucide-react'
 import { confirm, open, save } from '@tauri-apps/plugin-dialog'
 import {
@@ -64,7 +64,7 @@ import { useProviderModalController } from './useProviderModalController'
 import { useSettingsOnboardingController } from './useSettingsOnboardingController'
 import { ModelDetailDrawer } from './ModelDetailDrawer'
 import { ProviderModelTestModal } from './ProviderModelTestModal'
-import { Button, IconButton } from '../components/Button'
+import { Button } from '../components/Button'
 import { confirmDialog } from '../components/dialogQueue'
 import { ThemeTab } from './tabs/ThemeTab'
 import type { ThemeDefinition } from '../theme/types'
@@ -205,7 +205,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [editorController])
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
-  const [navCollapsed, setNavCollapsed] = useState(false)
+
   const [themeDraft, setThemeDraft] = useState<ThemeDefinition | null>(null)
   // 使用统计页内的视图：应用用量 / 调用明细 / 请求调试
   const [usageView, setUsageView] = useState<'app' | 'calls' | 'debug'>('app')
@@ -317,6 +317,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { title: lang === 'zh' ? '恢复完全备份' : 'Restore full backup', kind: 'warning' }),
     restart: () => api.restartAfterRestore(),
     pendingRestore: () => api.backupRestorePending(),
+    cancelRestore: () => api.cancelRestore(),
   }, lang)
   const onboarding = useSettingsOnboardingController({
     flush: () => editorController.flush(),
@@ -1106,17 +1107,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           >
             <div key={activeTab} className={`settings-section-title-enter${activeTab === 'usage' ? ' settings-usage-title' : ''}`}>
               <div className="flex items-center gap-3">
-                {variant === 'embedded' && !hideNav && (
-                  <IconButton
-                    label={lang === 'zh' ? (navCollapsed ? '展开侧边栏' : '折叠侧边栏') : (navCollapsed ? 'Expand sidebar' : 'Collapse sidebar')}
-                    variant="ghost"
-                    aria-expanded={!navCollapsed}
-                    data-tauri-drag-region="false"
-                    onClick={() => setNavCollapsed(collapsed => !collapsed)}
-                  >
-                    {navCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-                  </IconButton>
-                )}
                 <div className="kv-page-title">{pageMeta[activeTab].title}</div>
                 {activeTab === 'usage' && (
                   <div className="inline-flex items-center gap-0.5 rounded-full bg-[var(--bg-input-subtle)] p-0.5" data-tauri-drag-region="false">
@@ -1551,9 +1541,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       <div
         className={`settings-embedded kv flex min-h-0 min-w-0 flex-1 ${
           reserveTrafficLightSpace ? 'settings-embedded--traffic-safe' : ''
-        }${navCollapsed ? ' settings-embedded--nav-collapsed' : ''}`}
+        }`}
       >
-        {!hideNav && !navCollapsed && (
+        {!hideNav && (
           <aside className="settings-embedded-nav" onMouseDown={handleSettingsDragMouseDown}>
             {categoryNav}
             {navFooter ? <div className="settings-embedded-nav-footer">{navFooter}</div> : null}
