@@ -1,5 +1,4 @@
 import { memo } from 'react'
-import { PanelRight } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { i18n, type Lang } from '../components/i18n'
 import { BackgroundJobsIndicator } from './BackgroundJobsIndicator'

@@ -823,13 +823,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const categoryNav =
     variant === 'embedded' ? (
       <>
-        <nav className="settings-embedded-nav-list settings-embedded-nav-list--header">
-          <SidebarNavItem
-            onClick={() => handleCloseRequest({ waitForSave: false })}
-            icon={<ArrowLeft size={18} strokeWidth={1.75} />}
-            label={lang === 'zh' ? '返回对话' : 'Back to chat'}
-          />
-        </nav>
         <nav className="settings-embedded-nav-list custom-scrollbar">
           {navItems.map((item) => {
             const Icon = item.icon

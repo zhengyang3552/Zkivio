@@ -2615,7 +2615,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     modeOptions: composerModes.options,
     modeValue: composerModes.current,
     onModeChange: handleComposerModeChange,
-    usageSlot: composerUsageSlot,
   }), [
     activeAgentRuntime.externalAgentId,
     activeBuiltinWebSearchSupported,
@@ -2774,7 +2773,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           settingsMode={settingsPanelActive}
           onToggleSidebar={handleTitlebarToggleSidebar}
           onNewConversation={handleTitlebarNewConversation}
-          dockVisible={chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && dockOpen}
+          dockVisible={chatView === 'conversation' && !usesChatRuntime && dockOpen}
           dockWidth={dock.width}
           dockToolbarRef={setDockToolbarHost}
         >
