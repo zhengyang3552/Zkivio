@@ -48,6 +48,9 @@ pub struct ToolExecutionContext<'a> {
     pub conversation_id: &'a str,
     pub run_id: &'a str,
     pub message_id: &'a str,
+    /// Provider and model of the run executing this tool, including answer arms.
+    pub provider: &'a crate::settings::ModelProvider,
+    pub model: &'a str,
     pub generation: u64,
     pub round: u32,
     /// Sub-agent nesting depth: 0 for a top-level chat run, +1 per spawned
@@ -987,6 +990,15 @@ fn effective_tool_timeout_ms(
     if tool.source == "native" && tool.name == "bash" {
         return NO_OUTER_TOOL_TIMEOUT;
     }
+    // The orchestration tools bound their own wait and detach the target reply on timeout.
+    if tool.source == "native"
+        && matches!(
+            tool.name.as_str(),
+            "kivio_create_conversation" | "kivio_send_message"
+        )
+    {
+        return NO_OUTER_TOOL_TIMEOUT;
+    }
     if tool.source == "native" && tool.name == "bash_output" {
         let wait_ms = arguments
             .get("wait_ms")
@@ -1282,6 +1294,17 @@ mod tests {
             conversation_id: "conversation",
             run_id: "run",
             message_id: "message",
+            provider: {
+                static PROVIDER: std::sync::LazyLock<crate::settings::ModelProvider> =
+                    std::sync::LazyLock::new(|| {
+                        serde_json::from_value(serde_json::json!({
+                            "id": "test-provider", "name": "Test", "baseUrl": ""
+                        }))
+                        .unwrap()
+                    });
+                &PROVIDER
+            },
+            model: "test-model",
             generation: 1,
             round: 2,
             depth: 0,
@@ -1986,6 +2009,20 @@ mod tests {
         assert_eq!(
             effective_tool_timeout_ms(&settings, &tool, &arguments),
             crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn voice_orchestration_wait_owns_its_timeout() {
+        let mut tool = crate::mcp::types::native_save_assistant_tool();
+        tool.name = "kivio_send_message".into();
+        assert_eq!(
+            effective_tool_timeout_ms(
+                &Settings::default(),
+                &tool,
+                &serde_json::json!({"wait": true})
+            ),
+            NO_OUTER_TOOL_TIMEOUT
         );
     }
 

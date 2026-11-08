@@ -73,6 +73,10 @@ export default defineConfig({
   build: {
     target: 'esnext',
   },
+  server: {
+    // 参考源码仓库（不提交）文件极多会触发持续整页重载；cargo 产物 exe 重编时被占用，监视会 EBUSY 崩溃。
+    watch: { ignored: ['**/task-GPUI/**', '**/src-tauri/target/**'] },
+  },
   test: {
     // 路由底色回归需要真实 CSS；其余样式仍按默认跳过。
     css: { include: [/chat-01-main\.css/] },

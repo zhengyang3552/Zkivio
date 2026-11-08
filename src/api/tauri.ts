@@ -364,11 +364,16 @@ export type AskUserOption = {
 export type AskUserQuestion = {
   id: string
   prompt: string
+  required?: boolean
+  value_schema?: Record<string, unknown>
+  valueSchema?: Record<string, unknown>
   options: AskUserOption[]
   allow_multiple?: boolean
   allowMultiple?: boolean
   allow_custom?: boolean
   allowCustom?: boolean
+  default_value?: string
+  defaultValue?: string
 }
 
 export type AskUserPromptPayload = {
@@ -1213,6 +1218,13 @@ export type Settings = {
   defaultModels: DefaultModelsConfig
   /** Canonical backend responses always contain chat settings after migration. */
   chat: ChatConfig
+  voice?: {
+    /** null/absent = auto: Codex (ChatGPT subscription) when eligible, else GPT-Live. */
+    channel?: 'auto' | 'codex' | 'live' | null
+    liveProviderId?: string | null
+    orchestratorProviderId?: string | null
+    orchestratorModel?: string | null
+  } | null
   /** Canonical backend responses always contain chat memory settings after migration. */
   chatMemory: ChatMemoryConfig
   translatorPrompt?: string
@@ -1819,8 +1831,34 @@ function chatSubagentControl(conversationId: string, args: SubAgentControlReques
 function chatSubagentControl(conversationId: string, args: SubAgentControlRequest): Promise<SubAgentSnapshot | SubAgentRecord> {
   return invoke('chat_subagent_control', { conversationId, arguments: args })
 }
+export type VoiceLiveStart = {
+  sessionId: string
+  answerSdp: string
+  conversationId: string
+}
+
+export type VoiceCodexEvent = { sessionId: string } & (
+  | { type: 'active' }
+  // Codex deltas may omit the speaker; the completed item supplies it.
+  | { type: 'partial'; role?: 'user' | 'assistant'; itemId?: string; delta: string }
+  | { type: 'final'; role: 'user' | 'assistant'; itemId: string; text: string; preserveLonger?: boolean }
+  | { type: 'levels'; mic: number; speaker: number }
+  | { type: 'working'; count: number }
+  | { type: 'closed'; error?: string }
+)
+
 
 export const api = {
+  voiceLiveStart: (args: { offerSdp: string; providerId?: string | null; model?: string | null }) =>
+    invoke<VoiceLiveStart>('voice_live_start', args),
+  voiceDelegate: (args: { conversationId: string; request: string }) =>
+    invoke<string>('voice_delegate', args),
+  voiceCodexReserve: () => invoke<string>('voice_codex_reserve'),
+  voiceCodexStart: (sessionId: string) => invoke<void>('voice_codex_start', { sessionId }),
+  voiceCodexStop: (sessionId: string) => invoke<void>('voice_codex_stop', { sessionId }),
+  voiceCodexMute: (sessionId: string, muted: boolean) => invoke<void>('voice_codex_mute', { sessionId, muted }),
+  onVoiceCodexEvent: (listener: (event: VoiceCodexEvent) => void): Promise<() => void> =>
+    isTauriRuntime() ? on<VoiceCodexEvent>('voice-codex-event', listener) : Promise.resolve(() => {}),
   chatArtifactsList: (importHistory = true) => invoke<ArtifactLibraryPage>('chat_artifacts_list', { importHistory }),
   chatArtifactAction: (id: string, action: 'open' | 'reveal' | 'export' | 'export_unique' | 'delete' | 'rename', destination?: string, name?: string) =>
     invoke<string | null>('chat_artifact_action', { id, action, destination, name }),
@@ -1866,6 +1904,10 @@ export const api = {
   createHtmlPreview: async (html: string) => {
     const id = await invoke<string>('create_html_preview', { html })
     return { id, url: convertFileSrc(id, 'kivio-preview') }
+  },
+  htmlRenderUrl: (conversationId: string, attachmentId: string): string | null => {
+    if (!/^conv_[a-zA-Z0-9_-]+$/.test(conversationId) || !/^htmlrender-[0-9a-f-]{36}$/.test(attachmentId)) return null
+    return convertFileSrc(`render/${conversationId}/${attachmentId}`, 'kivio-preview')
   },
   releaseHtmlPreview: (id: string) => invoke<void>('release_html_preview', { id }),
   webdavLoad: () => invoke<WebDavConfig>('webdav_load'),
@@ -1939,6 +1981,8 @@ export const api = {
   openLocalFile: (href: string, conversationId?: string | null) =>
     invoke<void>('open_local_file', { href, conversationId: conversationId ?? null }),
   openHtmlPreview: (html: string) => invoke<void>('open_html_preview', { html }),
+  openHtmlRender: (conversationId: string, attachmentId: string, themeCss: string) =>
+    invoke<void>('open_html_render', { conversationId, attachmentId, themeCss }),
 
   // 连接器 OAuth：GitHub 内置设备授权；其他服务使用已注册应用或 DCR + PKCE + loopback。
   // 返回物化好的 ChatMcpServer（不写 settings，由前端合并进 chatTools.servers 并保存）。
@@ -2315,6 +2359,10 @@ export const api = {
     }))
   },
   chatSyncState: (conversationId: string) => syncChatProtocol(conversationId),
+  onChatConversationsChanged: (listener: (payload: null) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return on<null>('chat-conversations-changed', listener)
+  },
   onChatOpenConversation: (listener: (payload: { conversationId: string; reload?: boolean | null; error?: string | null }) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<{ conversationId: string; reload?: boolean | null; error?: string | null }>('chat-open-conversation', (payload) => listener(payload))

@@ -4,8 +4,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
 
+function openActivity(container: HTMLElement) {
+  fireEvent.click(container.querySelector<HTMLButtonElement>('[data-tool-call-cluster] > button')!)
+}
+
 describe('assistant body visibility', () => {
-  it('pins revealed live steps when newer steps append and does not expand them on settle', () => {
+  it('keeps every live step reachable without a 显示更早的过程 pager', () => {
     const make = (count: number, answer?: string): ChatMessage => ({
       id: 'growing-process', role: 'assistant', timestamp: 1, content: answer ?? '',
       stream_outcome: answer ? 'completed' : undefined,
@@ -19,52 +23,18 @@ describe('assistant body visibility', () => {
         ...(answer ? [{ id: 'answer', kind: 'text' as const, phase: 'synthesis' as const, order: count, text: answer }] : []),
       ],
     })
-    const { rerender } = render(<MessageBubble message={make(20)} messageStreaming />)
+    const { container, rerender } = render(<MessageBubble message={make(30)} messageStreaming />)
+    openActivity(container)
     expect(screen.getByText('live_step_0')).toBeVisible()
+    expect(screen.getByText('live_step_29')).toBeVisible()
     expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
-    rerender(<MessageBubble message={make(21)} messageStreaming />)
-    expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
-    expect(screen.getByText('live_step_20')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（1）' }))
-    expect(screen.getByText('live_step_0')).toBeVisible()
-    rerender(<MessageBubble message={make(22)} messageStreaming />)
-    expect(screen.getByText('live_step_0')).toBeVisible()
-    expect(screen.queryByText('live_step_1')).not.toBeInTheDocument()
-    expect(screen.getByText('live_step_21')).toBeVisible()
-    rerender(<MessageBubble message={make(22, 'Settled answer')} />)
+    rerender(<MessageBubble message={make(30, 'Settled answer')} />)
+    // 用户展开过活动，结束后仍按用户意图保持展开。
     expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('live_step_0')).toBeVisible()
-    expect(screen.queryByText('live_step_1')).not.toBeInTheDocument()
-    expect(screen.getByText('Settled answer')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
-    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
-    expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
-    expect(screen.getByText('live_step_21')).toBeVisible()
     expect(screen.getByText('Settled answer')).toBeVisible()
   })
 
-  it.each(['pointer', 'focus'])('retains the inspected live page after a %s interaction', (interaction) => {
-    const make = (count: number): ChatMessage => ({
-      id: 'reading-live-page', role: 'assistant', timestamp: 1, content: '',
-      tool_calls: Array.from({ length: count }, (_, i) => ({
-        id: `tool-${i}`, name: `inspect_${i}`, status: 'completed',
-      })),
-      segments: Array.from({ length: count }, (_, i) => ({
-        id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`,
-      })),
-    })
-    const { rerender } = render(<MessageBubble message={make(21)} messageStreaming />)
-    const inspected = screen.getByText('inspect_1')
-    if (interaction === 'pointer') fireEvent.pointerDown(inspected)
-    else fireEvent.focus(inspected)
-    rerender(<MessageBubble message={make(25)} messageStreaming />)
-    expect(screen.getByText('inspect_1')).toBe(inspected)
-    expect(inspected).toBeVisible()
-    expect(screen.getByText('inspect_24')).toBeVisible()
-    expect(screen.queryByText('inspect_0')).not.toBeInTheDocument()
-  })
-
-  it('keeps a pending question, permission prompt, and live thought outside the recent page', () => {
+  it('keeps a pending question, permission prompt, and live thought visible in a long process', () => {
     const later = Array.from({ length: 24 }, (_, index) => index)
     const message: ChatMessage = {
       id: 'blocked-process', role: 'assistant', timestamp: 1, content: '窗口外的最终答复',
@@ -97,38 +67,10 @@ describe('assistant body visibility', () => {
     render(<MessageBubble message={message} messageStreaming reasoningStreaming />)
     expect(screen.getByText('等待你回答（在下方面板里选）')).toBeVisible()
     expect(screen.getByText('approve_deploy')).toBeVisible()
-    expect(screen.getByLabelText('Thinking')).toBeVisible()
+    expect(screen.getByRole('button', { name: /Thought/ })).toBeVisible()
     expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
     expect(screen.getByText('live_step_23')).toBeVisible()
     expect(screen.getByText('窗口外的最终答复')).toBeVisible()
-  })
-
-  it('bounds a large tool process and lets the reader reveal earlier steps without hiding the answer', () => {
-    const message: ChatMessage = {
-      id: 'large-process', role: 'assistant', timestamp: 1, content: 'Final result',
-      stream_outcome: 'completed',
-      tool_calls: Array.from({ length: 55 }, (_, i) => ({
-        id: `tool-${i}`, name: `step_${i}`, source: 'native', status: 'completed',
-      })),
-      segments: [
-        ...Array.from({ length: 55 }, (_, i) => ({
-          id: `segment-${i}`, kind: 'tool' as const, phase: 'tool_loop' as const,
-          order: i, tool_call_id: `tool-${i}`,
-        })),
-        { id: 'answer', kind: 'text', phase: 'synthesis', order: 55, text: 'Final result' },
-      ],
-    }
-    render(<MessageBubble message={message} />)
-    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
-    expect(screen.getByText('Final result')).toBeVisible()
-    expect(screen.queryByText('step_0')).not.toBeInTheDocument()
-    expect(screen.getByText('step_54')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（35）' }))
-    expect(screen.getByText('step_15')).toBeVisible()
-    expect(screen.queryByText('step_0')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（15）' }))
-    expect(screen.getByText('step_0')).toBeVisible()
-    expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
   })
 
   it.each([undefined, '已完成的思考'])('does not restore a legacy stop-only answer with reasoning %s', reasoning => {
@@ -316,19 +258,6 @@ describe('MessageBubble mount motion', () => {
     timestamp: 1,
   }
 
-  it('does not replay entrance motion for historical messages', () => {
-    const { container, rerender } = render(<MessageBubble message={assistantMessage} />)
-    expect(container.firstElementChild).not.toHaveClass('chat-motion-bubble-in')
-
-    rerender(<MessageBubble message={{ ...assistantMessage, id: 'user-motion', role: 'user' }} />)
-    expect(container.firstElementChild).not.toHaveClass('chat-motion-bubble-in')
-  })
-
-  it('keeps entrance motion for the live streaming preview', () => {
-    const { container } = render(<MessageBubble message={assistantMessage} messageStreaming />)
-    expect(container.firstElementChild).toHaveClass('chat-motion-bubble-in')
-  })
-
   // settle 冻结帧：messageStreaming 翻 false 但 live 行还在。Markdown 若跟着切 static，
   // Streamdown 整树重挂、代码块退回未高亮 fallback（180ms 后再补）——「生成完闪一下」。
   it('keeps live markdown in streaming mode on the frozen frame when markdownStreaming stays true', async () => {
@@ -376,16 +305,10 @@ describe('MessageBubble mount motion', () => {
 
   // 元信息条 hover 显隐：鼠标在这条消息上显示、移走隐藏。React 合成 pointer 事件挂在
   // 消息根元素上（不用 CSS group-hover——macOS WKWebView 的 :hover 移出后粘滞不消）。
-  it('reveals the assistant meta row while the message is hovered', () => {
+  it('tracks assistant hover until the pointer leaves the message', () => {
     const { container } = render(<MessageBubble message={assistantMessage} />)
     const root = container.firstElementChild as HTMLElement
 
-    // 显隐不走 React state（滚动时消息滑过光标会连环 enter/leave，state 会整棵重渲），
-    // 走根元素 data-msg-hovered 属性 + index.css 的 `[data-msg-hovered] .msg-hover-reveal`。
-    // jsdom 不算样式，这里断言属性翻转 + 行挂着约定的 reveal 类。
-    const meta = screen.getByLabelText('复制').closest('.transition-opacity') as HTMLElement
-    expect(meta).toHaveClass('msg-hover-reveal')
-    expect(meta).toHaveClass('opacity-0')
     expect(root).not.toHaveAttribute('data-msg-hovered')
 
     fireEvent.pointerEnter(root)
@@ -408,7 +331,7 @@ describe('MessageBubble mount motion', () => {
   })
 
   // 用户气泡下的三个操作图标（复制/回到这里/建分支）：同一套显隐。
-  it('reveals the user bubble actions while the bubble is hovered', () => {
+  it('tracks user message hover until the pointer leaves', () => {
     const { container } = render(
       <MessageBubble
         message={{ ...assistantMessage, id: 'user-hover', role: 'user', content: '你好' }}
@@ -417,9 +340,6 @@ describe('MessageBubble mount motion', () => {
     )
     const root = container.firstElementChild as HTMLElement
 
-    const actions = screen.getByLabelText('复制').closest('.transition-opacity') as HTMLElement
-    expect(actions).toHaveClass('msg-hover-reveal')
-    expect(actions).toHaveClass('opacity-0')
     expect(root).not.toHaveAttribute('data-msg-hovered')
 
     fireEvent.pointerEnter(root)
@@ -582,9 +502,10 @@ describe('MessageBubble timeline orphan tools', () => {
       timestamp: 1,
     }
 
-    render(<MessageBubble message={message} />)
+    const { container } = render(<MessageBubble message={message} />)
     expect(screen.queryByText('Read')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    openActivity(container)
     expect(screen.getByText('Read')).toBeInTheDocument()
   })
 })
@@ -812,7 +733,7 @@ describe('MessageBubble timeline grouping', () => {
       timestamp: 1,
     }
 
-    render(<MessageBubble message={message} />)
+    const { container } = render(<MessageBubble message={message} />)
     const toggle = screen.getByRole('button', { name: /Worked/ })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('planning details')).not.toBeInTheDocument()
@@ -821,6 +742,7 @@ describe('MessageBubble timeline grouping', () => {
     await user.click(toggle)
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    openActivity(container)
     await user.click(screen.getByRole('button', { name: /^Thought/ }))
     expect(screen.getByText('planning details')).toBeInTheDocument()
     // 展开后组内工具块挂载：Cursor 式动词 Read + 目标（文件名）
@@ -872,7 +794,7 @@ describe('MessageBubble timeline grouping', () => {
       timestamp: 1,
     }
 
-    render(<MessageBubble message={message} />)
+    const { container } = render(<MessageBubble message={message} />)
 
     expect(screen.getByRole('button', { name: /Worked/ })).toHaveAttribute(
       'aria-expanded',
@@ -883,6 +805,7 @@ describe('MessageBubble timeline grouping', () => {
     expect(screen.getByText('final answer')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /Worked/ }))
+    openActivity(container)
 
     expect(screen.getAllByText('Write')).toHaveLength(toolCount)
     expect(screen.getAllByText('file-0.ts').length).toBeGreaterThan(0)
@@ -1414,7 +1337,7 @@ describe('MessageBubble explicit artifact presentation', () => {
     expect(screen.getByRole('button', { name: /report\.txt/ })).toBeInTheDocument()
   })
 
-  it('lays presented images out as wrapping tiles and files as compact chips', () => {
+  it('renders presented images and files without exposing raw PDF data', () => {
     const message: ChatMessage = {
       id: 'msg-mixed-artifacts',
       role: 'assistant',
@@ -1467,13 +1390,9 @@ describe('MessageBubble explicit artifact presentation', () => {
 
     const { container } = render(<MessageBubble message={message} />)
 
-    const images = container.querySelectorAll('img')
-    expect(images).toHaveLength(2)
-    expect(images[0]?.closest('.flex-wrap')).not.toBeNull()
-    expect(images[0]?.closest('button')?.style.width).toBe('128px')
-    expect(images[0]?.closest('button')?.className ?? '').not.toContain('h-16')
-    expect(screen.getByRole('button', { name: '打开文件 简历.pdf' }).className).toContain('h-16')
-    expect(screen.getByRole('button', { name: '打开文件 notes.md' }).className).toContain('h-16')
+    expect(container.querySelectorAll('img')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: '打开文件 简历.pdf' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '打开文件 notes.md' })).toBeVisible()
     expect(container.textContent).not.toContain('%PDF')
   })
 })

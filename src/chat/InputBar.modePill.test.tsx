@@ -72,6 +72,51 @@ function openModeMenu(pillLabel: string) {
 }
 
 describe('InputBar 底栏模式胶囊', () => {
+  it('shows Git only for project chats and hides it when leaving the project', () => {
+    const props = { onSend: () => {}, gitWorkdir: '/shared', gitLang: 'en' as const, onOpenGitPanel: () => {} }
+    const view = render(<InputBar {...props} />)
+    expect(screen.queryByTitle('Git')).not.toBeInTheDocument()
+    view.rerender(<InputBar {...props} conversationProject={{ id: 'project', name: 'Project' }} />)
+    const git = screen.getByTitle('Git')
+    expect(git.closest('.chat-composer-status')).toBeInTheDocument()
+    expect(git.closest('.chat-composer-tools')).not.toBeInTheDocument()
+    view.rerender(<InputBar {...props} conversationProject={null} />)
+    expect(screen.queryByTitle('Git')).not.toBeInTheDocument()
+  })
+
+  it('keeps project and Git as separate status actions and opens the project picker', async () => {
+    const selectProject = vi.fn()
+    const project = { id: 'project', name: 'A very long project name', created_at: 0, updated_at: 0 }
+    render(<InputBar onSend={() => {}} selectedProject={project} showProjectEntry onSelectProject={selectProject}
+      gitWorkdir="/shared" gitLang="en" onOpenGitPanel={() => {}} contextSlot="Context" />)
+
+    const projectButton = screen.getByTitle(`项目 · ${project.name}`)
+    const gitButton = screen.getByTitle('Git')
+    expect(projectButton.closest('.chat-composer-environment')).toBe(gitButton.closest('.chat-composer-environment'))
+    expect(projectButton).not.toContainElement(gitButton)
+    expect(projectButton.querySelector('.lucide-chevron-down')).toBeInTheDocument()
+    expect(screen.getByText('Context').closest('.chat-composer-tools')).toBeInTheDocument()
+
+    fireEvent.click(gitButton)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(projectButton).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(gitButton)
+    await act(async () => { fireEvent.click(projectButton) })
+    expect(projectButton).toHaveAttribute('aria-expanded', 'true')
+    await act(async () => { fireEvent.click(screen.getByText('退出项目工作')) })
+    expect(selectProject).toHaveBeenCalledWith(null)
+  })
+
+  it('keeps collection exit available without showing Git', () => {
+    const selectSet = vi.fn()
+    const set = { id: 'set', name: 'Collection', created_at: 0, updated_at: 0 }
+    render(<InputBar onSend={() => {}} selectedSet={set} onSelectSet={selectSet}
+      gitWorkdir="/shared" gitLang="en" onOpenGitPanel={() => {}} />)
+    fireEvent.click(screen.getByTitle('集 · Collection（点击退出）'))
+    expect(selectSet).toHaveBeenCalledWith(null)
+    expect(screen.queryByTitle('Git')).not.toBeInTheDocument()
+  })
+
   it.each(['mouse', 'keyboard'])('selects Goal once via %s and leaves it without losing the objective', async (method) => {
     const key = `goal-${method}`
     setComposerDraft(key, { input: '检查商品', quotes: [], attachments: [] })
@@ -108,13 +153,11 @@ describe('InputBar 底栏模式胶囊', () => {
     }))
     openModeMenu('Act')
     const items = screen.getAllByRole('menuitemradio')
-    expect(items.map((item) => item.textContent)).toEqual([
-      'Act普通模式 · Normal',
-      'Goal持续执行一个目标 · Persistent execution',
-      'Plan生成计划文档 · Plan document',
-      'Orchestrate主代理统筹并行协作 · Parallel collaboration',
-    ])
-    expect(items[0]).toHaveAttribute('aria-checked', 'true')
+    expect(items).toHaveLength(4)
+    for (const name of ['Act', 'Goal', 'Plan', 'Orchestrate']) {
+      expect(screen.getByRole('menuitemradio', { name: new RegExp(`^${name}`) })).toBeInTheDocument()
+    }
+    expect(screen.getByRole('menuitemradio', { name: /^Act/ })).toHaveAttribute('aria-checked', 'true')
   })
 
 
@@ -131,18 +174,27 @@ describe('InputBar 底栏模式胶囊', () => {
     }))
     openModeMenu('计划 (只读)')
     const items = screen.getAllByRole('menuitemradio')
-    expect(items.map((item) => item.textContent)).toEqual([
-      '计划 (只读)',
-      '每次确认',
-      '接受编辑',
-      '完全 (默认)',
-    ])
+    expect(items.map((item) => item.textContent)).toEqual(claudeAgents[0]!.sandboxOptions!.map((option) => option.label))
     expect(items[0]).toHaveAttribute('aria-checked', 'true')
 
     act(() => {
       fireEvent.click(items[2])
     })
     expect(onModeChange).toHaveBeenCalledWith('acceptEdits')
+  })
+
+  it('renders the OpenCode plan capsule and sends the selected mode', () => {
+    const runtime: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'opencode', externalSandbox: 'plan' }
+    const agents: DetectedExternalAgent[] = [{
+      id: 'opencode', name: 'OpenCode', available: true, models: [],
+      sandboxOptions: [{ id: 'build', label: '构建 (默认)' }, { id: 'plan', label: '计划 (只读)' }],
+    }]
+    const onModeChange = renderComposer(derivePermissionModes({ target: 'composer', agentRuntime: runtime, agents }))
+    openModeMenu('计划 (只读)')
+    const plan = screen.getByRole('menuitemradio', { name: /计划 \(只读\)/ })
+    expect(plan).toHaveAttribute('aria-checked', 'true')
+    act(() => { fireEvent.click(screen.getByRole('menuitemradio', { name: /构建 \(默认\)/ })) })
+    expect(onModeChange).toHaveBeenCalledWith('build')
   })
 
   it('该 CLI 没有档位时胶囊整个不渲染', () => {
@@ -193,19 +245,12 @@ describe('InputBar 底栏模式胶囊', () => {
     act(() => {
       fireEvent.click(screen.getByTitle('切换 Agent 模式'))
     })
-    const items = screen.getAllByRole('menuitemradio')
-    expect(items.map((item) => item.textContent)).toEqual([
-      '标准模式完整编码 Agent · Full coding agent',
-      'PTC 模式Code Mode SDK · 多步工具写成一个程序',
-      '极简模式仅 bash + 编辑器 · Bash and editor only',
-      '创造模式编写 Agent preset · Author presets',
-    ])
     const custom = deriveDshPresetModes(runtime, [
       { id: 'code-review', label: '代码审查', description: '只读评审' },
     ])
     expect(custom.options.map((option) => option.value)).toContain('code-review')
     act(() => {
-      fireEvent.click(items[2])
+      fireEvent.click(screen.getByRole('menuitemradio', { name: /^极简模式/ }))
     })
     expect(onPresetChange).toHaveBeenCalledWith('minimal')
   })

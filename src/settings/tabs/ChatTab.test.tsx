@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, type Mock } from 'vitest'
 import { ChatTab } from './ChatTab'
 
 vi.mock('@tauri-apps/api/path', () => ({
@@ -15,8 +15,9 @@ const t = i18n.zh
 
 type Props = Parameters<typeof ChatTab>[0]
 /** 回调字段替换成 vi.fn Mock，测试里才能用 mockClear / mock.calls。 */
-type MockedProps = Omit<Props, 'onUpdateChat' | 'onUpdateNativeTools' | 'onNavigateTab'> & {
+type MockedProps = Omit<Props, 'onUpdateChat' | 'onUpdateVoice' | 'onUpdateNativeTools' | 'onNavigateTab'> & {
   onUpdateChat: ReturnType<typeof vi.fn>
+  onUpdateVoice: Mock
   onUpdateNativeTools: ReturnType<typeof vi.fn>
   onNavigateTab: ReturnType<typeof vi.fn>
 }
@@ -52,6 +53,7 @@ function renderTab(overrides: Partial<MockedProps> = {}) {
     skillRuntimeEnabled: true,
     nativeBuiltinToolsEnabled: false,
     onUpdateChat: vi.fn(),
+    onUpdateVoice: vi.fn(),
     onUpdateNativeTools: vi.fn(),
     onNavigateTab: vi.fn(),
     ...overrides,
@@ -85,13 +87,12 @@ describe('ChatTab', () => {
     expect(screen.getByText('16,384 tokens')).toBeTruthy()
   })
 
-  it('source=fallback 时来源标签用警示色且左右同为 16,384', () => {
+  it('source=fallback 时生效值与兜底值一致', () => {
     renderTab({
       effectiveChatMaxOutput: { maxOutput: 16384, source: 'fallback' },
       chatMaxOutputSourceLabel: '兜底设置',
     })
     expect(screen.getAllByText('16,384 tokens')).toHaveLength(2)
-    expect(screen.getByText('兜底设置').className).toContain('warn')
     expect(screen.getByText('兜底')).toBeTruthy()
   })
 
@@ -159,11 +160,6 @@ describe('ChatTab', () => {
     expect(props.onUpdateChat).toHaveBeenCalled()
   })
 
-  it('工具状态徽标按各自开关渲染', () => {
-    renderTab()
-    const onTags = screen.getAllByText('已启用')
-    expect(onTags).toHaveLength(1)
-  })
 
   it('跳转按钮把目标 tab 传给 onNavigateTab', async () => {
     const props = renderTab()

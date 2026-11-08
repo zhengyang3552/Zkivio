@@ -120,7 +120,7 @@ fn temporary_write_path(path: &Path) -> PathBuf {
         ))
 }
 
-fn validate_conversation_id(id: &str) -> Result<(), String> {
+pub(crate) fn validate_conversation_id(id: &str) -> Result<(), String> {
     let valid = id.starts_with("conv_")
         && id.len() > "conv_".len()
         && id
@@ -255,10 +255,14 @@ pub(crate) fn draft_journal_path(app: &AppHandle, id: &str) -> Result<PathBuf, S
     Ok(conversations_dir(app)?.join(format!("{id}.draft.jsonl")))
 }
 
+pub(crate) fn conversation_attachments_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    validate_conversation_id(id)?;
+    Ok(conversations_dir(app)?.join(format!("{id}_attachments")))
+}
+
 /// 获取对话附件目录
 pub fn conversation_attachments_dir(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
-    validate_conversation_id(id)?;
-    let dir = conversations_dir(app)?.join(format!("{}_attachments", id));
+    let dir = conversation_attachments_path(app, id)?;
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| format!("create attachments dir: {e}"))?;
     }
@@ -608,14 +612,10 @@ mod builtin_assistant_tests {
     }
 
     #[test]
-    fn data_assistant_whitelists_document_skills() {
+    fn builtin_assistants_do_not_pin_skills() {
         let defs = builtin_assistant_definitions(1_700_000_000);
-        let data = defs.iter().find(|d| d.id == "asst_builtin_data").unwrap();
-        for skill in ["pdf", "docx", "xlsx"] {
-            assert!(
-                data.skill_ids.iter().any(|s| s == skill),
-                "missing skill {skill}"
-            );
+        for def in &defs {
+            assert!(def.skill_ids.is_empty(), "{} pins skills", def.id);
         }
         // v2/v3 新增的专家在册，且 id 唯一（数量断言在上一个测试）。
         for id in [

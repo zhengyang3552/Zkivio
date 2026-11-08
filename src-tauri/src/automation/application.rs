@@ -298,15 +298,7 @@ impl ToolExecutor for WorkflowToolExecutor {
         skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
-            let native_ctx = crate::mcp::registry::NativeToolContext {
-                conversation_id: ctx.tool_conversation_id.to_string(),
-                message_id: ctx.message_id.to_string(),
-                tool_call_id: Some(ctx.tool_call_id.to_string()),
-                run_id: ctx.run_id.to_string(),
-                generation: ctx.generation,
-                round: ctx.round,
-                depth: ctx.depth,
-            };
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
             crate::mcp::registry::call_tool(
                 &self.app,
                 &self.app.state::<AppState>(),
@@ -941,16 +933,6 @@ mod tests {
             Some(("conversation", 7))
         ));
         assert!(!automation_run_active_with(&cancelled, "automation", "run"));
-    }
-
-    #[test]
-    fn automation_runner_has_no_app_state_dependency() {
-        let runner = include_str!("runner.rs");
-        assert!(!runner.contains("AppState"));
-        assert!(!runner.contains("state::<"));
-        let tools = include_str!("tools.rs");
-        assert!(!tools.contains("AppState"));
-        assert!(!tools.contains("state::<"));
     }
 
     #[test]

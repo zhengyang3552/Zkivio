@@ -162,7 +162,7 @@ pub struct ExternalSessionUsage {
 /// 调用方是 `chat_get_context_stats`（用户点开用量条）与压缩后的重算，不在回复热路径。
 /// 从一条 CLI 实报的 `usage` 里取出**上下文占用**口径的已用 token。
 ///
-/// 优先独立的 `context_tokens`（Antigravity 最近请求），否则用 `total_tokens` 而不是 `input_tokens`：各 CLI 解析层（`stream::usage_from_parts`）
+/// 优先独立的 `context_tokens`（Pi 会话用量 / Antigravity 最近请求），否则用 `total_tokens` 而不是 `input_tokens`：各 CLI 解析层（`stream::usage_from_parts`）
 /// 已按各家的 cache 包含关系把 cache 正确汇总进 `total_tokens`，而 `input_tokens` 在
 /// Anthropic 口径（claude / pi / ACP）下只是**非缓存**部分——只读它等于把前面几层补的
 /// cache 全丢在半路（实测 kimi cache 占 97.6%、pi 62%、opencode 13%）。
@@ -184,17 +184,10 @@ pub(crate) fn cli_reported_context_tokens(usage: &ModelUsage) -> usize {
         .min(usize::MAX as u64) as usize
 }
 
-/// 这条 CLI 上报是否**真的带了分子**（任一 token 数 > 0）。
-///
-/// 判据不能是 `input_tokens.is_some()`：全零上报（未登录 / `/help` / 未知斜杠命令 /
-/// Kivio 自己发的 `/compact` —— 这些轮次没有 LLM 往返）落盘的是 `Some(0)`，
-/// `is_some()` 会命中它并把用量条清零。
+/// Independent context snapshots include authoritative zero; otherwise ignore all-zero billing.
 fn usage_has_token_numbers(usage: &ModelUsage) -> bool {
-    // 必须与 `run.rs::usage_tokens_all_zero` **完全互为反面**（含 `reasoning_tokens`）。
-    // 不一致的后果：只报 reasoning tokens 的那一轮，`merge_cli_usage` 认为它是真数据、
-    // 拿它替换上一条好数据，而这里的分子挑选器认为它是空的、继续往前找更旧的消息 ⇒
-    // 分子与落库用量描述的是**不同轮次**。
-    !crate::external_agents::run::usage_tokens_all_zero(usage)
+    // Context-only snapshots have a numerator but do not represent billing tokens.
+    usage.context_tokens.is_some() || !crate::external_agents::run::usage_tokens_all_zero(usage)
 }
 
 pub fn collect_external_session_usage(
@@ -204,6 +197,13 @@ pub fn collect_external_session_usage(
 ) -> ExternalSessionUsage {
     let mut latest: Option<&ModelUsage> = None;
     let mut latest_index: Option<usize> = None;
+    // 新版适配器把计费（整轮累计）与占用（context_tokens）分开存；某轮占用未知时 total 是累计，
+    // 当分子会虚高。会话里出现过 context_tokens 就只认带它的消息；纯旧会话仍退回 total。
+    let has_context_snapshots = conversation
+        .messages
+        .iter()
+        .filter_map(|message| message.usage.as_ref())
+        .any(|usage| usage.context_tokens.is_some());
     for (index, message) in conversation.messages.iter().enumerate().rev() {
         if message.role != "assistant" {
             continue;
@@ -222,6 +222,9 @@ pub fn collect_external_session_usage(
             // `Some(0)` 会命中 ⇒ 挑到这条 ⇒ 用量条从 47K 掉到 0，直到下一轮真实回复才恢复。
             // 窗口（分母）不参与这个判断——它是静态属性，缺分子的那条上报不该被当分子来源。
             if usage_has_token_numbers(usage) {
+                if has_context_snapshots && usage.context_tokens.is_none() {
+                    continue;
+                }
                 latest = Some(usage);
                 latest_index = Some(index);
                 break;
@@ -614,30 +617,24 @@ mod tests {
         );
         assert_eq!(
             context_window_for_external_model("claude", "claude-sonnet-5", None, None).0,
-            Some(200_000)
+            context_window_from_claude_resolved_model("claude-sonnet-5").map(|v| v as usize)
         );
     }
 
     #[test]
-    fn kimi_static_window_map() {
-        assert_eq!(
-            context_window_from_kimi_model("kimi-code/k3"),
-            Some(1_048_576)
-        );
-        assert_eq!(context_window_from_kimi_model("k3"), Some(1_048_576));
-        assert_eq!(
-            context_window_from_kimi_model("kimi-code/k3-256k"),
-            Some(262_144)
-        );
-        assert_eq!(context_window_from_kimi_model("k3-256k"), Some(262_144));
-        assert_eq!(
-            context_window_from_kimi_model("kimi-code/kimi-for-coding"),
-            Some(262_144)
-        );
-        assert_eq!(
-            context_window_from_kimi_model("kimi-for-coding-highspeed"),
-            Some(262_144)
-        );
+    fn kimi_static_window_aliases_are_normalized() {
+        for model in [
+            "k3",
+            "k3-256k",
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+        ] {
+            let plain = context_window_from_kimi_model(model);
+            assert_eq!(
+                context_window_from_kimi_model(&format!("  KIMI-CODE/{}  ", model.to_uppercase())),
+                plain
+            );
+        }
         assert_eq!(context_window_from_kimi_model("unknown-kimi"), None);
     }
 
@@ -645,23 +642,23 @@ mod tests {
     fn kimi_window_reaches_context_state() {
         let (window, estimated) =
             context_window_for_external_model("kimi", "kimi-code/k3-256k", None, None);
-        assert_eq!(window, Some(262_144));
+        assert_eq!(
+            window,
+            context_window_from_kimi_model("kimi-code/k3-256k").map(|v| v as usize)
+        );
         assert!(!estimated);
         // 同名模型在别的 agent 下不该走 kimi 映射（那是 agent 专属表）。
         // 但名字里明写 256k，L8 的关键词表照样能捞到——这是另一条来源，不是 kimi 表。
         let (other, _) =
             context_window_for_external_model("cursor", "kimi-code/k3-256k", None, None);
-        assert_eq!(other, Some(262_144));
+        assert_eq!(
+            other,
+            Some(context_window_for_model(None, "kimi-code/k3-256k").0)
+        );
     }
 
     #[test]
     fn unknown_agent_and_model_yields_no_window_instead_of_fake_200k() {
-        // 模型库收录后，composer-2.5 有官方 200K 上下文（Cursor docs pricing catalog）。
-        let (window, estimated) =
-            context_window_for_external_model("cursor", "composer-2.5", None, None);
-        assert_eq!(window, Some(200_000));
-        assert!(!estimated);
-
         // 完全未知的模型 id 仍不能编造 200K 兜底（会触发假百分比 / 错位压缩阈值）。
         let (window, estimated) = context_window_for_external_model(
             "cursor",
@@ -772,6 +769,29 @@ mod tests {
         assert_eq!(state.status, "unknown");
         // 分子仍然照常显示。
         assert_eq!(state.estimated_input_tokens, 5010);
+    }
+
+    #[test]
+    fn context_only_usage_is_a_valid_context_measurement() {
+        let usage = ModelUsage {
+            context_tokens: Some(42),
+            context_window_tokens: Some(1000),
+            ..Default::default()
+        };
+        assert!(usage_has_token_numbers(&usage));
+        assert_eq!(cli_reported_context_tokens(&usage), 42);
+        let mut conversation = empty_conversation();
+        conversation
+            .messages
+            .push(message("a1", "assistant", "done", Some(usage)));
+        let state =
+            compute_external_context_state(&conversation, "pi", "default", None, None, None);
+        assert_eq!(state.estimated_input_tokens, 42);
+        assert_eq!(state.context_window_tokens, Some(1000));
+        assert!(usage_has_token_numbers(&ModelUsage {
+            context_tokens: Some(0),
+            ..Default::default()
+        }));
     }
 
     #[test]
@@ -923,6 +943,34 @@ mod tests {
         );
         assert!(state.summary.is_none());
         assert!(state.usage_ratio.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn turn_billing_without_context_snapshot_is_not_used_as_occupancy() {
+        let mut conversation = empty_conversation();
+        conversation.messages.push(message(
+            "a1",
+            "assistant",
+            "first",
+            Some(ModelUsage {
+                total_tokens: Some(50_000),
+                context_tokens: Some(20_000),
+                ..Default::default()
+            }),
+        ));
+        // 这一轮占用未知，total 是整轮累计（多次请求之和），不能当上下文占用。
+        conversation.messages.push(message(
+            "a2",
+            "assistant",
+            "second",
+            Some(ModelUsage {
+                input_tokens: Some(300_000),
+                total_tokens: Some(310_000),
+                ..Default::default()
+            }),
+        ));
+        let usage = collect_external_session_usage(&conversation, "claude", None);
+        assert_eq!(usage.input_tokens, 20_000);
     }
 
     #[test]

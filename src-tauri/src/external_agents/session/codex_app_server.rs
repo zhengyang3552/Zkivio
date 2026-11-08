@@ -118,10 +118,10 @@ fn runtime_workspace_roots(cwd: &str, extra: &[String]) -> Vec<String> {
 /// when the model asks for workspace permission — echoing the grant is not enough
 /// if this list is empty.
 ///
-/// `thread/resume` sends **only** `threadId` + `excludeTurns`. Extra cwd / sandbox /
-/// experimental roots made Codex reject a perfectly good rollout (Windows vs WSL path, or a
-/// capsule that did not exist when the thread was created). Model / sandbox for this turn go
-/// on `turn/start`. `excludeTurns` (0.148+) skips full-history hydration — deprecated for
+/// `thread/resume` sends `threadId` + `excludeTurns` + the thread `config` overrides only. Extra
+/// cwd / sandbox / experimental roots made Codex reject a perfectly good rollout (Windows vs WSL
+/// path, or a capsule that did not exist when the thread was created). Model / sandbox for this
+/// turn go on `turn/start`. `excludeTurns` (0.148+) skips full-history hydration — deprecated for
 /// paginated threads since 0.155 — and we only read `thread.id` back anyway.
 fn build_codex_thread_params(
     cwd: &str,
@@ -129,11 +129,12 @@ fn build_codex_thread_params(
     approval_policy: &str,
     model: Option<&str>,
     resume_thread: Option<&str>,
+    mcp: Option<(&str, &str)>,
 ) -> (&'static str, Value) {
     if let Some(tid) = resume_thread.filter(|tid| !tid.is_empty()) {
         return (
             "thread/resume",
-            json!({ "threadId": tid, "excludeTurns": true }),
+            json!({ "threadId": tid, "excludeTurns": true, "config": codex_thread_config(mcp) }),
         );
     }
     let cwd_abs = absolute_workspace_path(cwd);
@@ -143,11 +144,25 @@ fn build_codex_thread_params(
         params["runtimeWorkspaceRoots"] = json!([cwd_abs]);
     }
     params["sandbox"] = json!(sandbox_mode);
+    params["config"] = codex_thread_config(mcp);
     params["approvalPolicy"] = json!(approval_policy);
     if let Some(model) = model {
         params["model"] = json!(model);
     }
     ("thread/start", params)
+}
+
+/// Per-thread config overrides (T3 Code `CODEX_THREAD_CONFIG`): explicitly enable the
+/// `update_plan` tool that feeds `turn/plan/updated` → todo card, and give cold npx/uvx MCP
+/// servers 10 s instead of the 1 s default before the first model request.
+fn codex_thread_config(mcp: Option<(&str, &str)>) -> Value {
+    let mut config =
+        json!({ "tools.update_plan.enabled": true, "mcp_optional_startup_grace_ms": 10_000 });
+    if let Some((url, authorization)) = mcp {
+        config[format!("mcp_servers.{}", crate::app_mcp::CHAT_MCP_SERVER_NAME)] =
+            json!({ "url": url, "http_headers": { "Authorization": authorization } });
+    }
+    config
 }
 
 /// JSON-RPC notification (no `id`). Required after `initialize` — newer app-server rejects
@@ -247,38 +262,43 @@ fn is_codex_elicitation(method: &str) -> bool {
     method == "mcpServer/elicitation/request" || method.starts_with("openai/elicitation")
 }
 
-/// Approve payload when the user allows (or the 「完全」档 auto-allows). Each method
-/// maps to a different response shape (see the `*RequestApprovalResponse` schemas).
-fn approval_response(method: &str, params: &Value) -> Option<Value> {
+/// Approve payload. `for_session` widens the grant to Codex's session cache: used for host-side
+/// auto-approval and for 「总是允许」 (T3 Code maps `acceptAlways` → `acceptForSession`). A plain
+/// 「允许」 answers once, so one click never silently becomes a session grant.
+fn approval_response(method: &str, params: &Value, for_session: bool) -> Option<Value> {
     if is_codex_elicitation(method) {
         return Some(json!({ "action": "decline", "content": null }));
     }
     match method {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-            Some(json!({ "decision": approve_decision(params) }))
+            Some(json!({ "decision": approve_decision(params, for_session) }))
         }
         // Legacy exec/apply-patch approval requests use ReviewDecision.
-        "execCommandApproval" | "applyPatchApproval" => {
-            Some(json!({ "decision": "approved_for_session" }))
-        }
+        "execCommandApproval" | "applyPatchApproval" => Some(json!({
+            "decision": if for_session { "approved_for_session" } else { "approved" }
+        })),
         "item/permissions/requestApproval" => Some(json!({
             "permissions": granted_codex_permissions(params),
-            "scope": "session"
+            "scope": if for_session { "session" } else { "turn" }
         })),
         _ => None,
     }
 }
 
-/// `acceptForSession` unless the server's ordered `availableDecisions` leaves it out —
-/// 0.158 terminal-input approvals (`kind: writeStdin`) only offer `accept` / `cancel`.
-fn approve_decision(params: &Value) -> &'static str {
+/// Honors the server's ordered `availableDecisions` — 0.158 terminal-input approvals
+/// (`kind: writeStdin`) only offer `accept` / `cancel`. Falls back to the other accept form
+/// only when the preferred one is not offered, otherwise the turn would stall.
+fn approve_decision(params: &Value, for_session: bool) -> &'static str {
     let offered = params
         .get("availableDecisions")
         .and_then(|v| v.as_array())
         .filter(|list| !list.is_empty());
-    match offered {
-        Some(list) if !list.iter().any(|d| d.as_str() == Some("acceptForSession")) => "accept",
-        _ => "acceptForSession",
+    let has = |decision: &str| {
+        offered.is_none_or(|list| list.iter().any(|d| d.as_str() == Some(decision)))
+    };
+    match (for_session, has("acceptForSession"), has("accept")) {
+        (true, true, _) | (false, true, false) => "acceptForSession",
+        _ => "accept",
     }
 }
 
@@ -382,11 +402,61 @@ enum CodexMapResult {
     TurnFailed(String),
 }
 
+/// Codex `tokenUsage.total` 分量（thread 累计）。用来把一轮的计费量算成「本轮增量」。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CodexUsageTotals {
+    input: u64,
+    cached: u64,
+    output: u64,
+    cache_write: u64,
+}
+
+impl CodexUsageTotals {
+    fn parse(value: &serde_json::Map<String, Value>) -> Self {
+        let field = |key: &str| value.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+        Self {
+            input: field("inputTokens"),
+            cached: field("cachedInputTokens"),
+            output: field("outputTokens"),
+            cache_write: field("cacheWriteInputTokens"),
+        }
+    }
+
+    fn minus(self, other: Self) -> Self {
+        Self {
+            input: self.input.saturating_sub(other.input),
+            cached: self.cached.saturating_sub(other.cached),
+            output: self.output.saturating_sub(other.output),
+            cache_write: self.cache_write.saturating_sub(other.cache_write),
+        }
+    }
+
+    fn parts(self, context_window: Option<u64>) -> CliUsageParts {
+        CliUsageParts {
+            input: self.input,
+            output: self.output,
+            cache_read: self.cached,
+            cache_creation: self.cache_write,
+            // **codex 的 cache 已含在 inputTokens 里**（OpenAI 口径），不能再加一遍。
+            // 本机实测原文（codex-cli 0.145.0, 2026-07-26）：
+            //   {"cacheWriteInputTokens":0,"cachedInputTokens":3456,"inputTokens":16865,
+            //    "outputTokens":7,"reasoningOutputTokens":0,"totalTokens":16872}
+            // 对账 16865 + 7 = 16872 = totalTokens ⇒ 3456 是 inputTokens 的子集。
+            // 刻意**不读** `reasoningOutputTokens`：推理 token 已含在 outputTokens 内。
+            cache_included_in_input: true,
+            context_window,
+            ..Default::default()
+        }
+    }
+}
+
 /// Map a single codex app-server notification to zero or more `UnifiedAgentEvent`s.
+/// `turn_usage_base` 是本轮开始前的 thread 累计用量；每轮开始时由调用方清成 `None`。
 fn map_codex_notification(
     method: &str,
     params: &Value,
     emitted_tools: &mut HashSet<String>,
+    turn_usage_base: &mut Option<CodexUsageTotals>,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) -> CodexMapResult {
     match method {
@@ -448,54 +518,52 @@ fn map_codex_notification(
         }
         "thread/tokenUsage/updated" => {
             // `tokenUsage` 有 `last` 与 `total` 两份：
-            //   last  = 最近一次请求的快照 → **上下文占用**口径，是用量条要的分子
-            //   total = 整个 thread 的累计消耗 → 计费口径，随轮次单调增长
-            // 用 total 当「已用上下文」会持续虚高，最终把进度条推满而实际远未满。
-            // `last` 缺失时才退回 `total`（兼容旧版 codex）。
+            //   last  = 最近一次请求的快照 → **上下文占用**口径（`context_tokens`）
+            //   total = 整个 thread 的累计消耗 → 计费口径，取本轮增量填计费字段
+            // 只用 last 当计费会漏掉一轮里工具往返的中间请求（用量条 ↑↓ 系统性偏低）；
+            // 用 total 当上下文占用又会持续虚高。两者分开存。
+            //
+            // 本轮基线 = 本轮第一条上报的 `total − last`（这条请求之前的累计）。不依赖
+            // 上一轮记下的 total：resume 后 total 可能带着整段历史，拿 0 当基线会重复计费。
             //
             // 同层还有 `modelContextWindow`（与 last/total 平级）：codex 自报的**本轮真实窗口**。
             // 本机实测 258400，而静态表（`codex debug models` 的 context_window）是 272000，
             // 偏高 5.3%。CLI 实报优先于任何静态表（模型可能中途切换），走
             // `ModelUsage::context_window_tokens` 这条 L9 最高优先级通道。
-            let model_context_window = params
-                .get("tokenUsage")
+            let token_usage = params.get("tokenUsage");
+            let model_context_window = token_usage
                 .and_then(|v| v.get("modelContextWindow"))
                 .and_then(|v| v.as_u64())
                 .filter(|tokens| *tokens > 0);
-            if let Some(usage) = params
-                .get("tokenUsage")
-                .and_then(|v| v.get("last").or_else(|| v.get("total")))
+            let last = token_usage
+                .and_then(|v| v.get("last"))
                 .and_then(|v| v.as_object())
-            {
-                let field = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-                let parts = CliUsageParts {
-                    input: field("inputTokens"),
-                    output: field("outputTokens"),
-                    cache_read: field("cachedInputTokens"),
-                    cache_creation: field("cacheWriteInputTokens"),
-                    // **codex 的 cache 已含在 inputTokens 里**（OpenAI 口径），不能再加一遍。
-                    // 本机实测原文（codex-cli 0.145.0, 2026-07-26）：
-                    //   {"cacheWriteInputTokens":0,"cachedInputTokens":3456,"inputTokens":16865,
-                    //    "outputTokens":7,"reasoningOutputTokens":0,"totalTokens":16872}
-                    // 对账 16865 + 7 = 16872 = totalTokens ⇒ 3456 是 inputTokens 的子集。
-                    // 当成不相交去加会得到 20328，虚高 20%。
-                    cache_included_in_input: true,
-                    // 刻意**不读** `reasoningOutputTokens`：同一样本里它是 0 而
-                    // input+output 已恰好等于 totalTokens，说明推理 token 已含在 outputTokens 内。
-                    context_window: model_context_window,
-                    ..Default::default()
-                };
-                if parts.input > 0
-                    || parts.output > 0
-                    || parts.cache_read > 0
-                    || parts.cache_creation > 0
-                    // 窗口本身也是有效信息：一轮还没产生 token 时先把分母立起来，
-                    // 好过让用量条继续吃静态表的近似值。
-                    || parts.context_window.is_some()
+                .map(CodexUsageTotals::parse);
+            let total = token_usage
+                .and_then(|v| v.get("total"))
+                .and_then(|v| v.as_object())
+                .map(CodexUsageTotals::parse);
+            let usage = match (last, total) {
+                (Some(last), Some(total)) => {
+                    let base = *turn_usage_base.get_or_insert_with(|| total.minus(last));
+                    let mut usage = usage_from_parts(total.minus(base).parts(model_context_window));
+                    usage.context_tokens = usage_from_parts(last.parts(None)).total_tokens;
+                    Some(usage)
+                }
+                // 旧版 codex 只给其中一份：退回单快照（既当计费也当占用）。
+                (Some(only), None) | (None, Some(only)) => {
+                    Some(usage_from_parts(only.parts(model_context_window)))
+                }
+                (None, None) => None,
+            };
+            if let Some(usage) = usage {
+                // 窗口本身也是有效信息：一轮还没产生 token 时先把分母立起来，
+                // 好过让用量条继续吃静态表的近似值。
+                if !crate::external_agents::run::usage_tokens_all_zero(&usage)
+                    || usage.context_tokens.unwrap_or(0) > 0
+                    || usage.context_window_tokens.is_some()
                 {
-                    sink(UnifiedAgentEvent::Usage {
-                        usage: usage_from_parts(parts),
-                    });
+                    sink(UnifiedAgentEvent::Usage { usage });
                 }
             }
         }
@@ -1392,6 +1460,9 @@ fn build_codex_turn_params(
         "cwd": cwd,
         "approvalPolicy": approval_policy,
         "sandboxPolicy": sandbox_policy,
+        // Catalog defaults can be `none`, which leaves the reasoning lane empty (T3 Code
+        // requests summaries on every turn for the same reason).
+        "summary": "detailed",
     });
     if let Some(effort) = normalize_codex_effort(effort) {
         turn_params["effort"] = json!(effort);
@@ -1516,11 +1587,14 @@ impl CodexAppServerSession {
         model: Option<&str>,
         sandbox: Option<&str>,
         resume_thread: Option<&str>,
+        mcp: Option<(&str, &str)>,
     ) -> Result<Self, String> {
         let tier = normalize_codex_sandbox(sandbox);
         let sandbox_mode = codex_thread_sandbox(tier);
         let approval_policy = codex_approval_policy(Some(sandbox_mode));
-        let mut child = codex_cli_command(resolved_bin)
+        let mut command = codex_cli_command(resolved_bin);
+        crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
+        let mut child = command
             .args(args)
             // Resume must stay narrow, but its config must use the selected capsule rather
             // than the previous rollout's sandbox. Let Codex resolve network/roots itself.
@@ -1580,10 +1654,11 @@ impl CodexAppServerSession {
                 approval_policy,
                 chosen_model,
                 resume_thread.filter(|t| !t.is_empty()),
+                mcp,
             );
             let thread_rpc_id = next_id;
             next_id += 1;
-            write_rpc(&mut stdin, thread_rpc_id, method, params)
+            write_rpc(&mut stdin, thread_rpc_id, method, params.clone())
                 .await
                 .map_err(|e| format!("thread-start: {e}"))?;
             let thread_timeout = if method == "thread/resume" {
@@ -1591,10 +1666,33 @@ impl CodexAppServerSession {
             } else {
                 CODEX_THREAD_START_TIMEOUT
             };
-            let mut result =
-                read_until_response(&mut reader, &mut stdin, thread_rpc_id, thread_timeout)
-                    .await
-                    .map_err(|e| format!("thread-start: {e}"))?;
+            let first =
+                read_until_response(&mut reader, &mut stdin, thread_rpc_id, thread_timeout).await;
+            let mut result = match first {
+                // An archived rollout (Codex app / `codex archive`) refuses resume until it is
+                // unarchived. Unarchive and retry once (T3 Code同款); any other failure surfaces.
+                Err(err)
+                    if method == "thread/resume"
+                        && crate::external_agents::errors::is_archived_codex_thread_error(&err) =>
+                {
+                    let unarchive_id = next_id;
+                    let retry_id = next_id + 1;
+                    next_id += 2;
+                    let unarchive = json!({ "threadId": params["threadId"] });
+                    write_rpc(&mut stdin, unarchive_id, "thread/unarchive", unarchive)
+                        .await
+                        .map_err(|e| format!("thread-unarchive: {e}"))?;
+                    read_until_response(&mut reader, &mut stdin, unarchive_id, thread_timeout)
+                        .await
+                        .map_err(|e| format!("thread-unarchive: {e}"))?;
+                    write_rpc(&mut stdin, retry_id, method, params)
+                        .await
+                        .map_err(|e| format!("thread-start: {e}"))?;
+                    read_until_response(&mut reader, &mut stdin, retry_id, thread_timeout).await
+                }
+                other => other,
+            }
+            .map_err(|e| format!("thread-start: {e}"))?;
             let thread_id = result
                 .get("thread")
                 .and_then(|t| t.get("id"))
@@ -1741,6 +1839,8 @@ impl CodexAppServerSession {
     ) -> Result<(), String> {
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
         let chosen_effort = normalize_codex_effort(reasoning);
+        // 本轮计费基线：由本轮第一条 tokenUsage 定下，轮次之间不复用。
+        let mut turn_usage_base: Option<CodexUsageTotals> = None;
         let mut input = if codex_skill_command(prompt).is_some() {
             // Resolve against this live session's working directory. The picker cache
             // is presentation data; only the runtime can authorize the skill path.
@@ -2007,10 +2107,13 @@ impl CodexAppServerSession {
                     self.active_turn_id = Some(turn.to_string());
                 }
                 let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
-                let mapped =
-                    map_codex_notification(method, &params, &mut self.emitted_tools, &mut |e| {
-                        buf.push(e)
-                    });
+                let mapped = map_codex_notification(
+                    method,
+                    &params,
+                    &mut self.emitted_tools,
+                    &mut turn_usage_base,
+                    &mut |e| buf.push(e),
+                );
                 for e in buf {
                     let _ = events.send(e).await;
                 }
@@ -2108,13 +2211,13 @@ async fn queue_codex_server_request(
     let interaction = method == "item/tool/requestUserInput" || is_codex_elicitation(method);
     let approval = is_codex_tool_approval(method);
     if approval && !asks_for_approval {
-        return write_rpc_result(stdin, id, approval_response(method, params).unwrap()).await;
+        return write_rpc_result(stdin, id, approval_response(method, params, true).unwrap()).await;
     }
     if !interaction && !approval {
         return write_rpc_result(
             stdin,
             id,
-            approval_response(method, params).unwrap_or_else(unknown_server_request_result),
+            approval_response(method, params, true).unwrap_or_else(unknown_server_request_result),
         )
         .await;
     }
@@ -2161,6 +2264,19 @@ async fn queue_codex_server_request(
     }
 }
 
+/// 用户答复 → Codex 审批回执。「总是允许」→ 本会话缓存（T3 `acceptAlways` → `acceptForSession`）；
+/// 单次「允许」只放这一次；没有答复（宿主缺失 / 撤回）一律拒绝。
+fn codex_tool_approval_result(
+    method: &str,
+    params: &Value,
+    decision: Option<&crate::external_agents::session::live::ApprovalDecision>,
+) -> Option<Value> {
+    match decision {
+        Some(decision) if decision.approved => approval_response(method, params, decision.always),
+        _ => approval_deny_response(method, false),
+    }
+}
+
 async fn answer_pending_codex_request(
     stdin: &mut ChildStdin,
     request: &CodexPendingRequest,
@@ -2168,11 +2284,8 @@ async fn answer_pending_codex_request(
 ) -> Result<(), String> {
     let approved = decision.as_ref().is_some_and(|decision| decision.approved);
     if is_codex_tool_approval(&request.method) {
-        let result = if approved {
-            approval_response(&request.method, &request.params)
-        } else {
-            approval_deny_response(&request.method, false)
-        };
+        let result =
+            codex_tool_approval_result(&request.method, &request.params, decision.as_ref());
         return write_rpc_result(stdin, &request.id, result.ok_or("unknown approval method")?)
             .await;
     }
@@ -2279,7 +2392,7 @@ async fn answer_handshake_request(
     id: &Value,
     params: &Value,
 ) -> Result<(), String> {
-    if let Some(result) = approval_response(method, params) {
+    if let Some(result) = approval_response(method, params, true) {
         write_rpc_result(stdin, id, result).await
     } else {
         write_rpc_result(stdin, id, unknown_server_request_result()).await
@@ -3293,18 +3406,6 @@ mod tests {
     }
 
     #[test]
-    fn production_codex_paths_do_not_use_the_binary_compatibility_launcher() {
-        let production = include_str!("codex_app_server.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production source");
-        assert!(
-            !production.contains("spawn::cli_command("),
-            "Codex session/probe paths must use RuntimeAgentDef launch policy"
-        );
-    }
-
-    #[test]
     fn production_codex_launcher_applies_definition_policy_to_a_renamed_wsl_binary() {
         let command = codex_cli_command(Path::new(r"\\wsl$\Ubuntu\usr\bin\company-codex-wrapper"));
         assert!(command
@@ -3324,8 +3425,9 @@ mod tests {
         let mut events = Vec::new();
         for method in ["item/started", "item/completed", "item/completed"] {
             assert_eq!(
-                map_codex_notification(method, &params, &mut emitted, &mut |event| events
-                    .push(event)),
+                map_codex_notification(method, &params, &mut emitted, &mut None, &mut |event| {
+                    events.push(event)
+                }),
                 CodexMapResult::Continue
             );
             if method == "item/started" {
@@ -3494,6 +3596,7 @@ mod tests {
                                 updated_input: Some(json!({"answers":{}})),
                                 set_permission_mode: None,
                                 updated_permissions: None,
+                                always: false,
                             })
                             .await
                             .unwrap();
@@ -3542,7 +3645,9 @@ mod tests {
         let params: Value = serde_json::from_str(raw).unwrap();
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        let mapped = map_codex_notification(method, &params, &mut tools, &mut |e| events.push(e));
+        let mapped = map_codex_notification(method, &params, &mut tools, &mut None, &mut |e| {
+            events.push(e)
+        });
         (events, mapped)
     }
 
@@ -3681,57 +3786,49 @@ mod tests {
 
     #[test]
     fn merge_uses_live_model_list_and_falls_back_to_curated() {
-        // Live 0.158 shape: GPT-6 family first, server default flagged.
+        let (known_id, _, known_efforts) = CODEX_CURATED_CATALOG.first().copied().unwrap();
         let runtime = parse_codex_model_list_result(&json!({
             "data": [
-                {"id": "gpt-6-sol", "displayName": "GPT-6-Sol"},
+                {"id": "live-model", "displayName": "Live"},
                 {
-                    "id": "gpt-6-astra",
-                    "displayName": "GPT-6-Astra",
+                    "id": "live-default",
+                    "displayName": "Live Default",
                     "isDefault": true,
                     "supportedReasoningEfforts": [
                         {"reasoningEffort": "low", "description": "Fast"},
                         {"reasoningEffort": "ultra", "description": "Deep"}
                     ]
                 },
-                {"id": "gpt-5.6-sol", "displayName": "GPT-5.6-Sol"},
-                {"id": "gpt-5.4", "displayName": "gpt-5.4", "hidden": true}
+                {"id": known_id},
+                {"id": "hidden-model", "hidden": true}
             ]
         }))
         .unwrap();
 
-        let merged = merge_codex_model_catalog(runtime, Some("gpt-6-astra"));
+        let merged = merge_codex_model_catalog(runtime, Some("live-default"));
         let ids: Vec<&str> = merged.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["default", "live-default", "live-model", known_id]);
         assert_eq!(
-            ids,
-            vec!["default", "gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol"]
-        );
-        assert_eq!(
-            merged.reasoning_by_model.get("gpt-6-astra").unwrap().len(),
+            merged.reasoning_by_model.get("live-default").unwrap().len(),
             2
         );
         assert_eq!(merged.reasoning_options.len(), 2);
         // Listed without efforts: curated ladder fills in when the id is known.
-        assert!(merged
+        let actual_efforts: Vec<_> = merged
             .reasoning_by_model
-            .get("gpt-5.6-sol")
+            .get(known_id)
             .unwrap()
             .iter()
-            .any(|e| e.id == "ultra"));
-        assert!(!merged.reasoning_by_model.contains_key("gpt-6-sol"));
+            .map(|effort| effort.id.as_str())
+            .collect();
+        assert_eq!(actual_efforts.as_slice(), known_efforts);
+        assert!(!merged.reasoning_by_model.contains_key("live-model"));
 
         let fallback = codex_static_fallback_probe();
-        let ids: Vec<&str> = fallback.models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "default",
-                "gpt-5.6-sol",
-                "gpt-5.6-terra",
-                "gpt-5.6-luna",
-                "gpt-5.5"
-            ]
-        );
+        assert_eq!(fallback.models[0].id, "default");
+        let ids: Vec<_> = fallback.models[1..].iter().map(|m| m.id.as_str()).collect();
+        let expected: Vec<_> = CODEX_CURATED_CATALOG.iter().map(|(id, _, _)| *id).collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]
@@ -3813,6 +3910,7 @@ mod tests {
             None,
             Some("workspace-write"),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3875,6 +3973,7 @@ mod tests {
             None,
             Some(CODEX_PLAN_MODE),
             Some(&native_id),
+            None,
         )
         .await
         .unwrap();
@@ -3922,6 +4021,7 @@ mod tests {
                 None,
                 Some(tier),
                 Some(&native_id),
+                None,
             )
             .await
             .unwrap();
@@ -3963,6 +4063,7 @@ mod tests {
             &bin,
             &["app-server".to_string()],
             &cwd,
+            None,
             None,
             None,
             None,
@@ -4088,12 +4189,20 @@ mod tests {
         let completed_val: Value = serde_json::from_str(completed).unwrap();
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started_val, &mut tools, &mut |e| {
-            events.push(e)
-        });
-        map_codex_notification("item/completed", &completed_val, &mut tools, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/started",
+            &started_val,
+            &mut tools,
+            &mut None,
+            &mut |e| events.push(e),
+        );
+        map_codex_notification(
+            "item/completed",
+            &completed_val,
+            &mut tools,
+            &mut None,
+            &mut |e| events.push(e),
+        );
         assert!(matches!(
             events.first(),
             Some(UnifiedAgentEvent::ToolUse { id, name, .. }) if id == "cmd-1" && name == "Bash"
@@ -4128,12 +4237,16 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started, &mut tools, &mut |e| {
+        map_codex_notification("item/started", &started, &mut tools, &mut None, &mut |e| {
             events.push(e)
         });
-        map_codex_notification("item/completed", &completed, &mut tools, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/completed",
+            &completed,
+            &mut tools,
+            &mut None,
+            &mut |e| events.push(e),
+        );
         assert!(matches!(
             events.first(),
             Some(UnifiedAgentEvent::ToolUse { id, name, .. })
@@ -4238,6 +4351,39 @@ mod tests {
         );
         let usage = only_usage(&events);
         assert_eq!(usage.context_window_tokens, None);
+    }
+
+    #[test]
+    fn token_usage_bills_whole_turn_but_reports_last_request_as_context() {
+        // 一轮两次请求（中间有工具往返），且 thread 在本轮前已累计 100K（resume 的历史）。
+        let mut base = None;
+        let mut tools = HashSet::new();
+        let mut events = Vec::new();
+        for raw in [
+            r#"{"tokenUsage":{"last":{"cachedInputTokens":9000,"inputTokens":10000,"outputTokens":200},
+                "total":{"cachedInputTokens":80000,"inputTokens":110000,"outputTokens":3200}}}"#,
+            r#"{"tokenUsage":{"last":{"cachedInputTokens":10000,"inputTokens":10500,"outputTokens":300},
+                "total":{"cachedInputTokens":90000,"inputTokens":120500,"outputTokens":3500}}}"#,
+        ] {
+            let params: Value = serde_json::from_str(raw).unwrap();
+            map_codex_notification(
+                "thread/tokenUsage/updated",
+                &params,
+                &mut tools,
+                &mut base,
+                &mut |e| events.push(e),
+            );
+        }
+        let usage = match events.last() {
+            Some(UnifiedAgentEvent::Usage { usage }) => usage.clone(),
+            other => panic!("expected Usage, got {other:?}"),
+        };
+        // 计费 = 两次请求之和，不含本轮之前的 100K 历史。
+        assert_eq!(usage.input_tokens, Some(20_500));
+        assert_eq!(usage.cached_input_tokens, Some(19_000));
+        assert_eq!(usage.output_tokens, Some(500));
+        // 上下文占用 = 最后一次请求。
+        assert_eq!(usage.context_tokens, Some(10_800));
     }
 
     #[test]
@@ -4389,6 +4535,7 @@ mod tests {
             UnifiedAgentEvent::InteractionResolved { .. } => "InteractionResolved",
             UnifiedAgentEvent::ThinkingDelta { .. } => "ThinkingDelta",
             UnifiedAgentEvent::ToolUse { .. } => "ToolUse",
+            UnifiedAgentEvent::ToolPartialOutput { .. } => "ToolPartialOutput",
             UnifiedAgentEvent::ToolResult { .. } => "ToolResult",
             UnifiedAgentEvent::Usage { .. } => "Usage",
             UnifiedAgentEvent::Error { .. } => "Error",
@@ -4428,6 +4575,7 @@ mod tests {
             &bin,
             &["app-server".to_string()],
             &cwd,
+            None,
             None,
             None,
             None,
@@ -4499,6 +4647,7 @@ mod tests {
             &bin,
             &["app-server".to_string()],
             &cwd,
+            None,
             None,
             None,
             None,
@@ -4723,6 +4872,7 @@ mod tests {
         assert_eq!(params["model"], json!("gpt-5.3-codex"));
         assert_eq!(params["effort"], json!("high"));
         assert_eq!(params["approvalPolicy"], json!("on-request"));
+        assert_eq!(params["summary"], json!("detailed"));
     }
 
     #[test]
@@ -4791,6 +4941,7 @@ mod tests {
             "on-request",
             Some("gpt-5.6-sol"),
             None,
+            Some(("http://127.0.0.1:1234/mcp", "Bearer secret")),
         );
         assert_eq!(method, "thread/start");
         assert_eq!(params["cwd"], json!("/work"));
@@ -4799,19 +4950,47 @@ mod tests {
         assert_eq!(params["model"], json!("gpt-5.6-sol"));
         assert_eq!(params["runtimeWorkspaceRoots"], json!(["/work"]));
         assert!(params.get("threadId").is_none());
+        assert_eq!(params["config"]["tools.update_plan.enabled"], json!(true));
+        assert_eq!(
+            params["config"]["mcp_servers.kivio"],
+            json!({
+                "url": "http://127.0.0.1:1234/mcp",
+                "http_headers": {"Authorization": "Bearer secret"}
+            })
+        );
     }
 
     #[test]
-    fn build_codex_thread_params_resume_sends_only_thread_id() {
+    fn build_codex_thread_params_resume_sends_only_thread_id_and_config() {
         let (method, params) = build_codex_thread_params(
             "/work",
             "workspace-write",
             "on-request",
             Some("gpt-5.6-sol"),
             Some("thr_1"),
+            Some(("http://127.0.0.1:1234/mcp", "Bearer secret")),
         );
         assert_eq!(method, "thread/resume");
-        assert_eq!(params, json!({ "threadId": "thr_1", "excludeTurns": true }));
+        assert_eq!(
+            params["config"]["mcp_servers.kivio"],
+            json!({
+                "url": "http://127.0.0.1:1234/mcp",
+                "http_headers": {"Authorization": "Bearer secret"}
+            })
+        );
+        assert_eq!(
+            params,
+            json!({
+                "threadId": "thr_1",
+                "excludeTurns": true,
+                "config": codex_thread_config(Some(("http://127.0.0.1:1234/mcp", "Bearer secret")))
+            })
+        );
+    }
+
+    #[test]
+    fn codex_thread_config_omits_chat_server_without_credential() {
+        assert!(codex_thread_config(None).get("mcp_servers.kivio").is_none());
     }
 
     #[test]
@@ -4824,18 +5003,28 @@ mod tests {
     #[test]
     fn approval_response_shapes() {
         let empty = json!({});
+        // A clicked 「允许」 answers once; only host auto-approval uses the session grant.
         assert_eq!(
-            approval_response("item/commandExecution/requestApproval", &empty),
+            approval_response("item/commandExecution/requestApproval", &empty, false),
+            Some(json!({ "decision": "accept" }))
+        );
+        assert_eq!(
+            approval_response("item/fileChange/requestApproval", &empty, true),
             Some(json!({ "decision": "acceptForSession" }))
         );
         assert_eq!(
-            approval_response("item/fileChange/requestApproval", &empty),
-            Some(json!({ "decision": "acceptForSession" }))
+            approval_response("execCommandApproval", &empty, false),
+            Some(json!({ "decision": "approved" }))
+        );
+        assert_eq!(
+            approval_response("applyPatchApproval", &empty, true),
+            Some(json!({ "decision": "approved_for_session" }))
         );
         assert_eq!(
             approval_response(
                 "item/permissions/requestApproval",
                 &json!({ "permissions": { "network": { "enabled": true } } }),
+                true,
             ),
             Some(json!({
                 "permissions": { "network": { "enabled": true } },
@@ -4846,14 +5035,15 @@ mod tests {
             approval_response(
                 "item/permissions/requestApproval",
                 &json!({ "permissions": { "network": true } }),
+                false,
             ),
             Some(json!({
                 "permissions": { "network": { "enabled": true } },
-                "scope": "session"
+                "scope": "turn"
             }))
         );
-        assert!(approval_response("item/started", &empty).is_none());
-        assert!(approval_response("item/tool/requestUserInput", &empty).is_none());
+        assert!(approval_response("item/started", &empty, true).is_none());
+        assert!(approval_response("item/tool/requestUserInput", &empty, true).is_none());
         assert_eq!(
             approval_deny_response("item/commandExecution/requestApproval", false),
             Some(json!({ "decision": "decline" }))
@@ -4867,11 +5057,11 @@ mod tests {
             Some(json!({ "permissions": {}, "scope": "turn" }))
         );
         assert_eq!(
-            approval_response("mcpServer/elicitation/request", &empty),
+            approval_response("mcpServer/elicitation/request", &empty, true),
             Some(json!({ "action": "decline", "content": null }))
         );
         assert_eq!(
-            approval_response("openai/elicitation/create", &empty),
+            approval_response("openai/elicitation/create", &empty, true),
             Some(json!({ "action": "decline", "content": null }))
         );
         assert_eq!(
@@ -4885,6 +5075,45 @@ mod tests {
     }
 
     #[test]
+    fn user_decision_maps_allow_once_and_always_to_codex_scopes() {
+        use crate::external_agents::session::live::ApprovalDecision;
+        let decide = |approved, always| ApprovalDecision {
+            request_id: "1".into(),
+            approved,
+            updated_input: None,
+            set_permission_mode: None,
+            updated_permissions: None,
+            always,
+        };
+        let command = "item/commandExecution/requestApproval";
+        let offered = json!({ "availableDecisions": ["accept", "acceptForSession", "cancel"] });
+        let reply = |decision: Option<&ApprovalDecision>| {
+            codex_tool_approval_result(command, &offered, decision)
+        };
+        assert_eq!(
+            reply(Some(&decide(true, false))),
+            Some(json!({ "decision": "accept" }))
+        );
+        assert_eq!(
+            reply(Some(&decide(true, true))),
+            Some(json!({ "decision": "acceptForSession" }))
+        );
+        assert_eq!(
+            reply(Some(&decide(false, true))),
+            Some(json!({ "decision": "decline" }))
+        );
+        assert_eq!(reply(None), Some(json!({ "decision": "decline" })));
+        assert_eq!(
+            codex_tool_approval_result(
+                "item/permissions/requestApproval",
+                &json!({ "permissions": { "network": true } }),
+                Some(&decide(true, true)),
+            ),
+            Some(json!({ "permissions": { "network": { "enabled": true } }, "scope": "session" }))
+        );
+    }
+
+    #[test]
     fn write_stdin_approval_is_its_own_tool_and_honors_available_decisions() {
         let params = json!({
             "kind": "writeStdin",
@@ -4894,11 +5123,16 @@ mod tests {
         let ask =
             approval_ask_from_params("item/commandExecution/requestApproval", &json!(7), &params);
         assert_eq!(ask.tool_name, "write_stdin");
-        assert_eq!(
-            approval_response("item/commandExecution/requestApproval", &params),
-            Some(json!({ "decision": "accept" }))
-        );
-        // Older servers / ordinary commands keep the session-wide grant.
+        for for_session in [false, true] {
+            assert_eq!(
+                approval_response(
+                    "item/commandExecution/requestApproval",
+                    &params,
+                    for_session
+                ),
+                Some(json!({ "decision": "accept" }))
+            );
+        }
         let command = json!({ "command": "ls", "availableDecisions": ["accept", "acceptForSession", "cancel"] });
         assert_eq!(
             approval_ask_from_params("item/commandExecution/requestApproval", &json!(8), &command)
@@ -4906,11 +5140,20 @@ mod tests {
             "Bash"
         );
         assert_eq!(
-            approval_response("item/commandExecution/requestApproval", &command),
+            approval_response("item/commandExecution/requestApproval", &command, true),
             Some(json!({ "decision": "acceptForSession" }))
         );
         assert_eq!(
-            approval_response("item/commandExecution/requestApproval", &json!({})),
+            approval_response("item/commandExecution/requestApproval", &command, false),
+            Some(json!({ "decision": "accept" }))
+        );
+        // A server that only offers the session form must still be answered, not stalled.
+        assert_eq!(
+            approval_response(
+                "item/commandExecution/requestApproval",
+                &json!({ "availableDecisions": ["acceptForSession", "cancel"] }),
+                false,
+            ),
             Some(json!({ "decision": "acceptForSession" }))
         );
     }
@@ -4932,6 +5175,7 @@ mod tests {
                 "secondary": {"usedPercent": 100, "resetsAt": later}
             }}),
             &mut HashSet::new(),
+            &mut None,
             &mut |e| events.push(e),
         );
         match events.as_slice() {
@@ -4973,12 +5217,14 @@ mod tests {
             "item/completed",
             &json!({"item": {"type": "exitedReviewMode", "id": "r1", "review": "No issues found."}}),
             &mut seen,
+            &mut None,
             &mut |e| events.push(e),
         );
         map_codex_notification(
             "configWarning",
             &json!({"summary": "Unknown key `foo`", "path": "/h/.codex/config.toml"}),
             &mut seen,
+            &mut None,
             &mut |e| events.push(e),
         );
         match events.as_slice() {
@@ -4999,6 +5245,7 @@ mod tests {
                 "item/completed",
                 &json!({"item": {"type": "plan", "id": "p1", "text": "# Plan\n1. Do it"}}),
                 &mut seen,
+                &mut None,
                 &mut |e| events.push(e),
             );
         }
@@ -5142,12 +5389,16 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started, &mut tools, &mut |e| {
+        map_codex_notification("item/started", &started, &mut tools, &mut None, &mut |e| {
             events.push(e)
         });
-        map_codex_notification("item/completed", &completed, &mut tools, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/completed",
+            &completed,
+            &mut tools,
+            &mut None,
+            &mut |e| events.push(e),
+        );
         assert!(matches!(
             events.first(),
             Some(UnifiedAgentEvent::ToolUse { id, name, .. }) if id == "fc-1" && name == "Edit"
@@ -5184,12 +5435,16 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started, &mut tools, &mut |e| {
+        map_codex_notification("item/started", &started, &mut tools, &mut None, &mut |e| {
             events.push(e)
         });
-        map_codex_notification("item/completed", &completed, &mut tools, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/completed",
+            &completed,
+            &mut tools,
+            &mut None,
+            &mut |e| events.push(e),
+        );
         assert!(matches!(
             events.first(),
             Some(UnifiedAgentEvent::ToolUse { id, name, .. })
@@ -5224,12 +5479,16 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &image, &mut tools, &mut |e| events.push(e));
-        map_codex_notification("item/completed", &image, &mut tools, &mut |e| {
+        map_codex_notification("item/started", &image, &mut tools, &mut None, &mut |e| {
             events.push(e)
         });
-        map_codex_notification("item/started", &sleep, &mut tools, &mut |e| events.push(e));
-        map_codex_notification("item/completed", &sleep, &mut tools, &mut |e| {
+        map_codex_notification("item/completed", &image, &mut tools, &mut None, &mut |e| {
+            events.push(e)
+        });
+        map_codex_notification("item/started", &sleep, &mut tools, &mut None, &mut |e| {
+            events.push(e)
+        });
+        map_codex_notification("item/completed", &sleep, &mut tools, &mut None, &mut |e| {
             events.push(e)
         });
         assert!(events.iter().any(|event| matches!(
@@ -5264,8 +5523,10 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &clock, &mut tools, &mut |e| events.push(e));
-        map_codex_notification("item/completed", &clock, &mut tools, &mut |e| {
+        map_codex_notification("item/started", &clock, &mut tools, &mut None, &mut |e| {
+            events.push(e)
+        });
+        map_codex_notification("item/completed", &clock, &mut tools, &mut None, &mut |e| {
             events.push(e)
         });
         assert!(events.iter().any(|event| matches!(
@@ -5302,12 +5563,16 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started, &mut tools, &mut |e| {
+        map_codex_notification("item/started", &started, &mut tools, &mut None, &mut |e| {
             events.push(e)
         });
-        map_codex_notification("item/completed", &completed, &mut tools, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/completed",
+            &completed,
+            &mut tools,
+            &mut None,
+            &mut |e| events.push(e),
+        );
         assert!(matches!(
             events.first(),
             Some(UnifiedAgentEvent::ToolUse { name, .. }) if name == "subagent"

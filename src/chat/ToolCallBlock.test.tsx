@@ -22,9 +22,10 @@ vi.mock('./attachmentPreview', () => ({
   openAttachment: () => Promise.resolve(),
 }))
 
-import { ImageReadCluster, ToolCallBlock } from './ToolCallBlock'
-import type { ToolCallRecord } from './types'
-import { LangContext } from '../components/i18n'
+import { ImageReadCluster, ToolCallBlock, ToolCallCluster } from './ToolCallBlock'
+import type { ChatMessageSegment, ToolCallRecord } from './types'
+import { i18n, LangContext } from '../components/i18n'
+import { ReasoningPreviewContext } from './reasoningPreview'
 
 function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -36,7 +37,141 @@ function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord 
   }
 }
 
+function toolSegments(...ids: string[]): ChatMessageSegment[] {
+  return ids.map((id, order) => ({ id: `segment-${id}`, kind: 'tool', phase: 'tool_loop', order, tool_call_id: id }))
+}
+
+function toolIndex(...calls: ToolCallRecord[]): ReadonlyMap<string, ToolCallRecord> {
+  return new Map(calls.map(call => [call.id, call]))
+}
+
+describe('HTML tool labels', () => {
+  it.each([
+    ['html_render', 'Render HTML'],
+    ['mcp__kivio__html_render', 'Render HTML'],
+    ['html_preview', 'Preview HTML'],
+    ['mcp__kivio__html_preview', 'Preview HTML'],
+  ])('shows a friendly name for %s', (name, label) => {
+    render(<ToolCallBlock toolCall={buildToolCall({ name, toolName: name, status: 'completed' })} />)
+    expect(screen.getByText(label)).toBeInTheDocument()
+  })
+})
+
+describe('ToolCallCluster', () => {
+  it('prefers an older active tool over a later completed one', () => {
+    const toolCalls = [
+      buildToolCall({ id: 'a', status: 'running', arguments: { path: '/tmp/active.ts' } }),
+      buildToolCall({ id: 'b', toolName: 'run_command', status: 'success', arguments: { command: 'echo done' } }),
+    ]
+    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} toolCallById={toolIndex(...toolCalls)} messageStreaming>{() => null}</ToolCallCluster>)
+    const row = screen.getByRole('button')
+    expect(row).toHaveTextContent('active.ts')
+    expect(row).not.toHaveTextContent('echo done')
+  })
+
+  it('uses a semantic summary when completed and displays outcome counts once', () => {
+    const toolCalls = [
+      buildToolCall({ id: 'a', status: 'error', arguments: { path: 'a.ts' } }),
+      buildToolCall({ id: 'b', status: 'cancelled', arguments: { path: 'b.ts' } }),
+    ]
+    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} toolCallById={toolIndex(...toolCalls)} messageStreaming={false}>{() => null}</ToolCallCluster>)
+    const row = screen.getByRole('button')
+    expect(row).toHaveTextContent('读取 2 个文件')
+    expect(row).not.toHaveTextContent('失败')
+    expect(row.textContent?.match(/1 项已停止/g)).toHaveLength(1)
+  })
+
+  it('summarizes indexed records for this cluster without including unrelated calls', () => {
+    const first = buildToolCall({ id: 'a', arguments: { path: 'a.ts' } })
+    const stale = buildToolCall({ id: 'b', arguments: { path: 'b.ts' } })
+    const latest: ToolCallRecord = { ...stale, status: 'error' }
+    const unrelated = buildToolCall({ id: 'outside', status: 'cancelled' })
+    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[first, stale]} toolCallById={toolIndex(first, latest, unrelated)} messageStreaming={false}>{() => null}</ToolCallCluster>)
+    const row = screen.getByRole('button')
+    expect(row).toHaveTextContent('读取 2 个文件')
+    expect(row).not.toHaveTextContent('失败')
+    expect(row).not.toHaveTextContent('已停止')
+  })
+
+  it('mounts children lazily and stays open on append and completion without moving scroll', async () => {
+    const onExpand = vi.fn()
+    const children = vi.fn(() => <div>Details</div>)
+    const first = buildToolCall({ id: 'a', status: 'running' })
+    const second = buildToolCall({ id: 'b' })
+    const completed: ToolCallRecord = { ...first, status: 'success' }
+    const { rerender, container } = render(
+      <ToolCallCluster segments={toolSegments('a')} toolCalls={[first]} toolCallById={toolIndex(first)} messageStreaming onExpand={onExpand}>{children}</ToolCallCluster>,
+    )
+    expect(children).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button'))
+    expect(onExpand).toHaveBeenCalledOnce()
+    expect(screen.getByText('Details')).toBeVisible()
+    const scroll = container.querySelector<HTMLElement>('.custom-scrollbar')!
+    scroll.scrollTop = 42
+    rerender(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[first, second]} toolCallById={toolIndex(first, second)} messageStreaming onExpand={onExpand}>{children}</ToolCallCluster>)
+    rerender(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[completed, second]} toolCallById={toolIndex(completed, second)} messageStreaming={false} onExpand={onExpand}>{children}</ToolCallCluster>)
+    expect(screen.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    expect(container.querySelector('.custom-scrollbar')).toBe(scroll)
+    expect(scroll.scrollTop).toBe(42)
+    expect(onExpand).toHaveBeenCalledOnce()
+  })
+
+  it('respects reasoning preview privacy and uses incumbent thinking labels', () => {
+    const segment: ChatMessageSegment = { id: 'r', kind: 'reasoning', phase: 'tool_loop', order: 0 }
+    const { rerender } = render(
+      <ReasoningPreviewContext.Provider value={false}>
+        <ToolCallCluster segments={[segment]} toolCalls={[]} toolCallById={toolIndex()} messageStreaming latestReasoning={{ text: 'private thought', streaming: true }}>{() => null}</ToolCallCluster>
+      </ReasoningPreviewContext.Provider>,
+    )
+    expect(screen.getByRole('button')).toHaveTextContent('Thinking…')
+    expect(screen.getByRole('button')).toHaveAttribute('title', '展开完整思考')
+    expect(screen.queryByText('private thought')).not.toBeInTheDocument()
+    rerender(<ToolCallCluster segments={[segment]} toolCalls={[]} toolCallById={toolIndex()} messageStreaming={false}>{() => null}</ToolCallCluster>)
+    expect(screen.getByRole('button')).toHaveTextContent('Thought')
+  })
+})
+
 describe('ToolCallBlock', () => {
+  it('streams multiline external tool output at the bottom and keeps terminal rendering unchanged', () => {
+    const first = `${'x'.repeat(230)}\nsecond line`
+    const call = buildToolCall({
+      toolName: 'run_command', source: 'external_cli', status: 'running',
+      arguments: { command: 'npm test' }, result_preview: first,
+    })
+    const { container, rerender } = render(<ToolCallBlock toolCall={call} defaultOpen />)
+    const output = container.querySelector<HTMLPreElement>('pre.custom-scrollbar')
+    expect(output).not.toBeNull()
+    expect(output?.textContent).toBe(first)
+    Object.defineProperty(output!, 'scrollHeight', { configurable: true, value: 900 })
+    output!.scrollTop = 0
+    rerender(<ToolCallBlock toolCall={{ ...call, result_preview: `${first}\nthird line` }} defaultOpen />)
+    expect(output?.textContent).toBe(`${first}\nthird line`)
+    expect(output?.scrollTop).toBe(900)
+    rerender(<ToolCallBlock toolCall={{ ...call, status: 'success', result_preview: 'finished\nok' }} defaultOpen />)
+    expect(screen.getByText('finished ok')).toBeVisible()
+    expect(container.querySelector('pre.custom-scrollbar')).toBeNull()
+  })
+
+  it('keeps a running tool collapsed by default until its disclosure is opened', async () => {
+    render(<ToolCallBlock toolCall={buildToolCall({
+      toolName: 'run_command', source: 'external_cli', status: 'running', result_preview: 'live output',
+    })} />)
+    expect(screen.queryByText('live output')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /Run/ }))
+    expect(screen.getByText('live output')).toBeVisible()
+  })
+
+  it.each([
+    ['Agent', /SUBAGENT/],
+    ['web_search', /WEB SEARCH/],
+  ] as const)('shows external %s partial output inside its specialized disclosure', async (toolName, label) => {
+    render(<ToolCallBlock toolCall={buildToolCall({
+      toolName, source: 'external_cli', status: 'running', result_preview: 'partial\noutput',
+    })} />)
+    await userEvent.click(screen.getByRole('button', { name: label }))
+    expect(screen.getByText(/partial/).textContent).toBe('partial\noutput')
+  })
+
   it.each([
     ['skill', { name: 'pdf', arguments: 'extract tables' }],
     ['skill_activate', { name: 'pdf', arguments: 'extract tables' }],
@@ -158,7 +293,7 @@ describe('ToolCallBlock', () => {
     expect(text).not.toContain('line 13')
   })
 
-  it('keeps the error out of the collapsed row and shows it (not red) in the expanded detail', async () => {
+  it('keeps the error out of the collapsed row and shows it in the expanded detail', async () => {
     const user = userEvent.setup()
     render(
       <ToolCallBlock
@@ -171,10 +306,7 @@ describe('ToolCallBlock', () => {
     const button = screen.getByRole('button', { name: /Read/ })
     expect(within(button).queryByText(/permission denied/)).not.toBeInTheDocument()
     await user.click(button)
-    const detail = screen.getByText(/permission denied/)
-    expect(detail).toBeInTheDocument()
-    // 错误不再标红
-    expect(detail.className).not.toContain('text-red-500')
+    expect(screen.getByText(/permission denied/)).toBeInTheDocument()
   })
 
   it('expands details when clicked', async () => {
@@ -188,7 +320,7 @@ describe('ToolCallBlock', () => {
       />,
     )
     await user.click(screen.getByRole('button', { name: /Read/ }))
-    expect(screen.getByText('参数')).toBeInTheDocument()
+    expect(screen.getByText(i18n.zh.toolCardArgs)).toBeInTheDocument()
     expect(screen.getAllByText(/README\.md/).length).toBeGreaterThan(0)
   })
 
@@ -205,8 +337,8 @@ describe('ToolCallBlock', () => {
       </LangContext.Provider>,
     )
     await user.click(screen.getByRole('button', { name: /Read/ }))
-    expect(screen.getByText('Arguments')).toBeInTheDocument()
-    expect(screen.queryByText('参数')).not.toBeInTheDocument()
+    expect(screen.getByText(i18n.en.toolCardArgs)).toBeInTheDocument()
+    expect(screen.queryByText(i18n.zh.toolCardArgs)).not.toBeInTheDocument()
   })
 
   it('keeps $ sequences from tool arguments intact in localized previews', async () => {
@@ -732,6 +864,23 @@ describe('ToolCallBlock', () => {
     expect(within(button).getByText('Show sheet structure of three Excel files')).toBeInTheDocument()
     expect(within(button).queryByText(/pwsh/)).not.toBeInTheDocument()
     expect(within(button).queryByText(/"command"/)).not.toBeInTheDocument()
+  })
+
+  it('strips the pwsh.exe -Command wrapper from the inline command', () => {
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'pwsh',
+          source: 'external_cli',
+          arguments: JSON.stringify({
+            command: '"C:\\Users\\Z\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe" -Command "git log --oneline -5"',
+          }),
+        })}
+      />,
+    )
+    const button = screen.getByRole('button')
+    expect(within(button).getByText('git log --oneline -5')).toBeInTheDocument()
+    expect(within(button).queryByText(/pwsh\.exe/)).not.toBeInTheDocument()
   })
 
   it('maps claude Bash to Run + the command', () => {
