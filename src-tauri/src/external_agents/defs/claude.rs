@@ -97,6 +97,44 @@ pub fn ephemeral_probe_args(args: &[String]) -> Vec<String> {
 
 const NO_SESSION_PERSISTENCE: &str = "--no-session-persistence";
 
+pub(crate) fn append_chat_mcp_args(
+    args: &mut Vec<String>,
+    url: &str,
+    authorization: &str,
+) -> Result<tempfile::NamedTempFile, String> {
+    let config = serde_json::json!({
+        "mcpServers": {
+            (crate::app_mcp::CHAT_MCP_SERVER_NAME): {
+                "type": "http",
+                "url": url,
+                "headers": { "Authorization": authorization }
+            }
+        }
+    });
+    use std::io::Write;
+    // NamedTempFile is created owner-only (0600 on Unix) and unlinked on drop.
+    let mut file = tempfile::Builder::new()
+        .prefix("kivio-claude-mcp-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|error| format!("Cannot create Claude MCP config: {error}"))?;
+    serde_json::to_writer(&mut file, &config)
+        .map_err(|error| format!("Cannot write Claude MCP config: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("Cannot flush Claude MCP config: {error}"))?;
+    let path = file
+        .path()
+        .to_str()
+        .ok_or_else(|| "Claude MCP config path is not valid UTF-8".to_string())?;
+    args.extend([
+        "--mcp-config".to_string(),
+        path.to_string(),
+        "--allowedTools".to_string(),
+        "mcp__kivio__html_render mcp__kivio__html_preview".to_string(),
+    ]);
+    Ok(file)
+}
+
 pub fn build_claude_args(
     ctx: &RuntimeContext,
     options: &RuntimeBuildOptions,
@@ -104,6 +142,7 @@ pub fn build_claude_args(
 ) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
+        "--replay-user-messages".to_string(),
         "--input-format".to_string(),
         "stream-json".to_string(),
         "--output-format".to_string(),
@@ -277,18 +316,33 @@ pub fn append_system_prompt_file_args(path: &std::path::Path) -> Vec<String> {
 ///
 /// 版本门控：旧 CLI 不认这个 flag 会直接拒绝启动，所以版本未知或低于 2.1.267 都不加。
 pub fn system_prompt_snapshot_off_args(cli_version: Option<&str>) -> Vec<String> {
-    let supported = cli_version
+    if claude_version_at_least(cli_version, (2, 1, 267)) {
+        vec!["--system-prompt-snapshot".to_string(), "off".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// `--thinking-display summarized`（T3 Code 同款）：`-p` + stream-json 下 CLI 不指定展示方式，
+/// 交给 API 默认 —— 新模型默认 `omitted`，思考块只剩签名，思考栏一片空白。显式要摘要。
+/// 「关闭思考」档不加（与 `--thinking disabled` 矛盾）。隐藏 flag：SDK 0.2.90 尚无、0.2.100 已有，
+/// 旧 CLI 不认会拒绝启动，所以版本未知或低于 2.1.100 都不加。
+pub fn thinking_display_args(reasoning: Option<&str>, cli_version: Option<&str>) -> Vec<String> {
+    let off = reasoning.is_some_and(|r| r.trim().eq_ignore_ascii_case("off"));
+    if off || !claude_version_at_least(cli_version, (2, 1, 100)) {
+        return Vec::new();
+    }
+    vec!["--thinking-display".to_string(), "summarized".to_string()]
+}
+
+fn claude_version_at_least(cli_version: Option<&str>, min: (u64, u64, u64)) -> bool {
+    cli_version
         .and_then(crate::external_agents::installer::extract_semver)
         .and_then(|v| {
             let mut parts = v.split(['.', '-']).map(|p| p.parse::<u64>().ok());
             Some((parts.next()??, parts.next()??, parts.next()??))
         })
-        .is_some_and(|v| v >= (2, 1, 267));
-    if supported {
-        vec!["--system-prompt-snapshot".to_string(), "off".to_string()]
-    } else {
-        Vec::new()
-    }
+        .is_some_and(|v| v >= min)
 }
 
 /// 把 claude 的启动参数改写成「续接 `session_id` 这个原生会话」：先摘掉已有的
@@ -454,7 +508,7 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     stream_format: StreamFormat::ClaudeStreamJson,
     resumes_session_via_cli: true,
     supports_native_image: true,
-    supports_steering: false,
+    supports_steering: true,
     supports_follow_up: false,
     image_mime_whitelist: &["image/jpeg", "image/png", "image/gif", "image/webp"],
     build_args: build_claude_args,
@@ -463,6 +517,44 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_mcp_args_preserve_other_servers_and_allow_both_tools() {
+        let mut args = vec!["--permission-mode".to_string(), "plan".to_string()];
+        let file =
+            append_chat_mcp_args(&mut args, "http://127.0.0.1:1234/mcp", "Bearer secret").unwrap();
+        assert!(args.iter().all(|arg| !arg.contains("Bearer secret")));
+        let config = args.iter().position(|arg| arg == "--mcp-config").unwrap();
+        let path = std::path::PathBuf::from(&args[config + 1]);
+        assert_eq!(path.as_path(), file.path());
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "mcpServers": {"kivio": {
+                    "type": "http", "url": "http://127.0.0.1:1234/mcp",
+                    "headers": {"Authorization": "Bearer secret"}
+                }}
+            })
+        );
+        let allowed = args.iter().position(|arg| arg == "--allowedTools").unwrap();
+        assert_eq!(
+            args[allowed + 1].split_whitespace().collect::<Vec<_>>(),
+            ["mcp__kivio__html_render", "mcp__kivio__html_preview"]
+        );
+        assert!(!args.iter().any(|arg| arg == "--strict-mcp-config"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        drop(file);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn claude_build_args_includes_resume_and_add_dir() {
@@ -685,6 +777,19 @@ mod tests {
         assert_eq!(system_prompt_snapshot_off_args(Some("2.1.267")), off);
         assert!(system_prompt_snapshot_off_args(Some("2.1.266 (Claude Code)")).is_empty());
         assert!(system_prompt_snapshot_off_args(None).is_empty());
+    }
+
+    #[test]
+    fn thinking_display_summarized_is_version_gated_and_skipped_when_off() {
+        let summarized = vec!["--thinking-display".to_string(), "summarized".to_string()];
+        assert_eq!(
+            thinking_display_args(Some("high"), Some("2.1.316 (Claude Code)")),
+            summarized
+        );
+        assert_eq!(thinking_display_args(None, Some("2.1.100")), summarized);
+        assert!(thinking_display_args(Some(" Off "), Some("2.1.316")).is_empty());
+        assert!(thinking_display_args(None, Some("2.1.99")).is_empty());
+        assert!(thinking_display_args(None, None).is_empty());
     }
 
     /// `--append-system-prompt-file` 必须是「flag 后紧跟路径」的成对形式，

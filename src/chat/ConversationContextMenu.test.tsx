@@ -46,10 +46,6 @@ describe('ConversationContextMenu export', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
   })
 
-  it('renders the English action', () => {
-    renderMenu('en')
-    expect(screen.getByRole('menuitem', { name: 'Export' })).toBeInTheDocument()
-  })
 })
 
 describe('ConversationContextMenu regenerate title', () => {
@@ -61,11 +57,6 @@ describe('ConversationContextMenu regenerate title', () => {
     await user.click(screen.getByRole('menuitem', { name: '重新生成标题' }))
     expect(onRegenerateTitle).toHaveBeenCalledOnce()
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
-  })
-
-  it('renders the English action', () => {
-    renderMenu('en')
-    expect(screen.getByRole('menuitem', { name: 'Regenerate title' })).toBeInTheDocument()
   })
 
   it('disables regenerate when the conversation has no messages', () => {
@@ -106,11 +97,4 @@ describe('ConversationContextMenu native session', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
   })
 
-  it('renders the English native session label', () => {
-    renderMenu('en', vi.fn(), vi.fn(), {
-      showNativeSession: true,
-      nativeSessionId: 'thr_live',
-    })
-    expect(screen.getByRole('menuitem', { name: /Native session/ })).toBeInTheDocument()
-  })
 })

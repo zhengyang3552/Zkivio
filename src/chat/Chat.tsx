@@ -3,7 +3,7 @@ import { PluginCenterHeading } from './market/PluginCenterHeading'
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
-import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
+import { SettingsNavFooter, type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
 import { MediaStation } from './MediaStation'
 import { ArtifactsCenter } from './ArtifactsCenter'
@@ -154,6 +154,8 @@ import {
 import { onChatPerfProfiler, useChatPerfLongTaskProbe, useChatPerfRenderProbe } from './chatPerformanceProbe'
 import { ChatRouteKeepAlive } from './ChatRouteKeepAlive'
 import { ChatConversationPane } from './ChatConversationPane'
+import { VoiceCallContext, useVoiceCall } from './voice/useVoiceCall'
+import { VoiceStage } from './voice/VoiceStage'
 import { GoalCard } from './GoalCard'
 import { composerGoal, setGoalDraftMode, useGoalDraft } from './goalPresentation'
 import {
@@ -262,6 +264,10 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
   onSettingsChange,
   onReady,
   renderSessionCenter,
+  lang,
+  onOpenSettings,
+  onSelectLang,
+  onOpenUsage,
   onRender,
 }: {
   settingsRef: Ref<SettingsShellHandle>
@@ -273,6 +279,10 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
   onSettingsChange: () => void
   onReady: () => void
   renderSessionCenter: (lang: Lang) => ReactNode
+  lang: Lang
+  onOpenSettings: (tab?: 'about') => void
+  onSelectLang: (lang: Lang) => void
+  onOpenUsage: () => void
   onRender: ProfilerOnRenderCallback
 }) {
   return (
@@ -292,6 +302,7 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
             onSettingsChange={onSettingsChange}
             onReady={onReady}
             renderSessionCenter={renderSessionCenter}
+            navFooter={<SettingsNavFooter lang={lang} onOpenSettings={onOpenSettings} onSelectLang={onSelectLang} onOpenUsage={onOpenUsage} />}
             renderReleaseNotes={(markdown) => (
               <Suspense fallback={<p>{markdown}</p>}>
                 <ChatMarkdown content={markdown} />
@@ -332,6 +343,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   useChatPerfLongTaskProbe()
   useKeyboardInset()
   const extensions = useExtensions()
+  const [dockToolbarHost, setDockToolbarHost] = useState<HTMLDivElement | null>(null)
   const extensionId = extensionIdForPath(useExtensionPath())
   useEffect(() => { void initializeExtensions().catch(() => {}) }, [])
   const [chatView, setChatView] = useState<ChatView>(() => {
@@ -498,6 +510,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const refreshSidebar = useCallback(() => {
     setSidebarRefreshKey((key) => key + 1)
   }, [])
+
+  useTauriEvent(api.onChatConversationsChanged, refreshSidebar, [refreshSidebar])
 
   const {
     contextState,
@@ -1446,8 +1460,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       syncGeneratingConversationIds()
   }, [executionOwner, interactionInbox, previewOwner, syncGeneratingConversationIds])
 
-  /** 面板作答完（或那一轮结束了）就把它收起来。后端没有「已答复」事件 ——
-   *  `resolve_user_prompt` 只清重放快照、不发事件，所以收起由前端自己负责。 */
+  useTauriEvent(api.onChatUserPromptResolved, (payload) => {
+    interactionInbox.observe({ kind: 'userAnswered', ...payload })
+  }, [interactionInbox])
+
+  /** 本地答复成功后立即收起；上游撤回也经同一个队列入口清理。 */
   const dismissPendingUserPrompt = useCallback((conversationId: string, runId: string, toolCallId: string) => {
     interactionInbox.observe({ kind: 'userAnswered', conversationId, runId, toolCallId })
   }, [interactionInbox])
@@ -1815,7 +1832,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     options: SendMessageOptions = {},
   ) => {
     const attachmentSkillId = options.embedded ? null : resolveSendSkillId(
-      attachments,
       enabledSkills,
       options.skillId !== undefined ? options.skillId : options.forceNewConversation ? null : effectiveSkillId,
       usesChatRuntime,
@@ -2231,6 +2247,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const composerContextSlot = useMemo(
     () => (
       <ContextIndicator
+        model={usesExternalRuntime ? activeAgentRuntime.externalModel : activeModel}
+        providerId={usesExternalRuntime ? undefined : activeProviderId}
         contextState={contextState}
         messageCount={displayMessages.length}
         lastMessageId={displayMessages[displayMessages.length - 1]?.id}
@@ -2248,6 +2266,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       />
     ),
     [
+      activeModel,
+      activeProviderId,
+      activeAgentRuntime.externalModel,
       contextCompressing,
       contextError,
       contextLoading,
@@ -2259,32 +2280,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       handleRefreshContext,
       streamCoarse.streaming,
       activeAgentRuntime.externalAgentId,
-      uiLang,
-      usesExternalRuntime,
-    ],
-  )
-  const composerUsageSlot = useMemo(
-    () => (
-      <SessionUsageStrip
-        conversationId={currentConversation?.id}
-        generating={streamCoarse.streaming}
-        messages={displayMessages}
-        lang={uiLang}
-        apiFormats={providerApiFormats}
-        defaultApiFormat={currentConversation ? (providerApiFormats[currentConversation.provider_id] ?? '') : ''}
-        cacheIncludedInInput={
-          usesExternalRuntime
-            ? activeAgentRuntime.externalAgentId === 'codex'
-            : undefined
-        }
-      />
-    ),
-    [
-      activeAgentRuntime.externalAgentId,
-      currentConversation,
-      displayMessages,
-      providerApiFormats,
-      streamCoarse.streaming,
       uiLang,
       usesExternalRuntime,
     ],
@@ -2337,11 +2332,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         setSelectedSet(scope.set)
       }
       void handleSelectConversation(id, {
-        messageCount: conversation?.message_count,
         focusMessageId: focusMessageId || undefined,
       })
     }, { restoreCurrentRoute: false })
   }, [handleSelectConversation, runAfterLeavingEditors])
+
+  const voiceCall = useVoiceCall({
+    providerId: activeProviderId || '',
+    model: activeModel || '',
+    lang: uiLang,
+    onDelegationComplete: refreshSidebar,
+  })
 
   const handleSidebarNewConversation = useCallback(() => {
     runAfterLeavingEditors(() => void handleNewConversation())
@@ -2596,6 +2597,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     replyModels: activeReplyModels,
     onChangeReplyModels: handleChangeReplyModels,
     contextSlot: composerContextSlot,
+    usageSlot: (
+      <SessionUsageStrip
+        conversationId={currentConversation?.id}
+        generating={streamCoarse.streaming}
+        messages={displayMessages}
+        lang={uiLang}
+        apiFormats={providerApiFormats}
+        defaultApiFormat={currentConversation ? (providerApiFormats[currentConversation.provider_id] ?? '') : ''}
+        cacheIncludedInInput={usesExternalRuntime ? activeAgentRuntime.externalAgentId === 'codex' : undefined}
+        hideCost={usesExternalRuntime}
+      />
+    ),
     gitWorkdir: usesChatRuntime ? null : dockWorkdir || null,
     gitLang: uiLang,
     onOpenGitPanel: handleOpenDockGit,
@@ -2614,7 +2627,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     composerForceKnowledgeSearch,
     composerKnowledgeBaseIds,
     composerAdditionalDirectories,
-    composerUsageSlot,
+    displayMessages,
+    providerApiFormats,
     loadInputHistory,
     conversationProject,
     currentConversation,
@@ -2747,6 +2761,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     <LangContext.Provider value={uiLang}>
     <AsyncQuestionsContext.Provider value={asyncQuestionsValue}>
     <Profiler id="ChatShell" onRender={onChatPerfProfiler}>
+    <VoiceCallContext.Provider value={voiceCall}>
       <div
         className={`chat-window-shell${usesNativeTitlebar ? ' chat-window-shell--native-titlebar' : ''}`}
       >
@@ -2759,6 +2774,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           settingsMode={settingsPanelActive}
           onToggleSidebar={handleTitlebarToggleSidebar}
           onNewConversation={handleTitlebarNewConversation}
+          dockVisible={chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && dockOpen}
+          dockWidth={dock.width}
+          dockToolbarRef={setDockToolbarHost}
         >
           {chatView === 'conversation' ? conversationTitlebarControls : null}
         </ChatTitlebar>
@@ -2847,6 +2865,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 />
               </Suspense>
             )}
+            lang={uiLang}
+            onOpenSettings={handleSidebarOpenSettings}
+            onSelectLang={handleSidebarSelectLang}
+            onOpenUsage={handleSidebarOpenUsage}
             onRender={onChatPerfProfiler}
           />
         ) : chatView === 'assistants' ? (
@@ -2986,8 +3008,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           <RightDock
             subAgentRequest={dock.subAgentRequest}
             open={dockOpen}
+            toolbarHost={usesNativeTitlebar ? null : dockToolbarHost}
             width={dock.width}
             activeTab={dock.tab}
+            openTabRequest={dock.openTabRequest}
             workdir={dockWorkdir}
             lang={uiLang}
             conversationId={currentConversation?.id ?? null}
@@ -2995,6 +3019,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             revealRequest={dock.reveal}
             previewRequest={dock.preview}
             onToggleTab={dock.setTab}
+            onOpenTabRequestHandled={dock.onOpenTabRequestHandled}
             onWidthChange={dock.setWidth}
             onClose={dock.close}
             onTreeExpandedChange={dock.setTreeExpanded}
@@ -3003,7 +3028,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           />
         )}
       </div>
+      <audio ref={voiceCall.audioRef} autoPlay className="hidden" />
+      <VoiceStage
+        lang={uiLang}
+        sidebarOffset={sidebarCollapsed || settingsPanelActive ? '0px' : 'var(--chat-sidebar-width, 240px)'}
+        onOpenConversation={handleSidebarSelectConversation}
+      />
       </div>
+    </VoiceCallContext.Provider>
     </Profiler>
     </AsyncQuestionsContext.Provider>
     <AppDialogHost />

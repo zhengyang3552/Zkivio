@@ -28,7 +28,7 @@ pub fn allowed_node_types_csv() -> String {
 
 /// Compact schema returned on `automation_upsert` validation errors so the
 /// model can fix a graph without probing. The always-on tool description stays
-/// short; the `automation` skill is the authoring guide.
+/// short; detailed guidance can live in ordinary skills.
 pub const UPSERT_MINIMAL_EXAMPLE: &str = r#"{
   "name": "AI briefing",
   "enabled": false,
@@ -65,7 +65,7 @@ Node data:\n\
 - agent.runtime: data.agent {{runtimeKind: builtin|chat|external, providerId, model, externalAgentId}}\n\
 - agent.context: data.agent {{prompt}}  agent.tool: data.agent {{toolIds}}  agent.skill: data.agent {{skillIds}}\n\
 Main edges: {{id, source, target}}. Templates: {{{{output}}}} previous text; {{{{json.path}}}} previous JSON; automation_run input is {{{{json.input.*}}}}.\n\
-Omit node positions (auto-layout). Leave enabled=false until the user wants schedule/hotkey live. PDF/Word/Excel output = action.agent + agent.skill skillIds pdf|docx|xlsx, not a dedicated node.\n\
+Omit node positions (auto-layout). Leave enabled=false until the user wants schedule/hotkey live. PDF/Word/Excel output = action.agent; attach an installed document skill with agent.skill if one exists — there is no dedicated output node.\n\
 Minimal example: {example}",
         types = allowed_node_types_csv(),
         example = UPSERT_MINIMAL_EXAMPLE,
@@ -384,12 +384,14 @@ mod tests {
     }
 
     #[test]
-    fn upsert_example_deserializes_without_ids_or_timestamps() {
-        let automation: Automation =
-            serde_json::from_str(UPSERT_MINIMAL_EXAMPLE).expect("example json");
-        assert_eq!(automation.name, "AI briefing");
-        assert_eq!(automation.nodes.len(), 5);
+    fn missing_identity_and_timestamps_deserialize_as_defaults() {
+        let automation: Automation = serde_json::from_value(serde_json::json!({
+            "name": "Example"
+        }))
+        .unwrap();
         assert!(automation.id.is_empty());
         assert_eq!(automation.schema_version, 0);
+        assert!(automation.created_at.is_empty());
+        assert!(automation.updated_at.is_empty());
     }
 }

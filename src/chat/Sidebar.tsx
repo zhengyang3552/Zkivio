@@ -27,6 +27,7 @@ import { ProjectDialog } from './ProjectDialog'
 import { SetContextMenu } from './SetContextMenu'
 import { SetDialog } from './SetDialog'
 import { SidebarAccountMenu } from './SidebarAccountMenu'
+import { VoiceTrigger } from './voice/VoiceTrigger'
 import { getSettingsCached } from '../api/settingsCache'
 import { IconButton } from '../components/Button'
 import { api } from '../api/tauri'
@@ -334,6 +335,7 @@ function SidebarUserFooter({
             <CircleArrowUp strokeWidth={1.75} color="var(--accent)" />
           </IconButton>
         )}
+        <VoiceTrigger lang={lang} />
         <IconButton
           size="xs"
           label={`${t.settings} (${isMac ? '⌘,' : 'Ctrl+,'})`}
@@ -358,6 +360,33 @@ function SidebarUserFooter({
         />
       )}
     </div>
+  )
+}
+
+/** 设置页侧栏底部的账号行：与聊天侧栏同一组件，自己读头像资料。 */
+export function SettingsNavFooter({ lang, onOpenSettings, onSelectLang, onOpenUsage }: {
+  lang: Lang
+  onOpenSettings: (tab?: 'about') => void
+  onSelectLang: (lang: Lang) => void
+  onOpenUsage: () => void
+}) {
+  const [profile, setProfile] = useState(() => resolveChatUserProfile())
+  useEffect(() => {
+    let cancelled = false
+    void getSettingsCached().then((settings) => {
+      if (!cancelled) setProfile(resolveChatUserProfile(settings.chat))
+    }).catch((err) => console.error('Failed to load chat user profile:', err))
+    return () => { cancelled = true }
+  }, [])
+  return (
+    <SidebarUserFooter
+      profile={profile}
+      lang={lang}
+      settingsActive
+      onOpenSettings={onOpenSettings}
+      onSelectLang={onSelectLang}
+      onOpenUsage={onOpenUsage}
+    />
   )
 }
 

@@ -530,6 +530,7 @@ pub(super) async fn complete_assistant_reply_inner(
     if let Some(warning) = memory_warning.as_ref() {
         conversation.context_state.warning = Some(warning.clone());
     }
+    let is_brain = crate::chat::voice_orchestrator::is_brain_conversation(conversation);
     let tools_capable = agent_prepare::chat_tools_capable(
         &effective_chat_tools,
         settings.chat_memory.enabled,
@@ -571,10 +572,12 @@ pub(super) async fn complete_assistant_reply_inner(
     if video_plan.model.is_some() {
         tools.push(crate::chat::video_analysis::tool_definition());
     }
-    agent_prepare::apply_assistant_mcp_restrictions(
-        &mut tools,
-        conversation.assistant_snapshot.as_ref(),
-    );
+    if !is_brain {
+        agent_prepare::apply_assistant_mcp_restrictions(
+            &mut tools,
+            conversation.assistant_snapshot.as_ref(),
+        );
+    }
     let builder_mode = is_builder_conversation(conversation);
     if builder_mode {
         // 搭建会话只暴露 save_assistant,屏蔽文件/命令/MCP/技能等,保持聚焦。
@@ -596,11 +599,12 @@ pub(super) async fn complete_assistant_reply_inner(
     if !builder_mode {
         apply_web_search_mode_tool_filter(&mut tools, web_search_mode, &settings);
     }
+    append_voice_orchestration_tools(&mut tools, is_brain);
     crate::chat::plan_document::append_tools(
         &mut tools,
         plan_mode && !is_builder_conversation(conversation),
     );
-    let user_tools_available = tools_capable && !tools.is_empty();
+    let user_tools_available = (tools_capable || is_brain) && !tools.is_empty();
     agent_prepare::apply_skill_fallback_when_tools_unavailable(
         &mut effective_chat_tools,
         skill_id.as_deref(),
@@ -676,7 +680,7 @@ pub(super) async fn complete_assistant_reply_inner(
         &conversation.knowledge_base_ids,
         conversation.force_knowledge_search,
     );
-    let system_prompt = agent_prepare::build_chat_system_prompt(
+    let mut prepared_prompt = agent_prepare::build_chat_prompt(
         &language,
         !main_image_paths.is_empty(),
         thinking_enabled,
@@ -698,21 +702,22 @@ pub(super) async fn complete_assistant_reply_inner(
         knowledge_base_prompt.as_deref(),
         &conversation.additional_directories,
     );
-    // 从未成功连接的 MCP server：工具没法降级进列表，注一行说明让模型知道
-    // "配置了但连不上"，而不是回答"没有这个工具"。
-    let system_prompt =
-        match crate::mcp::registry::unavailable_mcp_servers_note(&unavailable_mcp_servers) {
-            Some(note) => format!("{system_prompt}\n\n{note}"),
-            None => system_prompt,
-        };
-    let system_prompt = match crate::chat::goal::format_prompt(conversation.goal_state.as_ref()) {
-        Some(goal_prompt) if goal_tools_available => format!("{system_prompt}\n\n{goal_prompt}"),
-        _ => system_prompt,
-    };
+    let mut conversation_context = String::new();
+    if let Some(note) = crate::mcp::registry::unavailable_mcp_servers_note(&unavailable_mcp_servers)
+    {
+        conversation_context.push_str(&format!("\n\n{note}"));
+    }
+    if let Some(goal_prompt) = crate::chat::goal::format_prompt(conversation.goal_state.as_ref())
+        .filter(|_| goal_tools_available)
+    {
+        conversation_context.push_str(&format!("\n\n{goal_prompt}"));
+    }
+
+    prepared_prompt.context.push_str(&conversation_context);
 
     let mut runtime_messages = match build_chat_api_messages_with_video(
         Some(app),
-        &system_prompt,
+        &prepared_prompt.system,
         conversation,
         last_user_idx,
         last_user_content_for_main,
@@ -743,7 +748,7 @@ pub(super) async fn complete_assistant_reply_inner(
     if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
         fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
     }
-    let provider_tools_fallback_system_prompt = agent_prepare::build_chat_system_prompt(
+    let mut provider_tools_fallback_prompt = agent_prepare::build_chat_prompt(
         &language,
         !main_image_paths.is_empty(),
         thinking_enabled,
@@ -765,6 +770,10 @@ pub(super) async fn complete_assistant_reply_inner(
         knowledge_base_prompt.as_deref(),
         &conversation.additional_directories,
     );
+
+    provider_tools_fallback_prompt
+        .context
+        .push_str(&conversation_context);
 
     let chat_host = ChatAgentHost {
         workflow_hooks: if chat_mode {
@@ -869,6 +878,7 @@ pub(super) async fn complete_assistant_reply_inner(
             provider,
             model: resolved_model.clone(),
             runtime_messages,
+            runtime_context: Some(prepared_prompt.context),
             tools,
             blocked_tool_calls,
             settings: settings.clone(),
@@ -880,7 +890,7 @@ pub(super) async fn complete_assistant_reply_inner(
             max_output_tokens,
             retry_attempts,
             assistant_snapshot: conversation.assistant_snapshot.clone(),
-            provider_tools_fallback_system_prompt,
+            provider_tools_fallback_prompt,
             initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
             initial_anchor_total_tokens,
             initial_anchor_trailing_estimate,
@@ -1084,6 +1094,23 @@ pub(super) async fn complete_assistant_reply_inner(
     })
 }
 
+fn append_voice_orchestration_tools(
+    tools: &mut Vec<crate::mcp::types::ChatToolDefinition>,
+    is_brain: bool,
+) {
+    if is_brain {
+        tools.extend([
+            crate::mcp::types::native_kivio_list_agents_tool(),
+            crate::mcp::types::native_kivio_list_projects_tool(),
+            crate::mcp::types::native_kivio_list_conversations_tool(),
+            crate::mcp::types::native_kivio_read_conversation_tool(),
+            crate::mcp::types::native_kivio_create_conversation_tool(),
+            crate::mcp::types::native_kivio_send_message_tool(),
+            crate::mcp::types::native_kivio_interrupt_tool(),
+        ]);
+    }
+}
+
 /// Preparation cancellation and agent-loop failures share the same terminal
 /// protocol and latest persisted conversation, including a concurrently paused Goal.
 async fn finish_reply_failure(
@@ -1170,6 +1197,49 @@ fn generated_image_artifacts(
 mod tests {
     use super::*;
     use crate::chat::model::GeneratedImageData;
+
+    #[test]
+    fn orchestration_tools_are_appended_only_for_the_brain() {
+        let mut conversation: Conversation = serde_json::from_value(serde_json::json!({
+            "id": "test", "title": "test", "provider_id": "provider", "model": "model",
+            "messages": [], "created_at": 1, "updated_at": 1
+        }))
+        .unwrap();
+        let mut tools = vec![crate::mcp::types::native_web_fetch_tool()];
+        append_voice_orchestration_tools(
+            &mut tools,
+            crate::chat::voice_orchestrator::is_brain_conversation(&conversation),
+        );
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "web_fetch");
+
+        conversation.assistant_snapshot = Some(
+            serde_json::from_value(serde_json::json!({
+                "id": "asst_voice_orchestrator", "name": "Voice"
+            }))
+            .unwrap(),
+        );
+        append_voice_orchestration_tools(
+            &mut tools,
+            crate::chat::voice_orchestrator::is_brain_conversation(&conversation),
+        );
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "web_fetch",
+                "kivio_list_agents",
+                "kivio_list_projects",
+                "kivio_list_conversations",
+                "kivio_read_conversation",
+                "kivio_create_conversation",
+                "kivio_send_message",
+                "kivio_interrupt",
+            ]
+        );
+    }
 
     /// 任务 07-24：Gemini 原生出图 → assistant 消息级 artifacts。转换产出 data_url 前缀 +
     /// size_bytes，穿过 build_assistant_message 后落在 ChatMessage.artifacts。

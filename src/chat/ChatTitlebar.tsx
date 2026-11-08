@@ -23,6 +23,9 @@ type ChatTitlebarProps = {
   settingsMode?: boolean
   /** 弹出窗：不渲染侧栏开合 / 新建，带仍占行高（不要用 settingsMode，那会浮到正文上）。 */
   hideNav?: boolean
+  dockVisible?: boolean
+  dockWidth?: number
+  dockToolbarRef?: (node: HTMLDivElement | null) => void
   /** 会话页的业务控件（模型 / 思考档位 / 权限 / Dock 等）。中心页传 null，带内只剩导航与三键。 */
   children?: ReactNode
 }
@@ -33,8 +36,7 @@ type ChatTitlebarProps = {
  * 贯穿窗口全宽：左端常驻「侧栏开合 + 新建聊天」，中段是会话页业务控件，右端贴角 caption 键。
  * 业务控件并进这一条 —— 非 mac 不再有主区 52px 顶栏，chrome 只此一行。
  * 侧栏展开时导航区撑到侧栏宽，业务控件随之让到主区一列（否则它们压在侧栏卡片上方，读作错位）。
- * 侧栏卡片 / Dock / 主内容都在带下方开始，所以三键不压内容，
- * 各视图也不必各自留出躲避空间（旧的 `.chat-win-titlebar-safe` 与中心页兜底拖拽带因此删除）。
+ * Dock 打开时工具栏并入右段，右段与下方面板同宽；其余内容从标题栏下方开始。
  */
 export const ChatTitlebar = memo(function ChatTitlebar({
   sidebarExpanded,
@@ -43,6 +45,9 @@ export const ChatTitlebar = memo(function ChatTitlebar({
   sidebarVisible = false,
   settingsMode = false,
   hideNav = false,
+  dockVisible = false,
+  dockWidth,
+  dockToolbarRef,
   children,
 }: ChatTitlebarProps) {
   return (
@@ -69,7 +74,16 @@ export const ChatTitlebar = memo(function ChatTitlebar({
         {children}
       </div>
       {/* 移动端没有窗口三键：不渲染，而不是渲染了再藏起来。 */}
-      {!isMobilePlatform && <WindowControls />}
+      {!isMobilePlatform && (dockVisible ? (
+        <div
+          className="chat-titlebar-strip-dock"
+          style={{ ['--chat-dock-width' as string]: `${dockWidth}px` }}
+          data-tauri-drag-region
+        >
+          <div ref={dockToolbarRef} className="chat-titlebar-dock-tools" data-tauri-drag-region />
+          <WindowControls />
+        </div>
+      ) : <WindowControls />)}
     </div>
   )
 })

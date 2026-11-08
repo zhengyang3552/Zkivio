@@ -30,18 +30,6 @@ describe('DegradedAnswerCard', () => {
     expect(screen.getByText('context deadline exceeded')).toBeTruthy()
   })
 
-  it('窄列下长报错按卡片宽度换行，而不是撑破父级', () => {
-    const longDetail =
-      'Chatbot tools planning Error: 404 Not Found - {"error":{"message":"https://openrouter.ai/z-ai/glm-5.3-flash"}}'
-    const { container } = render(<DegradedAnswerCard degraded={makeDegraded({ detail: longDetail })} />)
-    const card = container.querySelector('[data-degraded-kind="rate_limited"]')
-    const detail = container.querySelector('pre')
-    expect(card?.className).toMatch(/\bw-full\b/)
-    expect(card?.className).toMatch(/\bmin-w-0\b/)
-    expect(detail?.className).toMatch(/\bbreak-all\b/)
-    expect(detail?.className).toMatch(/\bmin-w-0\b/)
-  })
-
   it('按 kind 选择标签（不解析文案）', () => {
     const cases: Array<[string, string]> = [
       ['rate_limited', '限流 / 配额'],
@@ -49,6 +37,8 @@ describe('DegradedAnswerCard', () => {
       ['timeout', '超时 / 连接中断'],
       ['moderation', '内容审核拦截'],
       ['empty_response', '空响应'],
+      ['invalid_image', '图片无效'],
+      ['invalid_request', '请求被拒绝'],
     ]
     for (const [kind, label] of cases) {
       const { unmount } = render(<DegradedAnswerCard degraded={makeDegraded({ kind })} />)

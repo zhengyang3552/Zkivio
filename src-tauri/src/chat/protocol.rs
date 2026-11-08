@@ -657,6 +657,9 @@ pub struct ChatAskUserQuestionPayload {
     pub allow_custom: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub default_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub required: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "Record<string, unknown>")]
@@ -692,6 +695,7 @@ impl From<&crate::chat::ask_user::AskUserPromptPayload> for ChatAskUserPromptPay
                         .collect(),
                     allow_multiple: question.allow_multiple,
                     allow_custom: question.allow_custom,
+                    default_value: question.default_value.clone(),
                     required: Some(question.required),
                     value_schema: question.value_schema.clone(),
                 })
@@ -726,6 +730,12 @@ pub enum ChatRunEvent {
     TextDelta {
         delta: String,
         segment: Option<ChatSegmentPayload>,
+    },
+    /// A provider's completed message can revise previously streamed text.
+    TextSegmentReplaced {
+        segment_id: String,
+        text: String,
+        content: String,
     },
     ReasoningDelta {
         delta: String,
@@ -777,6 +787,9 @@ pub enum ChatRunEvent {
         sensitivity: String,
     },
     ToolApprovalWithdrawn {
+        tool_call_id: String,
+    },
+    UserPromptResolved {
         tool_call_id: String,
     },
     UserPromptRequested {
@@ -839,6 +852,7 @@ impl ChatRunEvent {
         matches!(
             self,
             Self::TextDelta { .. }
+                | Self::TextSegmentReplaced { .. }
                 | Self::ReasoningDelta { .. }
                 | Self::StreamAttemptDiscarded { .. }
                 | Self::ToolUpdated { .. }
@@ -1663,19 +1677,32 @@ impl ChatProtocolHub {
         });
     }
 
-    fn resolve_user_prompt(&mut self, run_id: &str, tool_call_id: &str) {
-        let Some(run) = self.runs.get_mut(run_id) else {
-            return;
-        };
-        run.snapshot.pending_interactions.retain(|pending| {
-            !matches!(
-                pending,
-                ChatPendingInteractionSnapshot::UserPromptRequested {
-                    tool_call_id: pending_id,
-                    ..
-                } if pending_id == tool_call_id
-            )
-        });
+    fn resolve_user_prompt(
+        &mut self,
+        run_id: &str,
+        tool_call_id: &str,
+    ) -> Option<ChatRunEventEnvelope> {
+        let pending = self
+            .runs
+            .get(run_id)?
+            .snapshot
+            .pending_interactions
+            .iter()
+            .any(|pending| {
+                matches!(pending, ChatPendingInteractionSnapshot::UserPromptRequested {
+                tool_call_id: pending_id, ..
+            } if pending_id == tool_call_id)
+            });
+        if !pending {
+            return None;
+        }
+        self.push(
+            run_id,
+            ChatRunEvent::UserPromptResolved {
+                tool_call_id: tool_call_id.to_string(),
+            },
+        )
+        .ok()
     }
 }
 
@@ -1698,6 +1725,22 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
             snapshot.content.push_str(delta);
             cap_text_tail(&mut snapshot.content, SNAPSHOT_TEXT_MAX_BYTES);
             upsert_segment(&mut snapshot.segments, segment, delta);
+        }
+        ChatRunEvent::TextSegmentReplaced {
+            segment_id,
+            text,
+            content,
+        } => {
+            if let Some(segment) = snapshot
+                .segments
+                .iter_mut()
+                .find(|segment| segment.id == *segment_id)
+            {
+                segment.text = Some(text.clone());
+                cap_text_tail(segment.text.as_mut().unwrap(), SNAPSHOT_SEGMENT_MAX_BYTES);
+                snapshot.content = content.clone();
+                cap_text_tail(&mut snapshot.content, SNAPSHOT_TEXT_MAX_BYTES);
+            }
         }
         ChatRunEvent::ReasoningDelta { delta, segment } => {
             if !delta.is_empty() {
@@ -1829,6 +1872,12 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                     structured_content: structured_content.clone(),
                 },
             );
+        }
+        ChatRunEvent::UserPromptResolved { tool_call_id } => {
+            snapshot.pending_interactions.retain(|pending| !matches!(pending,
+                ChatPendingInteractionSnapshot::UserPromptRequested { tool_call_id: pending_id, .. }
+                if pending_id == tool_call_id
+            ));
         }
         ChatRunEvent::ToolApprovalWithdrawn { tool_call_id } => {
             snapshot
@@ -2325,10 +2374,14 @@ pub fn resolve_session_consent(app: &AppHandle, run_id: &str) {
 }
 
 pub fn resolve_user_prompt(app: &AppHandle, run_id: &str, tool_call_id: &str) {
-    app.state::<AppState>()
+    let event = app
+        .state::<AppState>()
         .chat_protocol()
         .hub()
         .resolve_user_prompt(run_id, tool_call_id);
+    if let Some(event) = event {
+        emit_protocol(app, ChatProtocolEvent::Run(event));
+    }
     #[cfg(not(target_os = "android"))]
     crate::desktop_pet::resolve_interaction(app, run_id, Some(tool_call_id));
 }
@@ -2866,6 +2919,29 @@ mod tests {
             hub.runs["run"].snapshot.segments[0].text.as_deref(),
             Some("hello")
         );
+        hub.push(
+            "run",
+            ChatRunEvent::TextSegmentReplaced {
+                segment_id: "segment".into(),
+                text: "最终🌱".into(),
+                content: "最终🌱".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(hub.runs["run"].snapshot.content, "最终🌱");
+        assert_eq!(
+            hub.runs["run"].snapshot.segments[0].text.as_deref(),
+            Some("最终🌱")
+        );
+        let sync = hub.sync(&ChatSyncRequest {
+            protocol_version: CHAT_PROTOCOL_VERSION,
+            conversation_id: "conv".into(),
+            cursors: vec![],
+        });
+        let ChatRunSync::Snapshot { snapshot } = &sync.runs[0] else {
+            panic!("snapshot missing")
+        };
+        assert_eq!(snapshot.content, "最终🌱");
     }
 
     #[test]
@@ -3182,7 +3258,14 @@ mod tests {
         .unwrap();
 
         hub.resolve_session_consent("run");
-        hub.resolve_user_prompt("run", "ask-1");
+        let resolved = hub
+            .resolve_user_prompt("run", "ask-1")
+            .expect("resolution must reach live clients");
+        assert!(matches!(
+            resolved.event,
+            ChatRunEvent::UserPromptResolved { .. }
+        ));
+        assert!(hub.resolve_user_prompt("run", "ask-1").is_none());
 
         assert!(hub.runs["run"].snapshot.pending_interactions.is_empty());
     }

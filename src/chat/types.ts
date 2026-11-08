@@ -105,6 +105,8 @@ export interface AskUserQuestion {
   required?: boolean
   value_schema?: Record<string, unknown>
   valueSchema?: Record<string, unknown>
+  default_value?: string
+  defaultValue?: string
   options: AskUserOption[]
   allow_multiple?: boolean
   allowMultiple?: boolean
@@ -160,6 +162,8 @@ export interface DegradedAnswer {
     | 'timeout'
     | 'moderation'
     | 'empty_response'
+    | 'invalid_image'
+    | 'invalid_request'
     | 'unknown'
     | string
   /** 一行人读的失败原因。 */
@@ -494,6 +498,8 @@ export interface AgentRuntimeConfig {
   external_model?: string | null
   externalReasoning?: string | null
   external_reasoning?: string | null
+  externalServiceTier?: string | null
+  external_service_tier?: string | null
   externalSandbox?: string | null
   external_sandbox?: string | null
   externalAgentPreset?: string | null

@@ -526,9 +526,9 @@ impl Default for ScreenshotTranslationConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            hotkey: "CommandOrControl+Shift+A".to_string(),
-            text_hotkey: "CommandOrControl+Shift+T".to_string(),
-            replace_hotkey: "CommandOrControl+Shift+R".to_string(),
+            hotkey: default_screenshot_translation_hotkey(),
+            text_hotkey: default_screenshot_translation_text_hotkey(),
+            replace_hotkey: default_screenshot_translation_replace_hotkey(),
             replace_enabled: true,
             provider_id: "default-ocr".to_string(),
             model: "gpt-4o".to_string(),
@@ -849,7 +849,7 @@ impl Default for LensConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            hotkey: "CommandOrControl+Shift+G".to_string(),
+            hotkey: default_lens_hotkey(),
             provider_id: String::new(),
             model: String::new(),
             default_language: String::new(),
@@ -1694,6 +1694,9 @@ pub struct ScreenshotAnnotateConfig {
 }
 
 fn default_screenshot_annotate_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+S".to_string()
 }
 
@@ -1898,6 +1901,16 @@ fn canonicalize_theme_color(raw: &str, themes: &[ThemeDefinition]) -> String {
     default_theme_color()
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct VoiceSettings {
+    /// `codex` | `live`; None = auto (Codex subscription when eligible, else GPT-Live).
+    pub channel: Option<String>,
+    pub live_provider_id: Option<String>,
+    pub orchestrator_provider_id: Option<String>,
+    pub orchestrator_model: Option<String>,
+}
+
 /**
  * 应用完整设置
  */
@@ -1973,6 +1986,8 @@ pub struct Settings {
     pub lens: LensConfig,
     #[serde(default)]
     pub chat: ChatConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceSettings>,
     #[serde(default)]
     pub chat_memory: ChatMemoryConfig,
     #[serde(default)]
@@ -2145,8 +2160,8 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            hotkey: "CommandOrControl+Alt+T".to_string(),
-            chat_hotkey: "CommandOrControl+Shift+K".to_string(),
+            hotkey: default_hotkey(),
+            chat_hotkey: default_chat_hotkey(),
             close_chat_hotkey: default_close_chat_hotkey(),
             theme: "system".to_string(),
             theme_color: default_theme_color(),
@@ -2173,6 +2188,7 @@ impl Default for Settings {
             screenshot_annotate: ScreenshotAnnotateConfig::default(),
             lens: LensConfig::default(),
             chat: ChatConfig::default(),
+            voice: None,
             chat_memory: ChatMemoryConfig::default(),
             chat_tools: ChatToolsConfig::default(),
             document_processing: DocumentProcessingConfig::default(),
@@ -2187,7 +2203,7 @@ impl Default for Settings {
             builtin_assistants_seeded_v3: false,
             chat_tools_greenlit_v1: false,
             onboarding_status: default_onboarding_status(),
-            auto_check_update: true,
+            auto_check_update: !crate::app_data::is_dev(),
             image_archive_enabled: false,
             image_archive_path: String::new(),
             favorite_models: Vec::new(),
@@ -2233,7 +2249,7 @@ pub fn is_skill_enabled(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
 }
 
 /// Global skill gate: Settings enable list + 插件门闸。
-/// 插件附属 skill（如 officecli）仅在对应插件「已安装且启用」时可用。
+/// 插件附属 skill 仅在对应插件「仍受支持、已安装且启用」时可用。
 pub fn skill_globally_available(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
     if !crate::plugins::plugin_skill_available(skill_id) {
         return false;
@@ -2249,6 +2265,9 @@ pub fn skill_global_unavailable_error(
 ) -> Option<String> {
     if !crate::plugins::plugin_skill_available(skill_id) {
         if let Some(plugin_id) = crate::plugins::skill_owned_by_plugin(skill_id) {
+            if crate::plugins::catalog_plugin(plugin_id).is_none() {
+                return Some(format!("Operation tool «{plugin_id}» has been retired; its Skill is unavailable: {skill_name}"));
+            }
             return Some(format!(
                 "Skill belongs to operation tool «{plugin_id}» — enable it in 设置 → 电脑操控: {skill_name}"
             ));
@@ -2704,14 +2723,22 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     settings.lens.hotkey = normalize_hotkey(&settings.lens.hotkey);
     settings.screenshot_annotate.hotkey = normalize_hotkey(&settings.screenshot_annotate.hotkey);
 
-    // 规范化提示词（去除首尾空白，空值转为 None）
-    settings.translator_prompt = normalize_optional_prompt(settings.translator_prompt.take());
+    // 去除可选文本的首尾空白，空值转为 None。
+    settings.translator_prompt = normalize_optional_text(settings.translator_prompt.take());
     settings.screenshot_translation.prompt =
-        normalize_optional_prompt(settings.screenshot_translation.prompt.take());
+        normalize_optional_text(settings.screenshot_translation.prompt.take());
     settings.screenshot_translation.text_prompt =
-        normalize_optional_prompt(settings.screenshot_translation.text_prompt.take());
+        normalize_optional_text(settings.screenshot_translation.text_prompt.take());
     settings.screenshot_translation.replace_prompt =
-        normalize_optional_prompt(settings.screenshot_translation.replace_prompt.take());
+        normalize_optional_text(settings.screenshot_translation.replace_prompt.take());
+    if let Some(voice) = &mut settings.voice {
+        voice.channel = normalize_optional_text(voice.channel.take())
+            .filter(|channel| matches!(channel.as_str(), "codex" | "live"));
+        voice.live_provider_id = normalize_optional_text(voice.live_provider_id.take());
+        voice.orchestrator_provider_id =
+            normalize_optional_text(voice.orchestrator_provider_id.take());
+        voice.orchestrator_model = normalize_optional_text(voice.orchestrator_model.take());
+    }
     // 翻译卡宽度单一真源：import / 手改 settings.json 也在此兜底到 360–720，
     // 与 set_translate_card_size 命令、设置页输入框、Lens 缩放 clamp 同域。
     settings.screenshot_translation.card_width =
@@ -2964,6 +2991,13 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     // entries; preserve the user's disabled state and unrelated MCP servers.
     let mut cua_enabled = None;
     settings.chat_tools.servers.retain(|server| {
+        // Retire the managed integration on load/import/save, including renamed
+        // entries. Independently configured user servers remain user-owned.
+        if server.id.trim() == "plugin-officecli"
+            || server.connector_id.as_deref().map(str::trim) == Some("plugin:officecli")
+        {
+            return false;
+        }
         let managed_cua = crate::computer_control::is_cua_mcp_server_id(server.id.trim())
             || matches!(
                 server.connector_id.as_deref().map(str::trim),
@@ -3444,6 +3478,10 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
  * 幂等：新目录已存在 settings.json → 跳过；旧目录不存在 → 跳过（全新安装）。
  */
 fn migrate_legacy_app_data(app: &AppHandle) {
+    // Development installations must never import existing production data.
+    if crate::app_data::is_dev() {
+        return;
+    }
     use tauri::Manager;
     let new_dir = match app.path().app_data_dir() {
         Ok(d) => d,
@@ -3673,26 +3711,44 @@ fn default_api_format() -> String {
 }
 
 fn default_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Alt+T".to_string()
 }
 
 fn default_chat_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+K".to_string()
 }
 
 fn default_close_chat_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+W".to_string()
 }
 
 fn default_screenshot_translation_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+A".to_string()
 }
 
 fn default_screenshot_translation_text_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+T".to_string()
 }
 
 fn default_screenshot_translation_replace_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+R".to_string()
 }
 
@@ -3702,6 +3758,9 @@ fn default_translate_card_width() -> u32 {
 }
 
 fn default_lens_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+G".to_string()
 }
 
@@ -3746,16 +3805,20 @@ fn clamp_retry_attempts(value: u8) -> u8 {
 }
 
 /**
- * 规范化可选提示词：去除空白，空字符串转为 None
+ * 规范化可选文本：去除空白，空字符串转为 None
  */
-fn normalize_optional_prompt(value: Option<String>) -> Option<String> {
-    value.and_then(|v| {
-        let trimmed = v.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|mut value| {
+        let start = value.len() - value.trim_start().len();
+        let end = value.trim_end().len();
+        if start >= end {
+            return None;
         }
+        value.truncate(end);
+        if start > 0 {
+            drop(value.drain(..start));
+        }
+        Some(value)
     })
 }
 
@@ -3845,16 +3908,17 @@ mod tests {
         let mut settings = Settings::default();
         let provider: ModelProvider = serde_json::from_value(serde_json::json!({
             "id": "worker", "name": "Worker", "enabled": true,
-            "baseUrl": "http://localhost", "enabledModels": ["gpt-5.5"]
+            "baseUrl": "http://localhost", "enabledModels": ["worker-model"],
+            "modelOverrides": {"worker-model": {"reasoningEfforts": ["medium"]}}
         }))
         .unwrap();
         settings.providers = vec![provider];
         settings.chat_tools.sub_agent_provider_id = "worker".into();
-        settings.chat_tools.sub_agent_model = "gpt-5.5".into();
+        settings.chat_tools.sub_agent_model = "worker-model".into();
         let mut settings = sanitize_settings(settings);
         assert_eq!(
             settings.chat_tools.sub_agent_models["task"].model,
-            "gpt-5.5"
+            "worker-model"
         );
         assert!(settings.chat_tools.sub_agent_provider_id.is_empty());
         assert!(settings.chat_tools.sub_agent_model.is_empty());
@@ -3870,7 +3934,7 @@ mod tests {
         let restored = sanitize_settings(serde_json::from_value(saved).unwrap());
         assert_eq!(
             restored.chat_tools.sub_agent_models["task"].model,
-            "gpt-5.5"
+            "worker-model"
         );
         assert_eq!(
             restored.chat_tools.sub_agent_models["task"]
@@ -4194,6 +4258,72 @@ mod tests {
     use super::*;
 
     #[test]
+    fn voice_settings_accept_legacy_null_and_partial_values_and_round_trip() {
+        for value in [serde_json::json!({}), serde_json::json!({"voice": null})] {
+            let settings: Settings = serde_json::from_value(value).unwrap();
+            assert!(settings.voice.is_none());
+            assert!(serde_json::to_value(settings)
+                .unwrap()
+                .get("voice")
+                .is_none());
+        }
+
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "voice": {
+                "liveProviderId": " live ",
+                "orchestratorProviderId": " brain ",
+                "orchestratorModel": "  "
+            }
+        }))
+        .unwrap();
+        let (canonical, persisted) = settings_for_persistence(&settings);
+        let value = serde_json::to_value(persisted).unwrap();
+        assert_eq!(
+            value["voice"],
+            serde_json::json!({
+                "channel": null,
+                "liveProviderId": "live",
+                "orchestratorProviderId": "brain",
+                "orchestratorModel": null
+            })
+        );
+        let restored = sanitize_settings(serde_json::from_value(value).unwrap());
+        assert_eq!(restored.voice, canonical.voice);
+
+        let partial: Settings = serde_json::from_value(serde_json::json!({
+            "voice": {"orchestratorModel": "\u{2003}model\u{3000}"}
+        }))
+        .unwrap();
+        assert_eq!(
+            sanitize_settings(partial).voice.unwrap(),
+            VoiceSettings {
+                channel: None,
+                live_provider_id: None,
+                orchestrator_provider_id: None,
+                orchestrator_model: Some("model".into()),
+            }
+        );
+        for (raw, expected) in [
+            ("codex", Some("codex")),
+            (" live ", Some("live")),
+            ("auto", None),
+            ("bogus", None),
+        ] {
+            let settings: Settings =
+                serde_json::from_value(serde_json::json!({"voice": {"channel": raw}})).unwrap();
+            assert_eq!(
+                sanitize_settings(settings)
+                    .voice
+                    .unwrap()
+                    .channel
+                    .as_deref(),
+                expected,
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
     fn legacy_settings_disable_translucent_sidebar_by_default() {
         let settings: Settings =
             serde_json::from_str("{}").expect("legacy settings should deserialize");
@@ -4274,6 +4404,39 @@ mod tests {
     }
 
     // ===== sanitize_settings =====
+
+    #[test]
+    fn sanitize_settings_retires_managed_officecli_on_load_and_round_trip() {
+        let mut settings = Settings::default();
+        settings.chat_tools.servers = vec![
+            ChatMcpServer {
+                id: "plugin-officecli".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            ChatMcpServer {
+                id: "renamed".into(),
+                connector_id: Some("plugin:officecli".into()),
+                enabled: true,
+                ..Default::default()
+            },
+            ChatMcpServer {
+                id: "user-office".into(),
+                command: "officecli".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        ];
+        let settings = sanitize_settings(settings);
+        assert_eq!(settings.chat_tools.servers.len(), 1);
+        assert_eq!(settings.chat_tools.servers[0].id, "user-office");
+        assert!(settings.chat_tools.servers[0].enabled);
+        let restored = sanitize_settings(
+            serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap(),
+        );
+        assert_eq!(restored.chat_tools.servers.len(), 1);
+        assert_eq!(restored.chat_tools.servers[0].id, "user-office");
+    }
 
     #[test]
     fn sanitize_settings_clamps_retry_attempts() {
@@ -5701,7 +5864,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_obsidian_skills_follow_normal_enable_rules() {
+    fn standalone_skills_follow_normal_enable_rules() {
         let mut legacy = serde_json::to_value(Settings::default()).unwrap();
         legacy["obsidianVaultPath"] = serde_json::json!("/old/vault");
         let restored: Settings = serde_json::from_value(legacy).unwrap();
@@ -5710,16 +5873,16 @@ mod tests {
             .get("obsidianVaultPath")
             .is_none());
         let mut config = restored.chat_tools;
-        assert!(skill_globally_available(&config, "obsidian-markdown"));
+        assert!(skill_globally_available(&config, "automation"));
         assert_eq!(
-            skill_global_unavailable_error(&config, "obsidian-markdown", "Obsidian"),
+            skill_global_unavailable_error(&config, "automation", "Automation"),
             None
         );
-        config.disabled_skill_ids = vec!["obsidian-markdown".into()];
-        assert!(!skill_globally_available(&config, "obsidian-markdown"));
+        config.disabled_skill_ids = vec!["automation".into()];
+        assert!(!skill_globally_available(&config, "automation"));
         assert_eq!(
-            skill_global_unavailable_error(&config, "obsidian-markdown", "Obsidian").as_deref(),
-            Some("Skill is disabled in Settings: Obsidian")
+            skill_global_unavailable_error(&config, "automation", "Automation").as_deref(),
+            Some("Skill is disabled in Settings: Automation")
         );
     }
 

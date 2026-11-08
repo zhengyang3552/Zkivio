@@ -7,6 +7,7 @@ import { RuntimePicker } from './RuntimePicker'
 import { ModelSelector } from './ModelSelector'
 import { PermissionPicker } from './PermissionPicker'
 import { ThinkingLevelSelector } from './ThinkingLevelSelector'
+import { SidebarToggleIcon } from './SidebarToggleIcon'
 import type { AgentRuntimeConfig, ThinkingLevel } from './types'
 
 export interface ConversationTitlebarControlsProps {
@@ -98,10 +99,11 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
               label={i18n[uiLang].dockToggle}
               size="sm"
               variant="ghost"
-              className={dockOpen ? 'bg-neutral-900/5 text-neutral-800' : ''}
               onClick={onToggleDock}
+              className="group"
+              aria-expanded={dockOpen}
             >
-              <PanelRight size={15} />
+              <SidebarToggleIcon side="right" open={dockOpen} />
             </IconButton>
           </div>
         )}

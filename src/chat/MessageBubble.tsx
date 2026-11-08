@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { requestDockPreview } from './dock/dockPreview'
-import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ScrollFollowingContext } from './scroll/useScrollFollow'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
   Check,
@@ -13,16 +12,19 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
+import { notifyError } from '../components/appNoticeStore'
+import { api } from '../api/tauri'
 import { copyToClipboard } from '../utils/clipboard'
 import { messageBodySegments, messageBodyText } from './messageBody'
 import { AssistantMessageMeta } from './AssistantMessageMeta'
 import { ChatAttachments } from './ChatAttachments'
 import { ChatDotGridBackground } from './ChatDotGridBackground'
 import { ChatMarkdown, type ChatMarkdownOutlineSource, type MarkdownOutlineSourceUpdate } from './ChatMarkdown'
+import { HtmlFrame } from './HtmlFrame'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { GeneratedFileArtifacts } from './GeneratedFileArtifacts'
 import { MarkdownStreamingContext } from './markdownStreaming'
-import { artifactId, artifactPresentationFromToolCall, isArtifactPresentationToolCall, isVisibleArtifactPresentation } from './artifactPresentation'
+import { artifactId, artifactPresentationFromToolCall, htmlRenderReferenceFromToolCall, isPresentationToolCall, isVisiblePresentation } from './artifactPresentation'
 import { referencedArtifactIds } from './artifactReferences'
 import { hasAgentPlanText } from './agentPlan'
 import { artifactDataUrl, isImageArtifact } from './artifacts'
@@ -32,16 +34,18 @@ import { ChatInlineImage, CHAT_IMAGE_TILE_MAX_PX } from './ChatInlineImage'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { ModelIcon } from '../components/ModelIcon'
-import { ToolCallBlock, ImageReadCluster } from './ToolCallBlock'
+import { ToolCallBlock, ToolCallCluster, ImageReadCluster } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ModelRef, ToolCallRecord } from './types'
 import { asyncReplyDisplayText } from './asyncQuestionReply'
 import { buildCitationMap, citationMapsEqual, type CitationView } from './citations'
 import {
+  canonicalToolName,
   clusterToolCallsForDisplay,
   formatWorkDuration,
   groupTimelineSegments,
   groupWorkDurationMs,
+  isExternalSubagentToolCall,
   isImageReadToolCall,
   isUserFollowUpToolCall,
   isUserSteerToolCall,
@@ -280,7 +284,7 @@ function GeneratedImageArtifacts({
   )
 }
 
-function ArtifactPresentationBlock({
+function ToolPresentationBlock({
   toolCall,
   artifacts,
   conversationId,
@@ -291,6 +295,17 @@ function ArtifactPresentationBlock({
   conversationId?: string | null
   excludedArtifactIds?: ReadonlySet<string>
 }) {
+  const structured = toolCall.structured_content ?? toolCall.structuredContent
+  if (structured && typeof structured === 'object' && 'type' in structured && structured.type === 'html_render') {
+    const reference = htmlRenderReferenceFromToolCall(toolCall)
+    if (!reference || !conversationId) return null
+    const src = api.htmlRenderUrl(conversationId, reference.attachmentId)
+    if (!src) return null
+    return <HtmlFrame src={src} title={reference.title} initialHeight={reference.height}
+      onOpenInBrowser={(themeCss) => void api.openHtmlRender(conversationId, reference.attachmentId, themeCss)
+        .catch((error) => notifyError(`打开页面失败：${String(error)}`))}
+      fallback={<div className="my-3 text-[13px] text-[var(--text-muted)]" role="status">页面不可用</div>} />
+  }
   const presentation = artifactPresentationFromToolCall(toolCall)
   if (!presentation) {
     return (
@@ -461,8 +476,8 @@ function ClusteredToolCalls({
           <div key={key} className={itemClassName}>
             {isUserInjectedToolCall(toolCall) ? (
               <UserSteerSegment toolCall={toolCall} />
-            ) : isArtifactPresentationToolCall(toolCall) ? (
-              <ArtifactPresentationBlock
+            ) : isPresentationToolCall(toolCall) ? (
+              <ToolPresentationBlock
                 toolCall={toolCall}
                 artifacts={artifacts}
                 conversationId={conversationId}
@@ -499,9 +514,9 @@ function TimelineToolSegment({
   if (isUserInjectedToolCall(toolCall)) {
     return <UserSteerSegment toolCall={toolCall} />
   }
-  if (isArtifactPresentationToolCall(toolCall)) {
+  if (isPresentationToolCall(toolCall)) {
     return (
-      <ArtifactPresentationBlock
+      <ToolPresentationBlock
         toolCall={toolCall}
         artifacts={artifacts}
         conversationId={conversationId}
@@ -534,16 +549,15 @@ function TimelineTextSegment({
   const text = segmentText(segment).trim()
   if (!text) return null
   return (
-    <div className={process ? 'text-neutral-600' : undefined}>
-      <ChatMarkdown
-        content={text}
-        artifacts={artifacts}
-        conversationId={conversationId}
-        citations={citations}
-        onImageClick={handleChatImageClick}
-        outlineSource={outlineSource}
-      />
-    </div>
+    <ChatMarkdown
+      content={text}
+      artifacts={artifacts}
+      conversationId={conversationId}
+      citations={citations}
+      onImageClick={handleChatImageClick}
+      outlineSource={outlineSource}
+      variant={process ? 'process' : undefined}
+    />
   )
 }
 
@@ -557,6 +571,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
   reasoningDurationMs,
   reasoningPreviewActive,
   onReasoningExpand,
+  defaultReasoningOpen = false,
 }: {
   segment: ChatMessageSegment
   toolCall?: ToolCallRecord
@@ -567,6 +582,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
   reasoningDurationMs?: number | null
   reasoningPreviewActive: boolean
   onReasoningExpand: () => void
+  defaultReasoningOpen?: boolean
 }) {
   if (segment.kind === 'tool') {
     return (
@@ -583,6 +599,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
     if (!reasoning.trim()) return null
     return (
       <ReasoningBlock
+        defaultOpen={defaultReasoningOpen}
         reasoning={reasoning}
         streaming={reasoningStreaming}
         previewActive={reasoningPreviewActive}
@@ -608,11 +625,12 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
       && previous.reasoningDurationMs === next.reasoningDurationMs
       && previous.reasoningPreviewActive === next.reasoningPreviewActive
       && previous.onReasoningExpand === next.onReasoningExpand
+      && previous.defaultReasoningOpen === next.defaultReasoningOpen
   }
   if (next.segment.kind === 'tool') {
     const tool = next.toolCall
     if (previous.toolCall !== tool) return false
-    if (!tool || !isArtifactPresentationToolCall(tool)) return true
+    if (!tool || !isPresentationToolCall(tool)) return true
   } else if (!citationMapsEqual(previous.citations, next.citations)) return false
   // Derived arrays can change on every delta. Records are immutable; a replaced
   // image or late citation must still invalidate only the leaves that use it.
@@ -660,6 +678,7 @@ function renderProcessSegments({
   artifacts,
   citations,
   conversationId,
+  messageStreaming,
   reasoningStreaming,
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
@@ -672,6 +691,7 @@ function renderProcessSegments({
   artifacts: ChatToolArtifact[]
   citations?: Map<number, CitationView>
   conversationId?: string | null
+  messageStreaming: boolean
   reasoningStreaming: boolean
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
@@ -680,50 +700,69 @@ function renderProcessSegments({
   onReasoningExpand: () => void
 }) {
   const nodes: ReactNode[] = []
-  const segmentCount = segments.length
+  const renderSegment = (segment: ChatMessageSegment, defaultReasoningOpen = false) => (
+    <TimelineSegmentNode
+      segment={segment}
+      toolCall={segment.kind === 'tool' ? toolCallById.get(segmentToolCallId(segment)) : undefined}
+      artifacts={artifacts}
+      citations={citations}
+      conversationId={conversationId}
+      reasoningStreaming={reasoningStreaming && segment.id === activeReasoningId}
+      reasoningDurationMs={reasoningDurationMsBySegmentId?.[segment.id]
+        ?? (reasoningSegmentCount === 1 ? reasoningDurationMs : null)}
+      reasoningPreviewActive={segment.id === activeReasoningId}
+      onReasoningExpand={onReasoningExpand}
+      defaultReasoningOpen={defaultReasoningOpen}
+    />
+  )
+  const canGroup = (segment: ChatMessageSegment) => {
+    if (segment.kind === 'reasoning') return true
+    if (segment.kind !== 'tool') return false
+    const tool = toolCallById.get(segmentToolCallId(segment))
+    if (!tool) return false
+    return !isAskUserToolName(toolRecordRawName(tool))
+      && !hasAskUserStructuredContent(tool.structured_content ?? tool.structuredContent)
+      && !tool.requires_confirmation && !tool.requiresConfirmation
+      && !isPresentationToolCall(tool)
+      && !isExternalSubagentToolCall(tool)
+      && !['agent', 'agent_control'].includes(canonicalToolName(tool))
+  }
   for (let index = 0; index < segments.length; ) {
     const segment = segments[index]
-    if (segment.kind === 'tool') {
-      const toolCall = toolCallById.get(segmentToolCallId(segment))
-      if (toolCall && isImageReadToolCall(toolCall)) {
-        const imageReads = [toolCall]
-        let end = index + 1
-        while (end < segments.length) {
-          const next = segments[end]
-          if (next.kind !== 'tool') break
-          const nextCall = toolCallById.get(segmentToolCallId(next))
-          if (!nextCall || !isImageReadToolCall(nextCall)) break
-          imageReads.push(nextCall)
-          end += 1
-        }
-        nodes.push(
-          <div key={segment.id}>
-            <ToolCallErrorBoundary>
-              <ImageReadCluster toolCalls={imageReads} conversationId={conversationId} />
-            </ToolCallErrorBoundary>
-          </div>,
-        )
-        index = end
-        continue
-      }
+    if (!canGroup(segment)) {
+      nodes.push(<div key={segment.id}>{renderSegment(segment)}</div>)
+      index += 1
+      continue
     }
-    nodes.push(
-      <div key={segment.id}>
-        <TimelineSegmentNode
-          segment={segment}
-          toolCall={segment.kind === 'tool' ? toolCallById.get(segmentToolCallId(segment)) : undefined}
-          artifacts={artifacts}
-          citations={citations}
-          conversationId={conversationId}
-          reasoningStreaming={reasoningStreaming && index === segmentCount - 1}
-          reasoningDurationMs={reasoningDurationMsBySegmentId?.[segment.id]
-            ?? (reasoningSegmentCount === 1 ? reasoningDurationMs : null)}
-          reasoningPreviewActive={segment.id === activeReasoningId}
-          onReasoningExpand={onReasoningExpand}
-        />
-      </div>,
-    )
-    index += 1
+    let end = index + 1
+    while (end < segments.length && canGroup(segments[end])) end += 1
+    const activity = segments.slice(index, end)
+    {
+      const tools = activity.flatMap(item => item.kind === 'tool'
+        ? [toolCallById.get(segmentToolCallId(item))!] : [])
+      const latest = activity[activity.length - 1]
+      nodes.push(
+        <ToolCallCluster
+          key={segment.id}
+          segments={activity}
+          toolCalls={tools}
+          toolCallById={toolCallById}
+          messageStreaming={messageStreaming}
+          onExpand={onReasoningExpand}
+          latestReasoning={latest.kind === 'reasoning' ? {
+            text: segmentText(latest), streaming: reasoningStreaming && latest.id === activeReasoningId,
+          } : undefined}
+        >
+          {() => activity.map(item => <div key={item.id}>
+            {item.kind === 'tool' ? <ToolCallErrorBoundary>
+              <ToolCallBlock toolCall={toolCallById.get(segmentToolCallId(item))!}
+                defaultOpen={activity.length === 1} conversationId={conversationId} />
+            </ToolCallErrorBoundary> : renderSegment(item, activity.length === 1)}
+          </div>)}
+        </ToolCallCluster>,
+      )
+    }
+    index = end
   }
   return nodes
 }
@@ -743,8 +782,6 @@ function TimelineGroupBlock({
   defaultOpen,
   onToggle,
   onReasoningExpand,
-  hiddenProcessCount,
-  onShowEarlier,
   toolCalls,
   toolCallById,
   artifacts,
@@ -763,8 +800,6 @@ function TimelineGroupBlock({
   defaultOpen: boolean
   onToggle: () => void
   onReasoningExpand: () => void
-  hiddenProcessCount: number
-  onShowEarlier: () => void
   toolCalls: ToolCallRecord[]
   toolCallById: ReadonlyMap<string, ToolCallRecord>
   artifacts: ChatToolArtifact[]
@@ -778,8 +813,8 @@ function TimelineGroupBlock({
 }) {
   const generating = messageStreaming
   const summary = useMemo(
-    () => summarizeToolGroup(allProcessSegments, toolCalls, toolCallById),
-    [allProcessSegments, toolCalls, toolCallById],
+    () => summarizeToolGroup(allProcessSegments, toolCalls, toolCallById, messageStreaming),
+    [allProcessSegments, toolCalls, toolCallById, messageStreaming],
   )
   const durationMs = useMemo(
     () => groupWorkDurationMs(allProcessSegments, toolCalls, toolCallById, reasoningDurationMs),
@@ -798,7 +833,7 @@ function TimelineGroupBlock({
         aria-expanded={renderDetails}
         data-chat-disclosure
         data-tauri-drag-region="false"
-        className="mb-1 flex w-full items-center gap-1.5 text-left text-[12px] leading-relaxed font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
+        className="mb-1 flex w-full items-center gap-1.5 text-left text-[15px] leading-6 font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
       >
         {generating ? (
           <TimelineSpinner size={16} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
@@ -820,21 +855,19 @@ function TimelineGroupBlock({
             {title}
           </span>
           {summary.diffStats && (
-            <span className="shrink-0 font-mono text-[11px] tabular-nums">
+            <span className="shrink-0 font-mono text-[13px] tabular-nums">
               <span className="text-emerald-600 dark:text-emerald-400">+{summary.diffStats.additions}</span>
               <span className="ml-1 text-red-500/80 dark:text-red-400/80">-{summary.diffStats.removals}</span>
             </span>
+          )}
+          {!renderDetails && summary.stoppedCount > 0 && (
+            <span className="shrink-0 text-[var(--text-muted)]">{summary.stoppedCount} 项已停止或跳过</span>
           )}
         </div>
       </button>}
       <ChatDisclosureBody open={renderDetails} animate={userOpen !== null}>
         {() => (
           <div className="space-y-1.5">
-            {showHeader && hiddenProcessCount > 0 && (
-              <Button size="sm" variant="ghost" data-chat-disclosure onClick={onShowEarlier}>
-                显示更早的过程（{hiddenProcessCount}）
-              </Button>
-            )}
             {/* A new tool can move existing commentary into this group. Keep
                 those segments visible instead of replaying opacity from zero. */}
             {renderProcessSegments({
@@ -843,6 +876,7 @@ function TimelineGroupBlock({
               artifacts,
               citations,
               conversationId,
+              messageStreaming,
               reasoningStreaming: reasoningStreaming,
               reasoningDurationMs,
               reasoningDurationMsBySegmentId,
@@ -856,8 +890,6 @@ function TimelineGroupBlock({
     </section>
   )
 }
-
-const PROCESS_PAGE = 20
 
 function awaitingAskUserPhase(value: unknown): boolean {
   if (!value || typeof value !== 'object' || !('askUser' in value)) return false
@@ -879,41 +911,6 @@ function isPendingPermissionTool(tool: ToolCallRecord): boolean {
   if (tool.requires_confirmation !== true && tool.requiresConfirmation !== true) return false
   const status = normalizeToolCallStatus(tool.status)
   return status === 'pending' || status === 'running'
-}
-
-function criticalProcessIds(
-  segments: readonly ChatMessageSegment[],
-  toolCallById: ReadonlyMap<string, ToolCallRecord>,
-  reasoningStreaming: boolean,
-): Set<string> {
-  const ids = new Set<string>()
-  let latestReasoningId: string | undefined
-  for (const segment of segments) {
-    if (segment.kind === 'reasoning') latestReasoningId = segment.id
-    if (segment.kind !== 'tool') continue
-    const tool = toolCallById.get(segmentToolCallId(segment))
-    if (tool && (isAwaitingAskUser(tool) || isPendingPermissionTool(tool))) ids.add(segment.id)
-  }
-  if (reasoningStreaming && latestReasoningId) ids.add(latestReasoningId)
-  return ids
-}
-
-/** Next hidden page, walking back from the live end so a slid-out step is reachable before older history. */
-function earlierProcessPage(segments: readonly ChatMessageSegment[], visibleIds: ReadonlySet<string>): string[] {
-  let anchor = -1
-  for (let index = segments.length - 1; index >= 0; index -= 1) {
-    if (!visibleIds.has(segments[index].id)) {
-      anchor = index
-      break
-    }
-  }
-  if (anchor < 0) return []
-  const ids: string[] = []
-  for (let index = anchor; index >= 0 && ids.length < PROCESS_PAGE; index -= 1) {
-    if (visibleIds.has(segments[index].id)) break
-    ids.push(segments[index].id)
-  }
-  return ids
 }
 
 function TimelineSegments({
@@ -947,14 +944,7 @@ function TimelineSegments({
 }) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const handleReasoningExpand = useCallback(() => setUserOpen(true), [])
-  // Latest 20 process segments stay mounted. Pages opened with
-  // 「显示更早的过程」 stay pinned, so a newer step cannot drop them.
-  // Streaming does not expand the window. Closing a finished Work and opening
-  // it again drops those pins and returns to the latest 20.
-  const [pinnedProcessIds, setPinnedProcessIds] = useState<ReadonlySet<string>>(() => new Set())
-  // Read the authority, not a possibly batched parent render, when a delta arrives.
-  const following = useContext(ScrollFollowingContext).isFollowing()
-  const committedPage = useRef<{ following: boolean; ids: ReadonlySet<string> }>({ following, ids: pinnedProcessIds })
+  // 过程全部挂载：工具簇默认折叠且组内行懒挂载，不再分页出「显示更早的过程」按钮。
   const defaultOpen = messageStreaming || cancelled
   const toolCallById = useMemo(() => {
     const toolCallById = new Map<string, ToolCallRecord>()
@@ -996,7 +986,8 @@ function TimelineSegments({
       messageStreaming ? 'running' : completed ? 'completed' : 'stopped',
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
-        return Boolean(tool && (isVisibleArtifactPresentation(tool) || isUserInjectedToolCall(tool)))
+        return Boolean(tool && (isVisiblePresentation(tool) || isUserInjectedToolCall(tool)
+          || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)))
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')
@@ -1020,40 +1011,9 @@ function TimelineSegments({
   }, [segments, toolCalls, toolCallById, completed, messageStreaming])
 
   const { reasoningSegmentCount, groupItems, processGroups, allProcessSegments, presentationExclusions, fallbackIds } = prepared
-  const readerDetached = committedPage.current.following && !following
-  const visibleProcessIds = useMemo(() => {
-    const ids = criticalProcessIds(allProcessSegments, toolCallById, reasoningStreaming)
-    for (const segment of allProcessSegments.slice(-PROCESS_PAGE)) ids.add(segment.id)
-    for (const id of pinnedProcessIds) ids.add(id)
-    // Include the last committed page before rendering children: scroll and
-    // stream updates may be batched, so pinning only in an effect is too late.
-    if (readerDetached) {
-      for (const id of committedPage.current.ids) ids.add(id)
-    }
-    return ids
-  }, [allProcessSegments, toolCallById, reasoningStreaming, pinnedProcessIds, readerDetached])
-  useLayoutEffect(() => {
-    if (readerDetached) setPinnedProcessIds(visibleProcessIds)
-    committedPage.current = { following, ids: visibleProcessIds }
-  }, [readerDetached, visibleProcessIds, following])
-  let hiddenProcessCount = 0
-  for (const segment of allProcessSegments) {
-    if (!visibleProcessIds.has(segment.id)) hiddenProcessCount += 1
-  }
-  const pinVisibleProcess = () => {
-    setPinnedProcessIds(current => {
-      if ([...visibleProcessIds].every(id => current.has(id))) return current
-      return new Set([...current, ...visibleProcessIds])
-    })
-  }
   const artifactById = new Map(artifacts.map(artifact => [artifactId(artifact), artifact]))
   return (
-    <section
-      aria-label="回答时间线"
-      className="space-y-1.5"
-      onPointerDownCapture={pinVisibleProcess}
-      onFocusCapture={pinVisibleProcess}
-    >
+    <section aria-label="回答时间线" className="space-y-1.5">
       {groupItems.map((item: TimelineGroupItem) => {
         if (item.type === 'presentation') {
           return <TimelineToolSegment
@@ -1095,27 +1055,13 @@ function TimelineSegments({
         return (
           <TimelineGroupBlock
             key={groupKey}
-            segments={item.segments.filter(segment => visibleProcessIds.has(segment.id))}
+            segments={item.segments}
             allProcessSegments={allProcessSegments}
             showHeader={showHeader}
             userOpen={userOpen}
             defaultOpen={defaultOpen}
             onReasoningExpand={handleReasoningExpand}
-            onToggle={() => {
-              if (!messageStreaming && !(userOpen ?? defaultOpen)) setPinnedProcessIds(new Set())
-              setUserOpen(current => !(current ?? defaultOpen))
-            }}
-            hiddenProcessCount={hiddenProcessCount}
-            onShowEarlier={() => {
-              const reveal = earlierProcessPage(allProcessSegments, visibleProcessIds)
-              if (reveal.length === 0) return
-              setUserOpen(true)
-              setPinnedProcessIds(current => {
-                const next = new Set(current)
-                for (const id of reveal) next.add(id)
-                return next
-              })
-            }}
+            onToggle={() => setUserOpen(current => !(current ?? defaultOpen))}
             toolCalls={toolCalls}
             toolCallById={toolCallById}
             artifacts={artifacts}

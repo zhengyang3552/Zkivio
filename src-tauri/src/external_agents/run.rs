@@ -438,13 +438,43 @@ pub(crate) async fn run_external_cli_reply_in(
     // Skill commands are model requests and may carry files/images. Control commands
     // retain their existing passthrough behavior. 图片：支持原生图片块的协议按白名单
     // 加载为 base64 块，其余（不支持 / 超白名单 / 读失败）降级为路径文本；文件：一律路径说明块。
+    // Catalog input types are authoritative; older catalogs retain native protocol support.
+    let accepts_images = if def.supports_native_image && !image_paths.is_empty() {
+        let key = crate::external_agents::slash::cache_key(&agent_id, &cwd.to_string_lossy());
+        let cached = state.external_discovery().get_cached_external_agent_models(
+            &key,
+            crate::external_agents::detection::EXTERNAL_AGENT_MODELS_CACHE_TTL,
+            crate::external_agents::detection::EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
+        );
+        let models = match cached {
+            Some(cached) => cached.models,
+            None => {
+                crate::external_agents::detection::detect_agent_models(def, &cwd)
+                    .await
+                    .models
+            }
+        };
+        let selected = conversation
+            .agent_runtime
+            .external_model
+            .as_deref()
+            .unwrap_or("default");
+        models
+            .iter()
+            .find(|model| model.id == selected)
+            .and_then(|model| model.capabilities.as_ref())
+            .is_none_or(|capabilities| capabilities.accepts_images())
+    } else {
+        def.supports_native_image
+    };
+    let mut attachment_note = String::new();
     let include_attachments = accepts_prompt_attachments(def.stream_format, latest_user_message);
     let (image_blocks, degraded_image_paths): (
         Vec<crate::external_agents::attachments::ImageBlock>,
         Vec<std::path::PathBuf>,
     ) = if !include_attachments {
         (Vec::new(), Vec::new())
-    } else if def.supports_native_image {
+    } else if accepts_images {
         crate::external_agents::attachments::load_image_blocks(
             image_paths,
             def.image_mime_whitelist,
@@ -461,6 +491,8 @@ pub(crate) async fn run_external_cli_reply_in(
             Some(&resolved_bin),
             file_paths,
         );
+        attachment_note.push_str(&image_note);
+        attachment_note.push_str(&file_note);
         composed.full_prompt.push_str(&image_note);
         composed.full_prompt.push_str(&file_note);
         for prompt in pi_regenerate_root_prompt
@@ -561,7 +593,26 @@ pub(crate) async fn run_external_cli_reply_in(
     } else {
         Some(composed.full_prompt.as_str())
     };
-    let args = (def.build_args)(&runtime_ctx, &build_options, prompt_for_args);
+    let mut args = (def.build_args)(&runtime_ctx, &build_options, prompt_for_args);
+    if agent_id == "codex" {
+        if let Some(tier) = conversation
+            .agent_runtime
+            .external_service_tier
+            .as_deref()
+            .filter(|tier| !tier.is_empty())
+        {
+            args.extend([
+                "-c".to_string(),
+                format!("service_tier={}", serde_json::to_string(tier).unwrap()),
+            ]);
+        }
+    }
+    if agent_id == "claude" {
+        args.extend(crate::external_agents::defs::claude::thinking_display_args(
+            conversation.agent_runtime.external_reasoning.as_deref(),
+            crate::external_agents::spawn::cached_cli_version(&resolved_bin).as_deref(),
+        ));
+    }
     // A1：系统指令以 flag 追加（不改 `build_args` 的形状，也不动 `RuntimeContext` ——
     // 那两处是所有 CLI 共用的，为一个 claude 专属 flag 加字段要牵动全部 def 与其单测）。
     let args = match system_prompt_file.as_deref() {
@@ -754,10 +805,9 @@ pub(crate) async fn run_external_cli_reply_in(
         .map(|spawned| drain_stderr(&mut spawned.child));
 
     let read_result = if persistent {
-        let persistent_mcp: Vec<AcpMcpServer> = vec![];
         // 本轮的启动配置指纹：变了就换进程（spec 第 8 条）。指令哈希只在**真的注入了**
         // `--append-system-prompt-file` 时才有值——斜杠命令那一轮不注入，不参与判定。
-        let launch_config = launch_config_for_turn(
+        let mut launch_config = launch_config_for_turn(
             def.stream_format,
             conversation.agent_runtime.external_model.as_deref(),
             conversation.agent_runtime.external_reasoning.as_deref(),
@@ -769,6 +819,16 @@ pub(crate) async fn run_external_cli_reply_in(
                 .as_deref(),
             &additional_dirs_key,
         );
+        if agent_id == "codex" {
+            launch_config.flags.push_str(&format!(
+                "|service-tier:{}",
+                conversation
+                    .agent_runtime
+                    .external_service_tier
+                    .as_deref()
+                    .unwrap_or_default()
+            ));
+        }
         run_persistent_turn(
             app,
             state,
@@ -783,17 +843,17 @@ pub(crate) async fn run_external_cli_reply_in(
             conversation.agent_runtime.external_reasoning.clone(),
             conversation.agent_runtime.external_sandbox.clone(),
             conversation.agent_runtime.external_agent_preset.clone(),
-            persistent_mcp,
             &launch_config,
             rewind_first_prompt
                 .as_ref()
                 .map_or(composed.full_prompt.as_str(), |prompt| {
                     prompt.full_prompt.as_str()
                 }),
-            persistent_turn_prompt(
+            &persistent_turn_prompt(
                 def.stream_format,
                 &composed.full_prompt,
                 latest_user_message,
+                &attachment_note,
             ),
             &image_blocks,
             &extra_writable_roots,
@@ -1054,9 +1114,70 @@ pub(crate) async fn run_external_cli_reply_in(
 struct StreamSegmentTracker {
     active_text_idx: Option<usize>,
     active_reasoning_idx: Option<usize>,
+    native_text_items: HashMap<String, usize>,
 }
 
 impl StreamSegmentTracker {
+    fn append_text_item(
+        &mut self,
+        id: &str,
+        delta: &str,
+        segments: &mut Vec<ChatMessageSegment>,
+        segment_order: &mut u32,
+        tool_calls_len: usize,
+    ) -> ChatMessageSegment {
+        if let Some(index) = self.native_text_items.get(id).copied() {
+            let segment = &mut segments[index];
+            segment.text.get_or_insert_default().push_str(delta);
+            return segment.clone();
+        }
+        self.reset_text();
+        let segment = self.append(
+            ChatMessageSegmentKind::Text,
+            segments,
+            segment_order,
+            tool_calls_len,
+            delta,
+        );
+        self.native_text_items
+            .insert(id.to_string(), segments.len() - 1);
+        self.reset_text();
+        segment
+    }
+
+    /// None delta means a genuine revision; a prefix completion stays on the fast delta path.
+    fn complete_text_item(
+        &mut self,
+        id: &str,
+        text: &str,
+        segments: &mut Vec<ChatMessageSegment>,
+        segment_order: &mut u32,
+        tool_calls_len: usize,
+    ) -> Option<(ChatMessageSegment, Option<String>)> {
+        if let Some(index) = self.native_text_items.get(id).copied() {
+            let previous = segments[index].text.as_deref().unwrap_or_default();
+            if previous == text {
+                return None;
+            }
+            if let Some(suffix) = text.strip_prefix(previous) {
+                let delta = suffix.to_string();
+                let tail = !segments[index + 1..]
+                    .iter()
+                    .any(|segment| segment.kind == ChatMessageSegmentKind::Text);
+                let segment =
+                    self.append_text_item(id, &delta, segments, segment_order, tool_calls_len);
+                return Some((segment, tail.then_some(delta)));
+            }
+            segments[index].text = Some(text.to_string());
+            return Some((segments[index].clone(), None));
+        }
+        if text.is_empty() {
+            return None;
+        }
+        let segment = self.append_text_item(id, text, segments, segment_order, tool_calls_len);
+        Some((segment, Some(text.to_string())))
+    }
+
     fn reset_text(&mut self) {
         self.active_text_idx = None;
     }
@@ -1239,7 +1360,6 @@ async fn run_persistent_turn<E, C>(
     reasoning: Option<String>,
     sandbox: Option<String>,
     preset: Option<String>,
-    mcp_servers: Vec<AcpMcpServer>,
     launch_config: &LaunchConfig,
     first_prompt: &str,
     reuse_prompt: &str,
@@ -1351,6 +1471,7 @@ where
             conversation_id.to_string(),
             LiveSession {
                 control: control.clone(),
+                _chat_credential: None,
                 agent_id: agent_id.to_string(),
                 cwd: cwd_str.clone(),
                 launch_config: launch_config.clone(),
@@ -1376,6 +1497,8 @@ where
                 // is lost and the user must be told (R4) rather than silently getting a blank slate.
                 let mut intended_resume = resume_native.is_some();
                 let connected = match connect_persistent_session(
+                    app,
+                    conversation_id,
                     protocol,
                     resolved_bin,
                     &turn_args,
@@ -1384,7 +1507,6 @@ where
                     reasoning.as_deref(),
                     sandbox.as_deref(),
                     preset.as_deref(),
-                    &mcp_servers,
                     resume_native.clone(),
                     additional_directories,
                     Some(background_task_sink(app, conversation_id)),
@@ -1408,6 +1530,8 @@ where
                             &turn_args,
                         );
                         connect_persistent_session(
+                            app,
+                            conversation_id,
                             protocol,
                             resolved_bin,
                             &turn_args,
@@ -1416,7 +1540,6 @@ where
                             reasoning.as_deref(),
                             sandbox.as_deref(),
                             preset.as_deref(),
-                            &mcp_servers,
                             None,
                             additional_directories,
                             Some(background_task_sink(app, conversation_id)),
@@ -1434,6 +1557,8 @@ where
                         intended_resume = false;
                         crate::external_agents::session::clear_live_handle(app, conversation_id);
                         connect_persistent_session(
+                            app,
+                            conversation_id,
                             protocol,
                             resolved_bin,
                             &turn_args,
@@ -1442,7 +1567,6 @@ where
                             reasoning.as_deref(),
                             sandbox.as_deref(),
                             preset.as_deref(),
-                            &mcp_servers,
                             None,
                             additional_directories,
                             Some(background_task_sink(app, conversation_id)),
@@ -1459,6 +1583,7 @@ where
                     native_id,
                     resumed,
                     child_pid,
+                    chat_credential,
                 } = connected;
                 // 轮内重连要续的是**这个**会话，不是 handle 里那个（首连开了新会话时两者不同）。
                 resumable_native = Some(native_id.clone()).filter(|id| !id.trim().is_empty());
@@ -1477,6 +1602,7 @@ where
                     conversation_id.to_string(),
                     LiveSession {
                         control: control.clone(),
+                        _chat_credential: chat_credential,
                         agent_id: agent_id.to_string(),
                         cwd: cwd_str.clone(),
                         launch_config: launch_config.clone(),
@@ -1609,7 +1735,6 @@ where
             reasoning.as_deref(),
             sandbox.as_deref(),
             preset.as_deref(),
-            &mcp_servers,
             launch_config,
             resumable_native.clone(),
             additional_directories,
@@ -1675,7 +1800,6 @@ async fn reconnect_fresh(
     reasoning: Option<&str>,
     sandbox: Option<&str>,
     preset: Option<&str>,
-    mcp_servers: &[AcpMcpServer],
     launch_config: &LaunchConfig,
     resume_native: Option<String>,
     additional_directories: &[String],
@@ -1695,7 +1819,10 @@ async fn reconnect_fresh(
         native_id,
         resumed,
         child_pid,
+        chat_credential,
     } = connect_persistent_session(
+        app,
+        conversation_id,
         protocol,
         resolved_bin,
         args,
@@ -1704,7 +1831,6 @@ async fn reconnect_fresh(
         reasoning,
         sandbox,
         preset,
-        mcp_servers,
         resume_native,
         additional_directories,
         Some(background_task_sink(app, conversation_id)),
@@ -1728,6 +1854,7 @@ async fn reconnect_fresh(
         conversation_id.to_string(),
         LiveSession {
             control: control.clone(),
+            _chat_credential: chat_credential,
             agent_id: agent_id.to_string(),
             cwd: cwd_str.to_string(),
             launch_config: launch_config.clone(),
@@ -1810,7 +1937,7 @@ fn launch_config_for_turn(
         };
     }
     if matches!(protocol, StreamFormat::PiRpc) {
-        return LaunchConfig::for_pi(model, reasoning);
+        return LaunchConfig::default();
     }
     if matches!(protocol, StreamFormat::CodexAppServer) {
         // sandbox 进入进程配置，握手解析出的 sandboxPolicy 每轮显式发送。
@@ -1826,12 +1953,12 @@ fn launch_config_for_turn(
     }
     if matches!(protocol, StreamFormat::AcpJsonRpc) {
         return LaunchConfig {
-            // Grok's ask mode removes the process-bound --always-approve flag.
-            // A live full-access process must be relaunched before this choice can apply.
-            flags: if sandbox == Some("ask") {
-                serde_json::json!(["ask", additional_dirs_key]).to_string()
-            } else {
-                additional_dirs_key.to_string()
+            // Process-bound ACP choices: grok's ask / strict change argv, OpenCode's build /
+            // plan is applied once at session setup. Switching relaunches and resumes the same
+            // native session. `full` is grok's default argv, so it fingerprints like unset.
+            flags: match sandbox.filter(|s| !s.is_empty() && *s != "full") {
+                Some(mode) => serde_json::json!([mode, additional_dirs_key]).to_string(),
+                None => additional_dirs_key.to_string(),
             },
             instructions: None,
         };
@@ -1875,13 +2002,14 @@ fn launch_config_for_turn(
 /// 这些每轮都必须整份发出去 —— 只发最新用户消息会让 skill 正文与文件路径从第 2 轮起
 /// 静默消失（dsh 没有 file ContentBlock，非图片只能靠这段路径说明）。
 ///
-/// 其余持久协议（codex / ACP）的 full_prompt 首轮**含**指令，复用轮只发最新用户消息，
-/// 保持现有行为。Codex 显式 Skill 使用无指令包装的 passthrough 正文，需保留附件说明。
+/// 其余持久协议（codex / ACP）的 full_prompt 首轮**含**指令，复用轮发送最新用户消息
+/// 与本轮附件路径，避免重复注入会话指令。Codex 显式 Skill 保留完整 passthrough 正文。
 fn persistent_turn_prompt<'a>(
     protocol: StreamFormat,
     composed_prompt: &'a str,
     latest_user_message: &'a str,
-) -> &'a str {
+    attachment_note: &'a str,
+) -> std::borrow::Cow<'a, str> {
     match protocol {
         StreamFormat::CodexAppServer
             if crate::external_agents::session::codex_app_server::codex_skill_command(
@@ -1889,13 +2017,16 @@ fn persistent_turn_prompt<'a>(
             )
             .is_some() =>
         {
-            composed_prompt
+            composed_prompt.into()
         }
         StreamFormat::ClaudeStreamJson
         | StreamFormat::DshJsonRpc
         | StreamFormat::PiRpc
-        | StreamFormat::AntigravityStreamJson => composed_prompt,
-        _ => latest_user_message,
+        | StreamFormat::AntigravityStreamJson => composed_prompt.into(),
+        _ if !attachment_note.is_empty() => {
+            format!("{latest_user_message}{attachment_note}").into()
+        }
+        _ => latest_user_message.into(),
     }
 }
 
@@ -2201,6 +2332,7 @@ where
     // 本轮问过的 toolCallId。返回前必须把 `pending_chat_tool_approvals` 里可能残留的条目扫掉
     // ——那张表按 id 存 oneshot sender，走了异常出口（EOF / 硬 Close）不扫就是一条永久泄漏。
     let mut asked_ids: Vec<String> = Vec::new();
+    let mut resolved_interactions = std::collections::HashSet::new();
 
     let mut done_rx = done_rx;
     let mut events_open = true;
@@ -2219,6 +2351,10 @@ where
             }
             maybe_event = events_rx.recv(), if events_open => {
                 match maybe_event {
+                    Some(UnifiedAgentEvent::InteractionResolved { tool_call_id }) => {
+                        resolved_interactions.insert(tool_call_id.clone());
+                        if let Some(host) = approvals { host.forget(&[tool_call_id]); }
+                    }
                     Some(event) => emit(event),
                     None => events_open = false,
                 }
@@ -2233,6 +2369,7 @@ where
                 }
             }, if ask_rx.is_some() => {
                 if let Some(host) = approvals {
+                    if resolved_interactions.contains(&ask.tool_call_id) { continue; }
                     asked_ids.push(ask.tool_call_id.clone());
                     in_flight.push(host.ask(ask));
                 }
@@ -2383,6 +2520,7 @@ impl ApprovalHost<'_> {
                     updated_input: opened.then(|| serde_json::json!({ "action": "accept" })),
                     set_permission_mode: None,
                     updated_permissions: None,
+                    always: false,
                 };
             }
             if matches!(
@@ -2396,6 +2534,7 @@ impl ApprovalHost<'_> {
                     updated_input: None,
                     set_permission_mode: None,
                     updated_permissions: None,
+                    always: false,
                 };
             }
             // FallbackApproval：退回普通审批卡，别静默吞掉这次询问。
@@ -2440,6 +2579,7 @@ impl ApprovalHost<'_> {
                 updated_input: None,
                 set_permission_mode: mode,
                 updated_permissions: None,
+                always: false,
             };
         }
         // `EnterPlanMode` = claude 自己要求「先探索、出方案，别急着改」。**放行就够** ——
@@ -2464,6 +2604,7 @@ impl ApprovalHost<'_> {
                 updated_input: None,
                 set_permission_mode: None,
                 updated_permissions: None,
+                always: false,
             };
         }
         // 「完全」档：通道之所以接上只为了上面那两张卡，普通工具原地放行。
@@ -2481,6 +2622,7 @@ impl ApprovalHost<'_> {
                 updated_input: None,
                 set_permission_mode: None,
                 updated_permissions: None,
+                always: false,
             };
         }
         let outcome = crate::chat::commands::interaction::request_tool_approval_outcome(
@@ -2507,6 +2649,7 @@ impl ApprovalHost<'_> {
             updated_input: None,
             set_permission_mode: None,
             updated_permissions,
+            always: outcome.approved && outcome.always,
         }
     }
 
@@ -2564,6 +2707,7 @@ impl ApprovalHost<'_> {
             updated_input: approved.then(|| encode(&prompt, &answered)),
             set_permission_mode: None,
             updated_permissions: None,
+            always: false,
         }
     }
 
@@ -2607,6 +2751,7 @@ struct PersistentConnection {
     native_id: String,
     resumed: bool,
     child_pid: Option<u32>,
+    chat_credential: Option<crate::app_mcp::McpCredential>,
 }
 
 /// claude 轮间空闲读的副作用旁路：会话层没有（也不该有）`AppHandle`，
@@ -3011,6 +3156,8 @@ async fn append_wake_turn_message(
 /// `dsh_idle_sink`：dsh 轮间的任务边沿 + 子代理进度 + 唤醒轮正文。
 #[allow(clippy::too_many_arguments)]
 async fn connect_persistent_session(
+    app: &AppHandle,
+    conversation_id: &str,
     protocol: StreamFormat,
     resolved_bin: &std::path::Path,
     args: &[String],
@@ -3019,7 +3166,6 @@ async fn connect_persistent_session(
     reasoning: Option<&str>,
     sandbox: Option<&str>,
     preset: Option<&str>,
-    mcp_servers: &[AcpMcpServer],
     resume_native: Option<String>,
     additional_directories: &[String],
     background_task_sink: Option<
@@ -3042,6 +3188,17 @@ async fn connect_persistent_session(
         spawn_dsh_session_actor_with_sink, DshJsonRpcSession,
     };
 
+    // WSL loopback may not reach the Windows-hosted MCP server.
+    let chat_credential = if matches!(
+        protocol,
+        StreamFormat::ClaudeStreamJson | StreamFormat::CodexAppServer | StreamFormat::AcpJsonRpc
+    ) && !crate::external_agents::wsl::is_wsl_target(resolved_bin)
+    {
+        Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
+    } else {
+        None
+    };
+
     match protocol {
         StreamFormat::AntigravityStreamJson => {
             use crate::external_agents::session::antigravity::{
@@ -3057,6 +3214,7 @@ async fn connect_persistent_session(
                 native_id,
                 resumed: resume_native.is_some(),
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::ClaudeStreamJson => {
@@ -3075,7 +3233,7 @@ async fn connect_persistent_session(
             //
             // live handle 只在参数里**没有**任何会话 flag 时兜底，且必须改写成 `--resume`：
             // 同一个 id 再 `--session-id` 一次会被 claude 以「id 已存在」拒绝启动。
-            let (effective_args, resumed) = if args.iter().any(|arg| arg == "--resume") {
+            let (mut effective_args, resumed) = if args.iter().any(|arg| arg == "--resume") {
                 (args.to_vec(), true)
             } else if args.iter().any(|arg| arg == "--session-id") {
                 (args.to_vec(), false)
@@ -3091,8 +3249,20 @@ async fn connect_persistent_session(
             } else {
                 (args.to_vec(), false)
             };
-            let session =
+            let chat_mcp_config = if let Some(credential) = &chat_credential {
+                Some(crate::external_agents::defs::claude::append_chat_mcp_args(
+                    &mut effective_args,
+                    &credential.url,
+                    &credential.authorization,
+                )?)
+            } else {
+                None
+            };
+            let mut session =
                 ClaudeStreamJsonSession::connect(resolved_bin, &effective_args, cwd).await?;
+            if let Some(file) = chat_mcp_config {
+                session.hold_chat_mcp_config(file);
+            }
             let id = session.session_id().to_string();
             let child_pid = session.child_pid();
             Ok(PersistentConnection {
@@ -3100,9 +3270,13 @@ async fn connect_persistent_session(
                 native_id: id,
                 resumed,
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::CodexAppServer => {
+            let mcp = chat_credential
+                .as_ref()
+                .map(|credential| (credential.url.as_str(), credential.authorization.as_str()));
             if let Some(tid) = resume_native
                 .as_deref()
                 .map(str::trim)
@@ -3120,6 +3294,7 @@ async fn connect_persistent_session(
                     model,
                     sandbox,
                     Some(tid),
+                    mcp,
                 )
                 .await
                 .map_err(|err| {
@@ -3140,10 +3315,11 @@ async fn connect_persistent_session(
                     native_id: id,
                     resumed: true,
                     child_pid,
+                    chat_credential,
                 });
             }
             let session =
-                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None)
+                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None, mcp)
                     .await?;
             let id = session.thread_id().to_string();
             let child_pid = session.child_pid();
@@ -3152,9 +3328,22 @@ async fn connect_persistent_session(
                 native_id: id,
                 resumed: false,
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::AcpJsonRpc => {
+            let mcp_servers: Vec<AcpMcpServer> = chat_credential
+                .as_ref()
+                .map(|credential| AcpMcpServer::Http {
+                    name: crate::app_mcp::CHAT_MCP_SERVER_NAME.to_string(),
+                    url: credential.url.clone(),
+                    headers: vec![(
+                        "Authorization".to_string(),
+                        credential.authorization.clone(),
+                    )],
+                })
+                .into_iter()
+                .collect();
             if let Some(sid) = resume_native
                 .as_deref()
                 .map(str::trim)
@@ -3168,7 +3357,8 @@ async fn connect_persistent_session(
                     cwd,
                     model,
                     reasoning,
-                    mcp_servers,
+                    sandbox,
+                    &mcp_servers,
                     Some(sid),
                     additional_directories,
                 )
@@ -3184,6 +3374,7 @@ async fn connect_persistent_session(
                     native_id: id,
                     resumed: true,
                     child_pid,
+                    chat_credential,
                 });
             }
             let session = AcpSession::connect(
@@ -3192,7 +3383,8 @@ async fn connect_persistent_session(
                 cwd,
                 model,
                 reasoning,
-                mcp_servers,
+                sandbox,
+                &mcp_servers,
                 None,
                 additional_directories,
             )
@@ -3204,6 +3396,7 @@ async fn connect_persistent_session(
                 native_id: id,
                 resumed: false,
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::DshJsonRpc => {
@@ -3241,6 +3434,7 @@ async fn connect_persistent_session(
                     native_id: id,
                     resumed: true,
                     child_pid,
+                    chat_credential,
                 });
             }
             let session = DshJsonRpcSession::connect(
@@ -3266,6 +3460,7 @@ async fn connect_persistent_session(
                 native_id: id,
                 resumed,
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::PiRpc => {
@@ -3286,6 +3481,7 @@ async fn connect_persistent_session(
                 native_id,
                 resumed,
                 child_pid,
+                chat_credential,
             })
         }
     }
@@ -3463,6 +3659,69 @@ fn apply_unified_event(
             );
             emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
         }
+        UnifiedAgentEvent::TextItemDelta { id, delta } => {
+            let segment = segment_tracker.append_text_item(
+                &id,
+                &delta,
+                segments,
+                segment_order,
+                tool_calls.len(),
+            );
+            let tail = segments
+                .iter()
+                .rev()
+                .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
+                .is_some_and(|last| last.id == segment.id);
+            if tail {
+                content.push_str(&delta);
+                emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
+            } else {
+                *content = segments
+                    .iter()
+                    .filter(|segment| segment.kind == ChatMessageSegmentKind::Text)
+                    .filter_map(|segment| segment.text.as_deref())
+                    .collect();
+                crate::chat::protocol::emit_run_event(
+                    app,
+                    run_id,
+                    crate::chat::protocol::ChatRunEvent::TextSegmentReplaced {
+                        segment_id: segment.id,
+                        text: segment.text.unwrap_or_default(),
+                        content: content.clone(),
+                    },
+                );
+            }
+        }
+        UnifiedAgentEvent::TextItemCompleted { id, text } => {
+            if let Some((segment, delta)) = segment_tracker.complete_text_item(
+                &id,
+                &text,
+                segments,
+                segment_order,
+                tool_calls.len(),
+            ) {
+                if let Some(delta) = delta {
+                    content.push_str(&delta);
+                    emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
+                } else {
+                    *content = segments
+                        .iter()
+                        .filter(|segment| segment.kind == ChatMessageSegmentKind::Text)
+                        .filter_map(|segment| segment.text.as_deref())
+                        .collect();
+                    crate::chat::protocol::emit_run_event(
+                        app,
+                        run_id,
+                        crate::chat::protocol::ChatRunEvent::TextSegmentReplaced {
+                            segment_id: segment.id,
+                            text,
+                            content: content.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        UnifiedAgentEvent::InteractionResolved { .. } => {}
         UnifiedAgentEvent::ThinkingDelta { delta } => {
             reasoning.push_str(&delta);
             let segment = segment_tracker.append(
@@ -3475,6 +3734,12 @@ fn apply_unified_event(
             emit_chat_stream_delta(app, run_id, "", Some(&delta), Some(&segment));
         }
         UnifiedAgentEvent::ToolUse { id, name, input } => {
+            if let Some(record) = tool_map.get(&id).and_then(|idx| tool_calls.get_mut(*idx)) {
+                if update_existing_acp_tool(record, &name, &input) {
+                    emit_chat_tool_record(app, run_id, record);
+                }
+                return;
+            }
             segment_tracker.reset_text();
             segment_tracker.reset_reasoning();
             let segment = push_tool_segment(segments, segment_order, &id);
@@ -3502,6 +3767,19 @@ fn apply_unified_event(
             tool_calls.push(record.clone());
             emit_chat_tool_record(app, run_id, &record);
         }
+        UnifiedAgentEvent::ToolPartialOutput {
+            tool_use_id,
+            output,
+        } => {
+            if let Some(record) = tool_map
+                .get(&tool_use_id)
+                .and_then(|idx| tool_calls.get_mut(*idx))
+            {
+                if apply_external_tool_partial_output(record, &output) {
+                    emit_chat_tool_record(app, run_id, record);
+                }
+            }
+        }
         UnifiedAgentEvent::ToolResult {
             tool_use_id,
             content: result_content,
@@ -3510,6 +3788,7 @@ fn apply_unified_event(
             if let Some(idx) = tool_map.get(&tool_use_id).copied() {
                 if let Some(record) = tool_calls.get_mut(idx) {
                     apply_external_tool_result(record, &result_content, is_error, now);
+                    attach_external_html_render(record, conversation_id, &result_content, is_error);
                     // 问用户答完时留下的 `askUser` 载荷（问题 + 用户选的答案）在这里落进记录，
                     // 覆盖流解析层塞的原始入参 —— 否则消息流里那块刷新一次就只剩一行灰字。
                     if let Some(answered) = app
@@ -3781,6 +4060,139 @@ fn apply_unified_event(
     }
 }
 
+fn update_existing_acp_tool(
+    record: &mut ToolCallRecord,
+    name: &str,
+    input: &serde_json::Value,
+) -> bool {
+    if input
+        .get("sessionUpdate")
+        .and_then(serde_json::Value::as_str)
+        != Some("tool_call_update")
+        || !matches!(
+            record.status,
+            ToolCallStatus::Pending | ToolCallStatus::Running
+        )
+    {
+        return false;
+    }
+    if name.contains("html_render") {
+        record.name = name.to_string();
+    }
+    if let Some(payload) = record
+        .structured_content
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let mut changed = false;
+        for key in ["rawInput", "name", "toolName"] {
+            if let Some(value) = input.get(key).filter(|value| !value.is_null()) {
+                payload.insert(key.to_string(), value.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            record.arguments = serde_json::to_string(payload).expect("ACP JSON input serializes");
+        }
+    }
+    true
+}
+
+fn is_qualified_html_render_name(tool_name: &str) -> bool {
+    [
+        "mcp__kivio__html_render",
+        "kivio.html_render",
+        "kivio/html_render",
+        "kivio__html_render",
+    ]
+    .iter()
+    .any(|name| {
+        tool_name.match_indices(*name).any(|(start, matched)| {
+            let is_name_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            !tool_name[..start]
+                .chars()
+                .next_back()
+                .is_some_and(is_name_char)
+                && !tool_name[start + matched.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_name_char)
+        })
+    })
+}
+
+fn render_attachment_id(result: &str) -> Option<&str> {
+    const PREFIX: &str = "htmlrender-";
+    result.match_indices(PREFIX).find_map(|(start, _)| {
+        let candidate = result.get(start..start.checked_add(PREFIX.len() + 36)?)?;
+        candidate[PREFIX.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) || byte == b'-')
+            .then_some(candidate)
+    })
+}
+
+fn attach_external_html_render(
+    record: &mut ToolCallRecord,
+    conversation_id: &str,
+    result_content: &str,
+    is_error: bool,
+) {
+    if is_error {
+        return;
+    }
+    let Some(input) = record.structured_content.as_ref() else {
+        return;
+    };
+    let acp = input
+        .get("sessionUpdate")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind == "tool_call" || kind == "tool_call_update");
+    let acp_title = acp
+        && record
+            .name
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|part| part == "html_render");
+    let acp_name = acp
+        && ["name", "toolName"].iter().any(|key| {
+            input
+                .get(*key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name == "html_render" || is_qualified_html_render_name(name))
+        });
+    if !is_qualified_html_render_name(&record.name) && !acp_title && !acp_name {
+        return;
+    }
+    if let Some(reference) = render_attachment_id(result_content)
+        .and_then(|id| crate::html_render::take_pending_render(conversation_id, id))
+    {
+        if let Ok(reference) = serde_json::to_value(reference) {
+            record.structured_content = Some(reference);
+        }
+    }
+}
+
+fn apply_external_tool_partial_output(record: &mut ToolCallRecord, output: &str) -> bool {
+    if !matches!(
+        record.status,
+        ToolCallStatus::Pending | ToolCallStatus::Running
+    ) {
+        return false;
+    }
+    record.status = ToolCallStatus::Running;
+    let start = output
+        .char_indices()
+        .rev()
+        .nth(799)
+        .map_or(0, |(index, _)| index);
+    record.result_preview = Some(if start > 0 {
+        format!("…{}", &output[start..])
+    } else {
+        output.to_string()
+    });
+    true
+}
+
 fn apply_external_tool_result(
     record: &mut ToolCallRecord,
     result_content: &str,
@@ -4040,16 +4452,16 @@ fn merge_cli_usage(previous: Option<&ModelUsage>, mut incoming: ModelUsage) -> M
     if let Some(prev) = previous {
         if usage_tokens_all_zero(&incoming) && !usage_tokens_all_zero(prev) {
             let window = incoming.context_window_tokens;
+            let context = incoming.context_tokens;
             incoming = prev.clone();
             incoming.context_window_tokens = window;
+            incoming.context_tokens = context.or(incoming.context_tokens);
         }
     }
     incoming
 }
 
-/// 一次上报里所有 token 数是否都是 0 / 缺失（= 这条上报没有任何分子信息）。
-/// 这条用量上报有没有任何非零 token。`context.rs::usage_has_token_numbers` 是它的反面，
-/// 两处必须共用同一个判据（此前 `reasoning_tokens` 只有这边算，见那里的注释）。
+/// 计费用量是否全零；独立的 context_tokens 快照不参与计费字段合并。
 pub(crate) fn usage_tokens_all_zero(usage: &ModelUsage) -> bool {
     usage.input_tokens.unwrap_or(0) == 0
         && usage.output_tokens.unwrap_or(0) == 0
@@ -4070,6 +4482,202 @@ fn truncate_for_preview(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render_test_record(name: &str, input: serde_json::Value) -> ToolCallRecord {
+        ToolCallRecord {
+            id: "tool-1".into(),
+            name: name.into(),
+            source: "external_cli".into(),
+            server_id: None,
+            arguments: input.to_string(),
+            status: ToolCallStatus::Running,
+            result_preview: None,
+            error: None,
+            duration_ms: None,
+            started_at: Some(1),
+            completed_at: None,
+            round: 1,
+            sensitive: false,
+            artifacts: vec![],
+            trace_id: None,
+            span_id: None,
+            structured_content: Some(input),
+        }
+    }
+
+    fn queue_render(conversation_id: &str) -> serde_json::Value {
+        let reference = serde_json::json!({
+            "type": "html_render",
+            "attachmentId": format!("htmlrender-{}", Uuid::new_v4()),
+            "title": "Chart",
+            "height": 480
+        });
+        crate::html_render::record_pending_render(
+            conversation_id,
+            serde_json::from_value(reference.clone()).unwrap(),
+        );
+        reference
+    }
+
+    fn render_result(reference: &serde_json::Value) -> String {
+        format!(
+            "Rendered page {}.",
+            reference["attachmentId"].as_str().unwrap()
+        )
+    }
+
+    #[test]
+    fn external_render_results_replace_input_for_all_supported_names() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        for name in [
+            "mcp__kivio__html_render",
+            "kivio.html_render",
+            "kivio/html_render",
+            "kivio__html_render",
+        ] {
+            let reference = queue_render(&conversation);
+            let result = render_result(&reference);
+            let mut record = render_test_record(name, serde_json::json!({"title": "Chart"}));
+            apply_external_tool_result(&mut record, &result, false, 2);
+            attach_external_html_render(&mut record, &conversation, &result, false);
+            assert_eq!(record.structured_content, Some(reference), "{name}");
+            assert_eq!(record.status, ToolCallStatus::Success);
+        }
+        for name in ["Call html_render", "Calling kivio.html_render (MCP)"] {
+            let reference = queue_render(&conversation);
+            let mut record = render_test_record(
+                name,
+                serde_json::json!({
+                    "sessionUpdate": "tool_call", "title": name, "rawInput": {"title": "Chart"}
+                }),
+            );
+            attach_external_html_render(
+                &mut record,
+                &conversation,
+                &render_result(&reference),
+                false,
+            );
+            assert_eq!(record.structured_content, Some(reference), "{name}");
+        }
+        for key in ["name", "toolName"] {
+            let reference = queue_render(&conversation);
+            let mut record = render_test_record(
+                "Rendering chart",
+                serde_json::json!({
+                    "sessionUpdate": "tool_call", "title": "Rendering chart",
+                    (key): "kivio/html_render", "rawInput": {"title": "Chart"}
+                }),
+            );
+            attach_external_html_render(
+                &mut record,
+                &conversation,
+                &render_result(&reference),
+                false,
+            );
+            assert_eq!(record.structured_content, Some(reference), "{key}");
+        }
+    }
+
+    #[test]
+    fn external_render_errors_and_other_tools_do_not_consume_pending_renders() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        for (name, is_error) in [
+            ("mcp__kivio__html_render", true),
+            ("mcp__other__html_render", false),
+            ("otherkivio.html_render", false),
+            ("kivio.html_renderer", false),
+            ("kivio.html_preview", false),
+        ] {
+            let reference = queue_render(&conversation);
+            let result = render_result(&reference);
+            let input = serde_json::json!({"title": "Chart"});
+            let mut record = render_test_record(name, input.clone());
+            apply_external_tool_result(&mut record, &result, is_error, 2);
+            attach_external_html_render(&mut record, &conversation, &result, is_error);
+            assert_eq!(record.structured_content, Some(input), "{name}");
+            let id = reference["attachmentId"].as_str().unwrap();
+            let pending = crate::html_render::take_pending_render(&conversation, id).unwrap();
+            assert_eq!(serde_json::to_value(pending).unwrap(), reference);
+        }
+    }
+
+    #[test]
+    fn acp_updates_keep_non_null_input_and_programmatic_name() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        let reference = queue_render(&conversation);
+        let mut record = render_test_record(
+            "Rendering chart",
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "title": "Rendering chart", "rawInput": {"title": "Chart"}
+            }),
+        );
+        let update = serde_json::json!({
+            "sessionUpdate": "tool_call_update", "title": "Rendering chart",
+            "toolName": "kivio/html_render", "rawInput": null
+        });
+        assert!(update_existing_acp_tool(
+            &mut record,
+            "Rendering chart",
+            &update
+        ));
+        assert_eq!(
+            record.structured_content.as_ref().unwrap()["rawInput"]["title"],
+            "Chart"
+        );
+        let arguments: serde_json::Value = serde_json::from_str(&record.arguments).unwrap();
+        assert_eq!(arguments["rawInput"]["title"], "Chart");
+        attach_external_html_render(
+            &mut record,
+            &conversation,
+            &render_result(&reference),
+            false,
+        );
+        assert_eq!(record.structured_content, Some(reference));
+    }
+
+    #[test]
+    fn render_results_select_their_own_attachment_not_an_abandoned_same_title() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        let abandoned = queue_render(&conversation);
+        let current = queue_render(&conversation);
+        let mut record =
+            render_test_record("kivio.html_render", serde_json::json!({"title": "Chart"}));
+        attach_external_html_render(&mut record, &conversation, &render_result(&current), false);
+        assert_eq!(record.structured_content, Some(current));
+        let abandoned_id = abandoned["attachmentId"].as_str().unwrap();
+        let pending = crate::html_render::take_pending_render(&conversation, abandoned_id).unwrap();
+        assert_eq!(serde_json::to_value(pending).unwrap(), abandoned);
+    }
+
+    #[test]
+    fn missing_and_other_conversation_ids_do_not_consume_a_render() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        let other = format!("conv_{}", Uuid::new_v4());
+        let reference = queue_render(&conversation);
+        let input = serde_json::json!({"title": "Chart"});
+        let mut record = render_test_record("kivio.html_render", input.clone());
+        attach_external_html_render(&mut record, &conversation, "no render id", false);
+        attach_external_html_render(&mut record, &other, &render_result(&reference), false);
+        assert_eq!(record.structured_content, Some(input));
+        let id = reference["attachmentId"].as_str().unwrap();
+        assert!(crate::html_render::take_pending_render(&conversation, id).is_some());
+    }
+
+    #[test]
+    fn render_id_parser_rejects_missing_and_malformed_ids() {
+        let id = "htmlrender-12345678-1234-1234-1234-123456789abc";
+        assert_eq!(
+            render_attachment_id(&format!("bad htmlrender-zz then {id}.")),
+            Some(id)
+        );
+        assert_eq!(render_attachment_id("Rendered page htmlrender-123."), None);
+        assert_eq!(render_attachment_id("nothing rendered"), None);
+        assert_eq!(
+            render_attachment_id("htmlrender-12345678-1234-1234-1234-123456789abC"),
+            None
+        );
+    }
+
     #[test]
     fn claude_rewind_resumes_at_the_entry_before_the_first_removed_prompt() {
         use crate::external_agents::import::ClaudeTranscriptPrompt;
@@ -4159,7 +4767,7 @@ mod tests {
             )));
         }
         assert_eq!(
-            persistent_turn_prompt(protocol, "skill + attachment + message", "message"),
+            persistent_turn_prompt(protocol, "skill + attachment + message", "message", ""),
             "skill + attachment + message"
         );
         assert!(!cancel_keeps_live_session("cancelled", protocol));
@@ -4236,6 +4844,15 @@ mod tests {
             span_id: None,
             structured_content: Some(serde_json::json!({ "description": "搜资讯" })),
         };
+        let latest = "新".repeat(800);
+        assert!(apply_external_tool_partial_output(
+            &mut record,
+            &format!("old{latest}")
+        ));
+        assert_eq!(
+            record.result_preview.as_deref(),
+            Some(format!("…{latest}").as_str())
+        );
         apply_external_tool_result(
             &mut record,
             "started subagent 018b08fc-ee7f-4ea5-b77c-9c5d1c6ecf50",
@@ -4249,6 +4866,9 @@ mod tests {
             background_task_id(&record).as_deref(),
             Some("018b08fc-ee7f-4ea5-b77c-9c5d1c6ecf50")
         );
+        record.status = ToolCallStatus::Success;
+        assert!(!apply_external_tool_partial_output(&mut record, "too late"));
+        assert_eq!(record.result_preview, None);
     }
 
     #[test]
@@ -4500,6 +5120,29 @@ mod tests {
     }
 
     #[test]
+    fn cli_usage_merge_preserves_billing_when_context_only_stats_arrive() {
+        let previous = ModelUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            total_tokens: Some(120),
+            context_tokens: Some(80),
+            ..Default::default()
+        };
+        let merged = merge_cli_usage(
+            Some(&previous),
+            ModelUsage {
+                context_tokens: Some(90),
+                context_window_tokens: Some(1000),
+                ..Default::default()
+            },
+        );
+        assert_eq!(merged.input_tokens, Some(100));
+        assert_eq!(merged.output_tokens, Some(20));
+        assert_eq!(merged.context_tokens, Some(90));
+        assert_eq!(merged.context_window_tokens, Some(1000));
+    }
+
+    #[test]
     fn cli_usage_merge_without_previous_is_identity() {
         let merged = merge_cli_usage(
             None,
@@ -4721,6 +5364,53 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(segments[0].text.as_deref(), Some("你好"));
         assert_eq!(segments[0].phase, ChatMessageSegmentPhase::Plain);
+    }
+
+    #[test]
+    fn native_text_completion_corrects_only_its_item_without_moving_tool_timeline() {
+        let mut tracker = StreamSegmentTracker::default();
+        let mut segments = Vec::new();
+        let mut order = 0;
+        tracker.append_text_item("first", "草稿", &mut segments, &mut order, 0);
+        tracker.append(
+            ChatMessageSegmentKind::Reasoning,
+            &mut segments,
+            &mut order,
+            1,
+            "thought",
+        );
+        tracker.append_text_item("second", "后续", &mut segments, &mut order, 1);
+        let ids: Vec<_> = segments.iter().map(|s| s.id.clone()).collect();
+        let (_, delta) = tracker
+            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1)
+            .unwrap();
+        assert!(delta.is_none());
+        assert_eq!(
+            segments.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|s| s.text.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["最终🌱", "thought", "后续"]
+        );
+        assert!(tracker
+            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1)
+            .is_none());
+        let (_, delta) = tracker
+            .complete_text_item("second", "后续补全", &mut segments, &mut order, 1)
+            .unwrap();
+        assert_eq!(delta.as_deref(), Some("补全"));
+        let (_, delta) = tracker
+            .complete_text_item("first", "最终🌱追加", &mut segments, &mut order, 1)
+            .unwrap();
+        assert!(
+            delta.is_none(),
+            "an earlier item's suffix must not append after later text"
+        );
+        assert_eq!(segments.len(), 3);
     }
 
     #[test]
@@ -5217,6 +5907,9 @@ mod tests {
         assert_eq!(grok(None), grok(Some("full")));
         assert!(!grok(None).accepts(&grok(Some("ask"))));
         assert!(!grok(Some("ask")).accepts(&grok(Some("full"))));
+        assert!(!grok(None).accepts(&grok(Some("strict"))));
+        // OpenCode build ⇄ plan is set at session setup, so it must relaunch + resume.
+        assert!(!grok(Some("build")).accepts(&grok(Some("plan"))));
         let claude = launch_config_for_turn(
             StreamFormat::ClaudeStreamJson,
             Some("opus"),
@@ -5321,7 +6014,7 @@ mod tests {
                 StreamFormat::AcpJsonRpc,
                 Some("opus"),
                 Some("high"),
-                Some("plan"),
+                None,
                 None,
                 Some("h"),
                 ""
@@ -5334,7 +6027,7 @@ mod tests {
                 StreamFormat::AcpJsonRpc,
                 Some("opus"),
                 Some("high"),
-                Some("plan"),
+                None,
                 None,
                 Some("h"),
                 "/home/me/biz-a",
@@ -5349,13 +6042,9 @@ mod tests {
             pi(Some("opus"), Some("high")),
             pi(Some("opus"), Some("high"))
         );
-        assert_ne!(
+        assert_eq!(
             pi(Some("opus"), Some("high")),
-            pi(Some("sonnet"), Some("high"))
-        );
-        assert_ne!(
-            pi(Some("opus"), Some("high")),
-            pi(Some("opus"), Some("low"))
+            pi(Some("sonnet"), Some("low"))
         );
     }
 
@@ -5447,22 +6136,37 @@ mod tests {
         let composed = "## Skill: pdf\n<body>\n\n# 附带文件\nPath: C:\\\\tmp\\\\a.pdf\n\n用户消息";
         let latest = "用户消息";
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::ClaudeStreamJson, composed, latest),
+            persistent_turn_prompt(StreamFormat::ClaudeStreamJson, composed, latest, ""),
             composed
         );
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::DshJsonRpc, composed, latest),
+            persistent_turn_prompt(StreamFormat::DshJsonRpc, composed, latest, ""),
             composed
         );
         // codex / ACP 的 full_prompt 首轮含指令，复用轮只发最新消息（保持原行为）。
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, latest),
+            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, latest, ""),
             latest
         );
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::AcpJsonRpc, composed, latest),
+            persistent_turn_prompt(StreamFormat::AcpJsonRpc, composed, latest, ""),
             latest
         );
+    }
+
+    #[test]
+    fn reused_native_turn_preserves_attachment_paths_without_repeating_instructions() {
+        for protocol in [StreamFormat::CodexAppServer, StreamFormat::AcpJsonRpc] {
+            assert_eq!(
+                persistent_turn_prompt(
+                    protocol,
+                    "SESSION INSTRUCTIONS\nlook\nImage: /work/picture.png",
+                    "look",
+                    "\nImage: /work/picture.png",
+                ),
+                "look\nImage: /work/picture.png"
+            );
+        }
     }
 
     #[test]
@@ -5487,7 +6191,7 @@ mod tests {
         assert!(!accepts_prompt_attachments(StreamFormat::PiRpc, "/skill:"));
         let composed = "/wizard task\n\n# 附带文件\nPath: /work/example.pdf";
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, "/wizard task"),
+            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, "/wizard task", ""),
             composed
         );
     }

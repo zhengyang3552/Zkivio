@@ -74,6 +74,9 @@ pub struct ApprovalDecision {
     /// 批准时一并回给 CLI 的权限规则（claude `PermissionResult.updatedPermissions`）。
     /// 只在用户点「总是允许」时有值，作用域一律 `session`。
     pub updated_permissions: Option<serde_json::Value>,
+    /// 用户点的是「总是允许」（或此前点过、本次由 Kivio 的 always-allow 表放行）。
+    /// codex 据此回 `acceptForSession`，让 CLI 本会话内不再问（t3code `acceptAlways` 同款）。
+    pub always: bool,
 }
 
 /// 一轮的权限审批通道。宿主持 `requests` 的接收端与 `decisions` 的发送端；会话持另一半。
@@ -158,8 +161,7 @@ pub const CANCELLED_SESSION_LOST: &str = "__cancelled_session_lost__";
 /// 是功能退步而不是缺功能。指纹变了就换个进程。
 ///
 /// 只有启动时锁死、会话内改不了的配置才进指纹（claude：`--effort` / `--permission-mode`；
-/// Pi：`--model` / `--thinking`；codex：sandbox / approvalPolicy，只在 `thread/start`）。
-/// ACP 能在会话内改相关项，指纹恒为 `default()`。
+/// codex：sandbox / approvalPolicy，只在 `thread/start`）。Pi 和 ACP 可在会话内切换配置。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchConfig {
     /// `model|reasoning|sandbox`，恒可知。
@@ -171,20 +173,6 @@ pub struct LaunchConfig {
 }
 
 impl LaunchConfig {
-    /// Pi receives model/thinking as process launch flags. Empty selection still
-    /// fingerprints as `"|"` so it matches chat-turn fingerprints,
-    /// not `Default` (`flags == ""`).
-    pub fn for_pi(model: Option<&str>, reasoning: Option<&str>) -> Self {
-        Self {
-            flags: format!(
-                "{}|{}",
-                model.unwrap_or_default(),
-                reasoning.unwrap_or_default()
-            ),
-            instructions: None,
-        }
-    }
-
     /// 已建立的会话（`self`，注册时的配置）能否服务配置为 `incoming` 的这一轮。
     pub fn accepts(&self, incoming: &LaunchConfig) -> bool {
         if self.flags != incoming.flags {
@@ -204,6 +192,7 @@ impl LaunchConfig {
 /// Registry entry: the control channel plus metadata used to decide reuse.
 pub struct LiveSession {
     pub control: mpsc::Sender<SessionCommand>,
+    pub(crate) _chat_credential: Option<crate::app_mcp::McpCredential>,
     pub agent_id: String,
     pub cwd: String,
     /// 会话建立时生效的启动配置。与本轮的指纹不符 ⇒ 不可复用（见 `LaunchConfig`）。
@@ -494,6 +483,7 @@ mod tests {
         (
             LiveSession {
                 control: tx,
+                _chat_credential: None,
                 agent_id: agent.to_string(),
                 cwd: cwd.to_string(),
                 launch_config: LaunchConfig::default(),
@@ -573,19 +563,6 @@ mod tests {
         assert!(LaunchConfig::default().accepts(&LaunchConfig::default()));
     }
 
-    #[test]
-    fn pi_launch_config_matches_chat_turns_even_with_empty_selection() {
-        let idle = LaunchConfig::for_pi(None, None);
-        assert_eq!(idle.flags, "|");
-        assert_ne!(idle, LaunchConfig::default());
-        assert!(idle.accepts(&LaunchConfig::for_pi(None, None)));
-        assert!(!LaunchConfig::default().accepts(&idle));
-        assert!(LaunchConfig::for_pi(Some("opus"), Some("high"))
-            .accepts(&LaunchConfig::for_pi(Some("opus"), Some("high"))));
-        assert!(!LaunchConfig::for_pi(Some("opus"), Some("high"))
-            .accepts(&LaunchConfig::for_pi(Some("opus"), Some("low"))));
-    }
-
     /// 轮内重连之后，guard 必须重新挂到**新**会话上。
     ///
     /// `reconnect_fresh` 会往注册表塞一条全新的 `LiveSession`（`busy: false`），旧 guard 指着
@@ -652,6 +629,46 @@ mod tests {
             .is_none());
         assert!(registry.control_any("conversation").is_none());
         assert!(receiver.is_closed());
+    }
+
+    #[tokio::test]
+    async fn closing_a_live_session_revokes_its_chat_credential() {
+        let (credential, probe) = crate::app_mcp::issue_test_chat_credential().await.unwrap();
+        let registry = LiveSessionRegistry::default();
+        let (mut session, _receiver) = make("claude", "/project");
+        session._chat_credential = Some(credential);
+        registry.register("conversation".to_string(), session);
+        assert!(probe.is_active());
+        let control = registry
+            .reusable_control(
+                "conversation",
+                "claude",
+                "/project",
+                &LaunchConfig::default(),
+            )
+            .unwrap();
+        assert!(probe.is_active());
+        drop(control);
+        assert!(registry.remove("conversation"));
+        assert!(!probe.is_active());
+
+        let (credential, probe) = crate::app_mcp::issue_test_chat_credential().await.unwrap();
+        let (mut session, _receiver) = make("codex", "/project");
+        session._chat_credential = Some(credential);
+        registry.register("idle".to_string(), session);
+        assert_eq!(registry.sweep_idle(Duration::ZERO), 1);
+        assert!(!probe.is_active());
+
+        let (credential, probe) = crate::app_mcp::issue_test_chat_credential().await.unwrap();
+        let (mut session, mut receiver) = make("claude", "/project");
+        session._chat_credential = Some(credential);
+        registry.register("shutdown".to_string(), session);
+        let actor = tokio::spawn(async move {
+            assert!(matches!(receiver.recv().await, Some(SessionCommand::Close)));
+        });
+        registry.close_all().await;
+        actor.await.unwrap();
+        assert!(!probe.is_active());
     }
 
     #[test]

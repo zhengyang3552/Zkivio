@@ -5,6 +5,7 @@ import { ReasoningPreviewContext } from './reasoningPreview'
 
 type ReasoningBlockProps = {
   reasoning: string
+  defaultOpen?: boolean
   /** 思维链正在流式写入 */
   streaming?: boolean
   /** 当前轮仍在生成，重挂时恢复最近思考的预览。 */
@@ -24,10 +25,10 @@ function formatThinkingDuration(durationMs: number | null | undefined): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
 }
 
-export function ReasoningBlock({ reasoning, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
+export function ReasoningBlock({ reasoning, defaultOpen = false, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
   const collapsible = reasoning.trim().length > 0
   const previewEnabled = useContext(ReasoningPreviewContext)
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(defaultOpen)
   const [sawLivePreview, setSawLivePreview] = useState(false)
   const [liveDurationMs, setLiveDurationMs] = useState(0)
   const durationStartedAtRef = useRef<number | null>(null)
@@ -38,7 +39,8 @@ export function ReasoningBlock({ reasoning, streaming = false, previewActive = s
   const { visibleReasoning, latestLine } = useMemo(() => {
     const text = reasoning.trimEnd()
     const lineStart = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r')) + 1
-    return { visibleReasoning: text, latestLine: text.slice(lineStart).trim() }
+    // Codex-style summaries title each step as **heading**; the one-line preview shows plain text.
+    return { visibleReasoning: text, latestLine: text.slice(lineStart).replace(/\*\*/g, '').trim() }
   }, [reasoning])
 
   // Remember only a preview shown in this mounted conversation. Loading old

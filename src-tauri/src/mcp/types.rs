@@ -281,7 +281,7 @@ pub fn native_read_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__read_file".to_string(),
         name: "read".to_string(),
-        description: "Read a local file or directory. For a file: text is line-numbered as `N<TAB>line` for easy reference; the numbers are display-only and are NOT part of the file — never include them in edit old_string. Output is capped at 2000 lines or 50KB, whichever is hit first, so a single read can never flood the context; when the cap or your own limit stops the read early, the result ENDS with a notice like `[Showing lines X-Y of Z. Use offset=N to continue.]` — if the part you need is not in this window, call read again with that offset before moving on. Optional offset/limit select a 1-based line window (the cap still applies on top); an offset past the last line is an error. For a directory path: returns its entries (folded in the former `ls` tool); offset/limit are ignored. Image files (png/jpg/webp/…) are also supported: the image is shown to you directly when your model has vision, otherwise it is described or OCR'd to text. To inspect several images at once, pass `paths` (up to 12). Images are read individually by default — always do that for analysis, QA, spelling, logos, or any per-image detail. A numbered contact sheet is used only for a first-pass overview of 6–12 similar images when the user asked to skim the set, or when you set overview=true for that skim; never for analysis. Re-read a single path for fine text. For PDF/Word/Excel, use the matching skill instead.".to_string(),
+        description: "Read a local file or directory. For a file: text is line-numbered as `N<TAB>line` for easy reference; the numbers are display-only and are NOT part of the file — never include them in edit old_string. Output is capped at 2000 lines or 50KB, whichever is hit first, so a single read can never flood the context; when the cap or your own limit stops the read early, the result ENDS with a notice like `[Showing lines X-Y of Z. Use offset=N to continue.]` — if the part you need is not in this window, call read again with that offset before moving on. Optional offset/limit select a 1-based line window (the cap still applies on top); an offset past the last line is an error. For a directory path: returns its entries (folded in the former `ls` tool); offset/limit are ignored. Image files (png/jpg/webp/…) are also supported: the image is shown to you directly when your model has vision, otherwise it is described or OCR'd to text. To inspect several images at once, pass `paths` (up to 12). Images are read individually by default — always do that for analysis, QA, spelling, logos, or any per-image detail. A numbered contact sheet is used only for a first-pass overview of 6–12 similar images when the user asked to skim the set, or when you set overview=true for that skim; never for analysis. Re-read a single path for fine text. For PDF/Word/Excel, extract content with available host parsing tools; this tool does not parse binary documents.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -540,6 +540,150 @@ pub fn native_save_assistant_tool() -> ChatToolDefinition {
         annotations: None,
         output_schema: None,
     }
+}
+
+fn native_orchestration_tool(
+    name: &str,
+    description: &str,
+    input_schema: serde_json::Value,
+) -> ChatToolDefinition {
+    ChatToolDefinition {
+        id: format!("native__{name}"),
+        name: name.to_string(),
+        description: description.to_string(),
+        source: "native".to_string(),
+        server_id: None,
+        server_name: Some("Kivio".to_string()),
+        input_schema,
+        sensitive: false,
+        annotations: None,
+        output_schema: None,
+    }
+}
+
+pub fn native_kivio_list_agents_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_list_agents",
+        "List available runtimes: the built-in Kivio agent and enabled, available external CLI agents. Returns {agents: [{id, name}]}; use an id as the agent when creating a conversation.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+    )
+}
+
+pub fn native_kivio_list_projects_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_list_projects",
+        "List Kivio projects. Returns {projects: [{id, name, root_path}]}; use an id as project_id when listing or creating conversations.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+    )
+}
+
+pub fn native_kivio_list_conversations_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_list_conversations",
+        "List recent Kivio conversations, optionally within a project. The voice brain conversation is excluded. Returns {conversations: [{id, title, project, runtime, running, updated_at}]}.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "project_id": { "type": "string", "description": "Only include conversations in this project." },
+                "limit": { "type": "integer", "default": 20, "description": "Maximum number of conversations (default 20)." }
+            }
+        }),
+    )
+}
+
+pub fn native_kivio_read_conversation_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_read_conversation",
+        "Read recent messages in a Kivio conversation. Returns {conversation_id, running, messages: [{role, text}]}.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "conversation_id": { "type": "string", "description": "Kivio conversation id." },
+                "limit": { "type": "integer", "default": 6, "description": "Maximum number of recent messages (default 6)." }
+            },
+            "required": ["conversation_id"]
+        }),
+    )
+}
+
+pub fn native_kivio_create_conversation_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_create_conversation",
+        "Create a Kivio conversation and send its first prompt. Choose the built-in Kivio runtime or an available external CLI agent using an id from kivio_list_agents. Returns {conversation_id, status, response?}: wait=false queues the reply and returns status queued; wait=true returns status completed with any response, or running after the 10-minute wait times out. This creates a separate conversation, not the voice brain.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string", "description": "First message to send." },
+                "title": { "type": "string", "description": "Optional conversation title." },
+                "project_id": { "type": "string", "description": "Optional project id." },
+                "agent": { "type": "string", "description": "Runtime id from kivio_list_agents; omit for the built-in Kivio agent." },
+                "provider_id": { "type": "string", "description": "Optional model provider id." },
+                "model": { "type": "string", "description": "Optional model id." },
+                "wait": { "type": "boolean", "default": false, "description": "Wait for a reply instead of returning after it is queued." }
+            },
+            "required": ["prompt"]
+        }),
+    )
+}
+
+pub fn native_kivio_send_message_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_send_message",
+        "Send a message to an existing Kivio conversation using its bound built-in or external CLI runtime; the voice brain cannot be targeted. Returns {conversation_id, status, response?}: wait=false queues the reply and returns status queued; wait=true returns status completed with any response, or running after the 10-minute wait times out.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "conversation_id": { "type": "string", "description": "Kivio conversation id." },
+                "text": { "type": "string", "description": "Message to send." },
+                "wait": { "type": "boolean", "default": false, "description": "Wait for a reply instead of returning after it is queued." }
+            },
+            "required": ["conversation_id", "text"]
+        }),
+    )
+}
+
+pub fn native_kivio_interrupt_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_interrupt",
+        "Interrupt the current reply in a built-in or external CLI conversation without deleting it. Returns {conversation_id, interrupted: true}.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "conversation_id": { "type": "string", "description": "Kivio conversation id." }
+            },
+            "required": ["conversation_id"]
+        }),
+    )
+}
+
+fn native_html_tool(name: &str) -> ChatToolDefinition {
+    let mut definition = crate::html_render::tool_definitions()
+        .into_iter()
+        .find(|definition| definition["name"] == name)
+        .expect("registered HTML tool has a definition");
+    ChatToolDefinition {
+        id: format!("native__{name}"),
+        name: name.to_owned(),
+        description: definition["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        source: "native".to_owned(),
+        server_id: None,
+        server_name: Some("Kivio".to_owned()),
+        input_schema: definition["inputSchema"].take(),
+        sensitive: false,
+        annotations: None,
+        output_schema: None,
+    }
+}
+
+pub fn native_html_render_tool() -> ChatToolDefinition {
+    native_html_tool(crate::html_render::HTML_RENDER_TOOL)
+}
+
+pub fn native_html_preview_tool() -> ChatToolDefinition {
+    native_html_tool(crate::html_render::HTML_PREVIEW_TOOL)
 }
 
 /// `present_artifacts` only takes id/path strings. Models sometimes dump
@@ -866,13 +1010,13 @@ pub fn native_automation_get_tool() -> ChatToolDefinition {
 pub fn native_automation_upsert_tool() -> ChatToolDefinition {
     native_automation_tool(
         "automation_upsert",
-        "Create or replace a Kivio automation graph in ONE call. Only when the user explicitly asks for an automation/workflow; for 定时任务 or reminders use schedule_create instead. Omit id to create. Omit node positions to auto-layout. Activate the `automation` skill first for node types and examples. Do not glob the repo and do not dry_run-probe types. Validation errors return allowedNodeTypes and schemaHint.",
+        "Create or replace a Kivio automation graph in ONE call. Only when the user explicitly asks for an automation/workflow; for 定时任务 or reminders use schedule_create instead. Omit id to create. Omit node positions to auto-layout. Consult available workflow guidance for node types and examples. Validation errors return allowedNodeTypes and schemaHint.",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "automation": {
                     "type": "object",
-                    "description": "Complete graph: {name, enabled, nodes:[{id, type, data}], edges:[{id, source, target, sourceHandle?, targetHandle?}]}. schemaVersion is set by Kivio. Allowed node types are in the `automation` skill."
+                    "description": "Complete graph: {name, enabled, nodes:[{id, type, data}], edges:[{id, source, target, sourceHandle?, targetHandle?}]}. schemaVersion is set by Kivio. Validation errors return allowedNodeTypes and schemaHint."
                 },
                 "dry_run": {
                     "type": "boolean",
@@ -1125,6 +1269,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn voice_orchestration_tool_schemas_match_their_contract() {
+        use serde_json::json;
+
+        let cases = [
+            (
+                native_kivio_list_agents_tool(),
+                "kivio_list_agents",
+                json!({}),
+                json!([]),
+            ),
+            (
+                native_kivio_list_projects_tool(),
+                "kivio_list_projects",
+                json!({}),
+                json!([]),
+            ),
+            (
+                native_kivio_list_conversations_tool(),
+                "kivio_list_conversations",
+                json!({"project_id": "string", "limit": "integer"}),
+                json!([]),
+            ),
+            (
+                native_kivio_read_conversation_tool(),
+                "kivio_read_conversation",
+                json!({"conversation_id": "string", "limit": "integer"}),
+                json!(["conversation_id"]),
+            ),
+            (
+                native_kivio_create_conversation_tool(),
+                "kivio_create_conversation",
+                json!({
+                    "prompt": "string", "title": "string", "project_id": "string",
+                    "agent": "string", "provider_id": "string", "model": "string",
+                    "wait": "boolean"
+                }),
+                json!(["prompt"]),
+            ),
+            (
+                native_kivio_send_message_tool(),
+                "kivio_send_message",
+                json!({"conversation_id": "string", "text": "string", "wait": "boolean"}),
+                json!(["conversation_id", "text"]),
+            ),
+            (
+                native_kivio_interrupt_tool(),
+                "kivio_interrupt",
+                json!({"conversation_id": "string"}),
+                json!(["conversation_id"]),
+            ),
+        ];
+
+        for (tool, name, properties, required) in cases {
+            assert_eq!(tool.name, name);
+            assert_eq!(tool.id, format!("native__{name}"));
+            assert_eq!(tool.openai_tool_name(), name);
+            assert_eq!(tool.input_schema["type"], "object");
+            let actual = tool.input_schema["properties"].as_object().unwrap();
+            let expected = properties.as_object().unwrap();
+            assert_eq!(actual.len(), expected.len(), "{name}");
+            for (property, expected_type) in expected {
+                assert_eq!(
+                    &actual.get(property).unwrap()["type"],
+                    expected_type,
+                    "{name}.{property}"
+                );
+            }
+            assert_eq!(
+                tool.input_schema
+                    .get("required")
+                    .cloned()
+                    .unwrap_or(json!([])),
+                required,
+                "{name}"
+            );
+            match name {
+                "kivio_list_conversations" => {
+                    assert_eq!(actual.get("limit").unwrap()["default"], 20)
+                }
+                "kivio_read_conversation" => assert_eq!(actual.get("limit").unwrap()["default"], 6),
+                "kivio_create_conversation" | "kivio_send_message" => {
+                    assert_eq!(actual.get("wait").unwrap()["default"], false);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
     fn sensitive_tool_detection_covers_common_write_verbs() {
         for name in ["save_file", "uploadAsset", "publish_page", "replace_rows"] {
             assert!(
@@ -1190,7 +1423,7 @@ mod tests {
     fn automation_upsert_tool_description_stays_short() {
         let def = native_automation_upsert_tool();
         assert!(
-            def.description.contains("`automation` skill"),
+            def.description.contains("Validation errors return"),
             "{}",
             def.description
         );

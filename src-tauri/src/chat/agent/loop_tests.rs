@@ -490,6 +490,45 @@ impl ToolExecutor for RecordingExecutor {
     }
 }
 
+struct PreviewFeedbackExecutor<'a> {
+    state: &'a AppState,
+    settings: &'a Settings,
+    conversation: crate::chat::Conversation,
+    png_base64: String,
+}
+
+impl ToolExecutor for PreviewFeedbackExecutor<'_> {
+    fn call<'a>(
+        &'a self,
+        ctx: &'a ToolExecutionContext<'a>,
+        _tool: &'a ChatToolDefinition,
+        _arguments: Value,
+        _skill_context: Option<&'a mut skills::SkillRunContext>,
+    ) -> super::super::execute::ToolExecutorFuture<'a> {
+        Box::pin(async move {
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+            let mut result = crate::mcp::result::parse_tool_result(serde_json::json!({
+                "content": [
+                    {"type": "text", "text": "Preview captured."},
+                    {"type": "image", "mimeType": "image/png", "data": self.png_base64.as_str()}
+                ]
+            }));
+            crate::chat::vision::attach_image_artifacts_for_model_with_context(
+                self.state,
+                self.settings,
+                &native_ctx.conversation_id,
+                &native_ctx.message_id,
+                native_ctx.provider,
+                native_ctx.model,
+                &mut result,
+                || Ok(self.conversation.clone()),
+            )
+            .await;
+            Ok(result)
+        })
+    }
+}
+
 /// Tool executor that succeeds immediately and flips the shared cancel flag while
 /// executing, so cancellation deterministically lands between the tool round and
 /// the synthesis request (the executor branch wins the `tokio::select!` because it
@@ -762,7 +801,8 @@ fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a
         max_output_tokens: 1024,
         retry_attempts: 1,
         assistant_snapshot: None,
-        provider_tools_fallback_system_prompt: String::new(),
+        runtime_context: None,
+        provider_tools_fallback_prompt: Default::default(),
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
@@ -851,6 +891,12 @@ fn test_round_context() -> ToolRoundContext<'static> {
         conversation_id: "conversation",
         run_id: "run",
         message_id: "message",
+        provider: {
+            static PROVIDER: std::sync::LazyLock<ModelProvider> =
+                std::sync::LazyLock::new(|| test_provider("http://127.0.0.1:9/v1"));
+            &PROVIDER
+        },
+        model: "test-model",
         generation: 1,
         round: 1,
         depth: 0,
@@ -1889,22 +1935,23 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
 #[tokio::test]
 async fn run_loop_reconnects_current_request_without_replaying_tools() {
     for (interrupt_planning, clean_eof, upstream_error) in [
-        (true, false, false),
-        (false, false, false),
-        (true, true, false),
-        (false, true, false),
-        (false, false, true),
+        (true, false, None),
+        (false, false, None),
+        (true, true, None),
+        (false, true, None),
+        (false, false, Some("server_error")),
+        (false, false, Some("The service is temporarily unavailable")),
+        (false, false, Some("unable to forward upstream")),
+        (true, false, Some("upstream_stream_read_error")),
+        (false, false, Some("model is at capacity")),
     ] {
         let mut broken = if interrupt_planning {
             planning_tool_call_sse_events()[..1].to_vec()
         } else {
             vec![serde_json::json!({"choices":[{"delta":{"content":"discarded partial 🌱", "reasoning_content":"partial thought"}}]}).to_string()]
         };
-        let failed = if upstream_error {
-            broken.push(
-                serde_json::json!({"error":{"type":"server_error","message":"try later"}})
-                    .to_string(),
-            );
+        let failed = if let Some(message) = upstream_error {
+            broken.push(serde_json::json!({"error":{"message":message}}).to_string());
             MockResponse::Sse(broken)
         } else if clean_eof {
             MockResponse::Sse(broken)
@@ -2081,6 +2128,151 @@ async fn completed_stream_survives_proxy_disconnect_without_replay() {
     }
 }
 
+#[tokio::test]
+async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
+    use crate::settings::{ModelCapabilities, ModelInfo};
+    use base64::{engine::general_purpose, Engine as _};
+
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let png_base64 = general_purpose::STANDARD.encode(png.into_inner());
+
+    for saved_is_vision in [false, true] {
+        let arm_server = || {
+            MockModelServer::start(vec![
+                MockResponse::Sse(vec![
+                    serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+                        "index":0, "id":"call_preview", "function":{
+                            "name":"html_preview", "arguments":"{\"html\":\"<p>Preview</p>\"}"
+                        }
+                    }]}}]})
+                    .to_string(),
+                    r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.into(),
+                    "[DONE]".into(),
+                ]),
+                MockResponse::Sse(vec![
+                    r#"{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}"#.into(),
+                    "[DONE]".into(),
+                ]),
+            ])
+        };
+        let vision_server = arm_server();
+        let text_server = arm_server();
+        let aux_server = MockModelServer::start(vec![MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"auxiliary preview analysis"},"finish_reason":"stop"}]}"#.into(),
+            "[DONE]".into(),
+        ])]);
+
+        let model_info = |vision| ModelInfo {
+            capabilities: Some(ModelCapabilities {
+                vision: Some(vision),
+                ..ModelCapabilities::default()
+            }),
+            ..ModelInfo::default()
+        };
+        let mut vision_provider = test_provider(&vision_server.base_url);
+        vision_provider.id = "vision-provider".into();
+        vision_provider
+            .model_overrides
+            .insert("vision-model".into(), model_info(true));
+        vision_provider
+            .model_overrides
+            .insert("text-model".into(), model_info(saved_is_vision));
+        let mut text_provider = test_provider(&text_server.base_url);
+        text_provider.id = "text-provider".into();
+        text_provider
+            .model_overrides
+            .insert("text-model".into(), model_info(false));
+        text_provider
+            .model_overrides
+            .insert("vision-model".into(), model_info(saved_is_vision));
+        let mut auxiliary = test_provider(&aux_server.base_url);
+        auxiliary.id = "aux-provider".into();
+
+        let mut settings = Settings::default();
+        settings.retry_enabled = false;
+        settings.providers = vec![vision_provider.clone(), text_provider.clone(), auxiliary];
+        settings.default_models.vision.provider_id = "aux-provider".into();
+        settings.default_models.vision.model = "aux-model".into();
+        let (saved_provider, saved_model) = if saved_is_vision {
+            ("vision-provider", "vision-model")
+        } else {
+            ("text-provider", "text-model")
+        };
+        let conversation: crate::chat::Conversation = serde_json::from_value(serde_json::json!({
+            "id": "conv_multi", "title": "Multi-answer", "provider_id": saved_provider,
+            "model": saved_model, "messages": [], "created_at": 1, "updated_at": 1,
+            "reply_models": [
+                {"provider_id": "vision-provider", "model": "vision-model"},
+                {"provider_id": "text-provider", "model": "text-model"}
+            ]
+        }))
+        .unwrap();
+        let state = test_app_state();
+        let executor = PreviewFeedbackExecutor {
+            state: &state,
+            settings: &settings,
+            conversation,
+            png_base64: png_base64.clone(),
+        };
+        let mut vision = test_run_config(&state, &vision_server.base_url);
+        vision.conversation_id = "conv_multi".into();
+        vision.tool_conversation_id = "conv_multi".into();
+        vision.run_id = "vision-arm".into();
+        vision.message_id = "vision-answer".into();
+        vision.provider = vision_provider;
+        vision.model = "vision-model".into();
+        vision.settings = settings.clone();
+        vision.tools = vec![crate::mcp::types::native_html_preview_tool()];
+        let mut text = test_run_config(&state, &text_server.base_url);
+        text.conversation_id = "conv_multi".into();
+        text.tool_conversation_id = "conv_multi".into();
+        text.run_id = "text-arm".into();
+        text.message_id = "text-answer".into();
+        text.provider = text_provider;
+        text.model = "text-model".into();
+        text.settings = settings.clone();
+        text.tools = vec![crate::mcp::types::native_html_preview_tool()];
+        let vision_host = TestHost::default();
+        let text_host = TestHost::default();
+        let (vision_result, text_result) = tokio::join!(
+            run_agent_loop(vision, &vision_host, &executor),
+            run_agent_loop(text, &text_host, &executor),
+        );
+        let vision_result = vision_result.unwrap();
+        let text_result = text_result.unwrap();
+        assert_eq!(
+            vision_result.tool_records[0].status,
+            ToolCallStatus::Success
+        );
+        assert_eq!(text_result.tool_records[0].status, ToolCallStatus::Success);
+        let has_image = |messages: &[Value]| {
+            messages.iter().any(|message| {
+                message["role"] == "user" && message["content"].to_string().contains("data:image/")
+            })
+        };
+        assert!(
+            has_image(&vision_result.api_messages),
+            "saved_is_vision={saved_is_vision}"
+        );
+        assert!(
+            !has_image(&text_result.api_messages),
+            "saved_is_vision={saved_is_vision}"
+        );
+        assert!(text_result.api_messages.iter().any(|message| {
+            message["role"] == "tool"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("auxiliary preview analysis"))
+        }));
+        let requests = aux_server.captured_bodies();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains("data:image/"));
+    }
+}
+
 /// Fallback B: streamed synthesis request fails (HTTP 400) after a successful
 /// tool round; the tool records must survive with the bilingual fallback text.
 #[tokio::test]
@@ -2089,7 +2281,7 @@ async fn tool_image_follow_up_recovery_keeps_question_and_language() {
         MockResponse::Sse(planning_tool_call_sse_events()),
         MockResponse::Status(
             400,
-            r#"{"error":"No tool output found for call next"}"#.into(),
+            r#"{"error":"content moderation rejected tool output"}"#.into(),
         ),
         MockResponse::Sse(vec![
             r#"{"choices":[{"delta":{"content":"恢复回答"},"finish_reason":"stop"}]}"#.into(),
@@ -2145,7 +2337,7 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
     let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
         &result.tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::Other,
+        crate::chat::agent::recovery::FailureKind::InvalidRequest,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "recovered");
@@ -2180,7 +2372,7 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
     let degraded = result
         .degraded
         .expect("degrade path must attach a card payload");
-    assert_eq!(degraded.kind, "unknown");
+    assert_eq!(degraded.kind, "invalid_request");
     assert_eq!(
         degraded.detail.as_deref(),
         Some("400 Bad Request - mock synthesis failure (attempt 1/1)"),
@@ -3638,7 +3830,6 @@ async fn subagent_empty_planning_recovery_does_not_repeat_tool_work() {
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
         MockResponse::Sse(vec!["[DONE]".to_string()]),
-        MockResponse::Sse(vec!["[DONE]".to_string()]),
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
@@ -3657,7 +3848,7 @@ async fn subagent_empty_planning_recovery_does_not_repeat_tool_work() {
     let bodies = server.captured_bodies();
     assert_eq!(
         bodies.len(),
-        3,
+        2,
         "empty provider output recovers from existing tools, without a fresh worker run"
     );
     assert!(bodies
@@ -3843,7 +4034,7 @@ async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallba
     let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
         &result.tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::Other,
+        crate::chat::agent::recovery::FailureKind::InvalidRequest,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "recovered");
@@ -4955,7 +5146,7 @@ async fn child_output_does_not_hide_parent_provider_error() {
     };
     let executor = RecordingExecutor::default();
     let result = run_agent_loop(config, &host, &executor).await.unwrap();
-    assert_eq!(result.degraded.as_ref().unwrap().kind, "unknown");
+    assert_eq!(result.degraded.as_ref().unwrap().kind, "invalid_request");
     assert!(result
         .degraded
         .as_ref()
@@ -5101,6 +5292,7 @@ async fn summary_overflow_folds_history_and_preserves_recent_tool_round() {
     let messages = vec![
         serde_json::json!({"role":"system","content":"project rules"}),
         serde_json::json!({"role":"user","content":"original request"}),
+        serde_json::json!({"role":"user","content":"<kivio_runtime_context>\ncurrent project permissions\n</kivio_runtime_context>"}),
         serde_json::json!({"role":"assistant","content":archived_work("first completed work")}),
         serde_json::json!({"role":"user","content":"follow-up request"}),
         serde_json::json!({"role":"assistant","content":archived_work("older completed work")}),
@@ -5131,6 +5323,10 @@ async fn summary_overflow_folds_history_and_preserves_recent_tool_round() {
         "overflow must not grow the retained tail"
     );
     assert!(text.contains("full tool result"));
+    assert_eq!(
+        super::super::prepare::latest_runtime_context(&history),
+        super::super::prepare::latest_runtime_context(&messages)
+    );
     assert_eq!(
         text.matches("kept_call").count(),
         2,
@@ -6186,8 +6382,41 @@ async fn assert_oversized_history_recovers(
 }
 
 #[tokio::test]
-async fn run_loop_issue_62_generic_400_recovers_oversized_history() {
-    assert_oversized_history_recovers("rejected by an internal MaaS component", false, false).await;
+async fn compaction_permanent_errors_do_not_shrink_or_repeat_requests() {
+    for (status, body) in [
+        (400, "invalid image data"),
+        (422, "invalid schema"),
+        (401, "invalid api key"),
+    ] {
+        let server = MockModelServer::start(vec![MockResponse::Status(status, body.into())]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        for round in 0..6 {
+            config.runtime_messages.push(serde_json::json!({"role":"assistant", "content":archived_work(&format!("old work {round}"))}));
+            config
+                .runtime_messages
+                .push(serde_json::json!({"role":"user", "content":format!("next {round}")}));
+        }
+        let result = crate::chat::agent::compaction::summarize_history(
+            &state,
+            &config.provider,
+            &config.model,
+            &config.runtime_messages,
+            true,
+            &[],
+            32000,
+            "test",
+            "reply",
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            crate::chat::agent::compaction::CompactOutcome::Failed
+        ));
+        assert_eq!(server.captured_bodies().len(), 1, "{status}: {body}");
+    }
 }
 
 #[tokio::test]
@@ -6197,7 +6426,7 @@ async fn run_loop_issue_62_explicit_overflow_recovers_oversized_history() {
 
 #[tokio::test]
 async fn run_loop_issue_62_large_unicode_tool_history_preserves_coverage_and_pairs() {
-    assert_oversized_history_recovers("rejected by an internal MaaS component", true, false).await;
+    assert_oversized_history_recovers("maximum context length exceeded", true, false).await;
 }
 
 /// An unrelated small-request 400 must surface once, without context recovery.
@@ -6492,5 +6721,197 @@ async fn legacy_round_limit_does_not_interrupt_tool_progress() {
     for body in bodies {
         let request: Value = serde_json::from_str(&body).unwrap();
         assert!(!request["tools"].as_array().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn runtime_context_is_persisted_without_rewriting_previous_wire_messages() {
+    let server = MockModelServer::start((0..3).map(|_| final_answer_sse("OK")).collect());
+    let state = test_app_state();
+    let mut history = test_run_config(&state, &server.base_url).runtime_messages;
+    for (round, context) in ["memory A", "memory A", "memory B"].into_iter().enumerate() {
+        let mut config = test_run_config(&state, &server.base_url);
+        config.runtime_messages = history.clone();
+        config.runtime_context = Some(context.into());
+        let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+            .await
+            .unwrap();
+        assert_eq!(result.content, "OK");
+        let saved = serde_json::to_string(&result.api_messages).unwrap();
+        let replay: Vec<Value> = serde_json::from_str(&saved).unwrap();
+        history.extend(replay);
+        history.push(serde_json::json!({"role":"user", "content":format!("follow up {round}")}));
+    }
+    let bodies: Vec<Value> = server
+        .captured_bodies()
+        .iter()
+        .map(|body| serde_json::from_str(body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 3);
+    for body in &bodies {
+        assert_eq!(body["messages"][0]["content"], "system prompt");
+    }
+    for index in 1..3 {
+        let previous = bodies[index - 1]["messages"].as_array().unwrap();
+        let current = bodies[index]["messages"].as_array().unwrap();
+        assert_eq!(&current[..previous.len()], previous.as_slice());
+    }
+    assert_eq!(
+        bodies[1]
+            .to_string()
+            .matches("<kivio_runtime_context>")
+            .count(),
+        1
+    );
+    assert_eq!(
+        bodies[2]
+            .to_string()
+            .matches("<kivio_runtime_context>")
+            .count(),
+        2
+    );
+    assert!(bodies[2]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .to_string()
+        .contains("memory B"));
+}
+
+#[tokio::test]
+async fn permanent_request_errors_preserve_tools_without_another_model_call() {
+    for failure in [
+        MockResponse::Status(400, "invalid image data: unable to decode image".into()),
+        MockResponse::Status(422, "invalid tool schema".into()),
+        MockResponse::Sse(vec![r#"{"error":{"type":"rate_limit_error","message":"subscription_sharing_workplace_individual_usage_limit_exceeded"}}"#.into()]),
+        MockResponse::Sse(vec![r#"{"error":{"type":"invalid_request_error","message":"image decoder unavailable for this format"}}"#.into()]),
+        MockResponse::Sse(vec![r#"{"error":{"type":"rate_limit_error","message":"insufficient_quota"}}"#.into()]),
+        MockResponse::Status(400, "max_tokens must be greater than zero".into()),
+        MockResponse::Sse(vec![r#"{"error":{"type":"server_error","message":"invalid image data"}}"#.into()]),
+    ] {
+        let server = MockModelServer::start(vec![MockResponse::Sse(planning_tool_call_sse_events()), failure, final_answer_sse("unexpected retry")]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.retry_attempts = 3;
+        let executor = RecordingExecutor::default();
+        let result = run_agent_loop(config, &TestHost::default(), &executor).await.unwrap();
+        assert_eq!(server.captured_bodies().len(), 2, "permanent errors must stop model requests");
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
+        assert!(result.content.contains("result:read"));
+        assert!(result.degraded.is_some());
+    }
+}
+
+fn truncated_text_response(output_tokens: Option<u64>) -> MockResponse {
+    let mut frame = serde_json::json!({"choices":[{"delta":{"content":"unfinished answer 🌱"},"finish_reason":"length"}]});
+    if let Some(tokens) = output_tokens {
+        frame["usage"] = serde_json::json!({"prompt_tokens":100,"completion_tokens":tokens,"total_tokens":100+tokens});
+    }
+    MockResponse::Sse(vec![frame.to_string(), "[DONE]".into()])
+}
+
+#[tokio::test]
+async fn truncated_text_recovers_once_without_replaying_completed_tools() {
+    for with_tools in [false, true] {
+        for outcome in ["success", "length", "error", "cancel", "summary-error"] {
+            let mut responses = Vec::new();
+            if with_tools {
+                responses.push(MockResponse::Sse(planning_tool_call_sse_events()));
+            }
+            responses.push(truncated_text_response(Some(12)));
+            responses.push(match outcome {
+                "cancel" => MockResponse::SseThenHang(Vec::new()),
+                "summary-error" => {
+                    MockResponse::Status(400, "invalid_request_error: bad summary request".into())
+                }
+                _ => MockResponse::Sse(vec![
+                    long_summary_sse("TRUNCATION_SUMMARY"),
+                    "[DONE]".into(),
+                ]),
+            });
+            responses.push(match outcome {
+                "length" => truncated_text_response(Some(12)),
+                "error" => {
+                    MockResponse::Status(400, "context length exceeded after recovery".into())
+                }
+                _ => final_answer_sse("complete recovered answer"),
+            });
+            let server = MockModelServer::start(responses);
+            let state = test_app_state();
+            let mut config = test_run_config(&state, &server.base_url);
+            if !with_tools {
+                config.tools.clear();
+            }
+            for n in 0..6 {
+                config.runtime_messages.push(serde_json::json!({"role":"assistant","content":format!("historical answer {n} {}", "archived context ".repeat(2000))}));
+                config.runtime_messages.push(
+                    serde_json::json!({"role":"user","content":format!("historical question {n}")}),
+                );
+            }
+            let host = TestHost::default();
+            if outcome == "cancel" {
+                let flag = host.cancel_flag.clone();
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(250)).await;
+                    flag.store(true, Ordering::SeqCst);
+                });
+            }
+            let executor = RecordingExecutor::default();
+            let result = run_agent_loop(config, &host, &executor).await;
+            if outcome == "success" {
+                let result = result.unwrap();
+                assert_eq!(result.content, "complete recovered answer");
+                assert!(result.compacted_history.is_some());
+                assert!(!serde_json::to_string(&result.api_messages)
+                    .unwrap()
+                    .contains("unfinished answer"));
+            } else if outcome == "cancel" {
+                assert!(
+                    result.as_ref().is_err_and(|e| e.contains("cancelled"))
+                        || result
+                            .as_ref()
+                            .is_ok_and(|r| r.stream_outcome == "cancelled")
+                );
+            } else if with_tools {
+                let result = result.unwrap();
+                assert!(result.degraded.is_some());
+                assert_eq!(result.tool_records.len(), 1);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "{outcome} must not become a successful partial answer"
+                );
+            }
+            let bodies = server.captured_bodies();
+            let expected = if matches!(outcome, "cancel" | "summary-error") {
+                2
+            } else {
+                3
+            } + usize::from(with_tools);
+            assert_eq!(bodies.len(), expected, "{outcome} tools={with_tools}");
+            assert_eq!(executor.events().len(), if with_tools { 2 } else { 0 });
+            assert!(!host.discarded_attempts.lock().unwrap().is_empty());
+            assert!(bodies
+                .iter()
+                .skip(1 + usize::from(with_tools))
+                .all(|body| !body.contains("unfinished answer")));
+        }
+    }
+}
+
+#[tokio::test]
+async fn truncated_text_at_output_cap_or_without_usage_does_not_retry() {
+    for usage in [Some(1024), None] {
+        let server = MockModelServer::start(vec![truncated_text_response(usage)]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.tools.clear();
+        let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+            .await
+            .unwrap();
+        assert_eq!(result.content, "unfinished answer 🌱");
+        assert_eq!(server.captured_bodies().len(), 1);
     }
 }

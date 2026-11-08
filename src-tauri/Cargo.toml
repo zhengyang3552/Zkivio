@@ -1,7 +1,7 @@
 # Kivio Rust 后端 Cargo 配置
 [package]
 name = "kivio"
-version = "3.1.5"
+version = "3.1.8"
 description = "Kivio Desktop - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 license = "GPL-3.0-or-later"
@@ -82,7 +82,7 @@ rcgen = "0.13"
 
 # HTTP 客户端与异步运行时
 reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form", "stream"] }
-tokio = { version = "1", features = ["time", "process", "io-util", "net", "sync", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["time", "process", "io-util", "net", "sync", "rt-multi-thread", "macros", "fs"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 quick-xml = { version = "0.41", features = ["serialize"] }
 tokio-util = { version = "0.7", features = ["io"] }
@@ -113,7 +113,8 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 rand = "0.8"
 url = "2.5"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+# arboard / enigo 是桌面专属依赖，已放在 [target.'cfg(not(target_os = "android"))'.dependencies]
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # 知识库 PDF 文本抽取（纯文本，扫描件留待 OCR fallback）。
 pdf-extract = "0.12.1"
@@ -202,10 +203,13 @@ windows = { version = "0.61.3", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
+  "Win32_Security",
   "Win32_System_Com",
   "Win32_System_Console",
   "Win32_System_DataExchange",
   "Win32_System_LibraryLoader",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
   "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_System_WinRT",

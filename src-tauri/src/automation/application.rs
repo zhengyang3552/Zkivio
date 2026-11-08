@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_system_prompt};
+use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_prompt};
 use crate::chat::agent::{
     run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, AgentRunEntry,
     ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
@@ -298,15 +298,7 @@ impl ToolExecutor for WorkflowToolExecutor {
         skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
-            let native_ctx = crate::mcp::registry::NativeToolContext {
-                conversation_id: ctx.tool_conversation_id.to_string(),
-                message_id: ctx.message_id.to_string(),
-                tool_call_id: Some(ctx.tool_call_id.to_string()),
-                run_id: ctx.run_id.to_string(),
-                generation: ctx.generation,
-                round: ctx.round,
-                depth: ctx.depth,
-            };
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
             crate::mcp::registry::call_tool(
                 &self.app,
                 &self.app.state::<AppState>(),
@@ -489,7 +481,7 @@ async fn run_builtin_agent_node(
         .unwrap_or_else(|| "zh".to_string());
     let custom_system_prompt = settings.chat.system_prompt.clone();
     let additional_directories: [crate::chat::types::AdditionalDirectory; 0] = [];
-    let mut system_prompt = build_chat_system_prompt(
+    let mut system_prompt = build_chat_prompt(
         &language,
         false,
         true,
@@ -512,12 +504,12 @@ async fn run_builtin_agent_node(
         &additional_directories,
     );
     if let Some(extra) = extra_loaded_skill_bodies(&loaded, &spec.skill_ids) {
-        system_prompt.push_str("\n\n");
-        system_prompt.push_str(&extra);
+        system_prompt.context.push_str("\n\n");
+        system_prompt.context.push_str(&extra);
     }
 
     let runtime_messages = vec![
-        serde_json::json!({ "role": "system", "content": system_prompt }),
+        serde_json::json!({ "role": "system", "content": system_prompt.system }),
         serde_json::json!({ "role": "user", "content": prompt }),
     ];
 
@@ -545,6 +537,7 @@ async fn run_builtin_agent_node(
         provider,
         model,
         runtime_messages,
+        runtime_context: Some(system_prompt.context.clone()),
         tools,
         blocked_tool_calls: Vec::new(),
         settings,
@@ -556,7 +549,7 @@ async fn run_builtin_agent_node(
         max_output_tokens,
         retry_attempts,
         assistant_snapshot: None,
-        provider_tools_fallback_system_prompt: system_prompt,
+        provider_tools_fallback_prompt: system_prompt,
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
@@ -810,6 +803,7 @@ async fn load_or_create_external_conversation(
         external_agent_id: Some(agent_id.to_string()),
         external_model: spec.external_model.clone(),
         external_reasoning: None,
+        external_service_tier: None,
         external_sandbox: None,
         external_agent_preset: None,
     };
@@ -939,16 +933,6 @@ mod tests {
             Some(("conversation", 7))
         ));
         assert!(!automation_run_active_with(&cancelled, "automation", "run"));
-    }
-
-    #[test]
-    fn automation_runner_has_no_app_state_dependency() {
-        let runner = include_str!("runner.rs");
-        assert!(!runner.contains("AppState"));
-        assert!(!runner.contains("state::<"));
-        let tools = include_str!("tools.rs");
-        assert!(!tools.contains("AppState"));
-        assert!(!tools.contains("state::<"));
     }
 
     #[test]

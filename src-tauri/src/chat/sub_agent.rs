@@ -10,7 +10,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::agents::AgentDefinition;
-use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_system_prompt};
+use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_prompt};
 use crate::chat::agent::types::AgentRunResult;
 use crate::chat::agent::{
     run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, ToolExecutionContext, ToolExecutor,
@@ -448,15 +448,7 @@ impl ToolExecutor for SubAgentToolExecutor {
             if let Some((conversation, id, run)) = &self.managed {
                 control::runtime(&self.app)?.tool_record(conversation, id, run, serde_json::json!({"id":ctx.tool_call_id,"name":tool.name,"source":tool.source,"server_id":tool.server_id,"server_name":tool.server_name,"arguments":arguments,"status":"unknown"}))?;
             }
-            let native_ctx = crate::mcp::registry::NativeToolContext {
-                conversation_id: ctx.tool_conversation_id.to_string(),
-                message_id: ctx.message_id.to_string(),
-                tool_call_id: Some(ctx.tool_call_id.to_string()),
-                run_id: ctx.run_id.to_string(),
-                generation: ctx.generation,
-                round: ctx.round,
-                depth: ctx.depth,
-            };
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
             let result = crate::mcp::registry::call_tool(
                 &self.app,
                 &self.app.state::<AppState>(),
@@ -542,6 +534,7 @@ pub struct SubAgentRequest {
     pub agent_type: String,
     pub prompt: String,
     pub system_prompt: String,
+    pub runtime_context: Option<String>,
     pub provider: ModelProvider,
     pub model: String,
     pub thinking_enabled: bool,
@@ -726,7 +719,11 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         max_output_tokens,
         retry_attempts,
         assistant_snapshot: None,
-        provider_tools_fallback_system_prompt: req.system_prompt.clone(),
+        runtime_context: req.runtime_context.clone(),
+        provider_tools_fallback_prompt: crate::chat::agent::prepare::PreparedChatPrompt {
+            system: req.system_prompt.clone(),
+            context: String::new(),
+        },
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
@@ -753,7 +750,7 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
 pub struct SubAgentCallCtx<'a> {
     pub app: &'a AppHandle,
     pub state: &'a AppState,
-    pub native_ctx: &'a crate::mcp::registry::NativeToolContext,
+    pub native_ctx: &'a crate::mcp::registry::NativeToolContext<'a>,
     pub arguments: &'a Value,
 }
 
@@ -1100,7 +1097,7 @@ pub fn handle_agent_spawn<'a>(
             &preload_registry,
             &def.skills,
         );
-        let system_prompt = build_chat_system_prompt(
+        let system_prompt = build_chat_prompt(
             &language,
             false,
             thinking_enabled,
@@ -1157,7 +1154,8 @@ pub fn handle_agent_spawn<'a>(
             name: name.clone(),
             agent_type: def.name.clone(),
             prompt,
-            system_prompt,
+            runtime_context: Some(system_prompt.context),
+            system_prompt: system_prompt.system,
             provider,
             model,
             thinking_enabled,

@@ -4,7 +4,7 @@ import type { Virtualizer } from '@tanstack/react-virtual'
 import { afterEach, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
 import { clearChatReadingPositions, rememberChatReadingPosition } from './chatReadingPosition'
-import { reset } from './streamingStore'
+import { reset, setCoarse } from './streamingStore'
 
 let list: Virtualizer<Element, Element>
 vi.mock('@tanstack/react-virtual', async (importOriginal) => {
@@ -294,4 +294,96 @@ it.each(['auto-prefetch', undefined])('prefetches within two viewports, coalesce
   fireEvent.scroll(viewport)
   fireEvent.wheel(viewport, { deltaY: -100 })
   expect(load).toHaveBeenCalledTimes(2)
+})
+
+
+it.each([0, 40])('keeps reserve independent of mounted history and clears it on rewind (%i older rows)', async (olderCount) => {
+  const earlier = [
+    ...Array.from({ length: olderCount }, (_, index) => ({
+      id: `older-${index}`, role: 'assistant' as const, content: 'Older answer', timestamp: index,
+    })),
+    { id: 'old-question', role: 'user' as const, content: 'Earlier question', timestamp: 1 },
+    { id: 'old-answer', role: 'assistant' as const, content: 'Earlier answer', timestamp: 2 },
+  ]
+  const question = { id: 'new-question', role: 'user' as const, content: 'New question', timestamp: 3 }
+  const { container, rerender } = render(<MessageList conversationId="reserve-rewind" messages={earlier} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 800 })
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const top = this.dataset.messageId ? 0 : 200
+    return { top, bottom: top + 100, height: 100, width: 280, left: 0, right: 280, x: 0, y: top, toJSON() {} }
+  })
+  act(() => setCoarse({ streaming: true }))
+  rerender(<MessageList conversationId="reserve-rewind" messages={[...earlier, question]} />)
+  act(() => setCoarse({ streaming: false }))
+  rerender(<MessageList conversationId="reserve-rewind" messages={[...earlier, question,
+    { id: 'new-answer', role: 'assistant', content: 'Short answer', timestamp: 4 },
+  ]} />)
+  const spacer = container.querySelector<HTMLElement>('[data-chat-message-list-item="tail"] > div > div:last-child')!
+  expect(parseFloat(spacer.style.height)).toBeGreaterThan(16)
+  rerender(<MessageList conversationId="reserve-rewind" messages={earlier} />)
+  expect(spacer.style.height).toBe('16px')
+})
+
+it('reuses the list across conversations and restores each one\'s own reading position', async () => {
+  const [rowsA, rowsB] = ['a', 'b'].map((prefix) => Array.from({ length: 40 }, (_, index) => ({
+    id: `${prefix}-${index}`, role: 'user' as const, content: 'Short', timestamp: index,
+  })))
+  const startOf = (key: string) => {
+    const index = Array.from({ length: list.options.count }, (_, value) => value)
+      .find((value) => String(list.options.getItemKey(value)).endsWith(`:${key}`))!
+    return (list.measurementsCache[index]?.start ?? list.getOffsetForIndex(index, 'start')?.[0])!
+  }
+  rememberChatReadingPosition('reuse-b', { following: false, rowKey: 'b-10', rowOffset: 5, scrollTop: 0, layoutKey: 'x' })
+  const { container, rerender } = render(<MessageList conversationId="reuse-a" messages={rowsA} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  rerender(<MessageList conversationId="reuse-b" messages={rowsB} />)
+  await act(async () => { await Promise.resolve() })
+  // Same DOM node: no unmount/remount flash between conversations.
+  expect(container.querySelector('.chat-scroll-viewport')).toBe(viewport)
+  expect(container.querySelector('[data-message-id^="a-"]')).toBeNull()
+  expect(viewport.scrollTop).toBe(startOf('b-10') + 5)
+})
+
+it('saves the outgoing conversation with its measured rows and restores them on return', async () => {
+  const [rowsA, rowsB] = ['a', 'b'].map((prefix) => Array.from({ length: 40 }, (_, index) => ({
+    id: `${prefix}-${index}`, role: 'user' as const, content: 'Short', timestamp: index,
+  })))
+  const { container, rerender } = render(<MessageList conversationId="measured-b" messages={rowsB} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  // Real heights differ from estimates; B's restore must use them, not a fresh estimate.
+  act(() => { for (let index = 0; index < rowsB.length; index += 1) list.resizeItem(index, 300) })
+  // A follows the bottom, which drives TanStack's end-anchor path during the switch render.
+  rerender(<MessageList conversationId="measured-a" messages={rowsA} />)
+  await act(async () => { await Promise.resolve() })
+  rememberChatReadingPosition('measured-b', { following: false, rowKey: 'b-10', rowOffset: 5, scrollTop: 0, layoutKey: 'x' })
+  rerender(<MessageList conversationId="measured-b" messages={rowsB} />)
+  await act(async () => { await Promise.resolve() })
+  const index = Array.from({ length: list.options.count }, (_, value) => value)
+    .find((value) => String(list.options.getItemKey(value)).endsWith(':b-10'))!
+  // Measured 300px rows, not ~88px estimates: the snapshot survived the switch away and back.
+  expect(list.measurementsCache[index].size).toBe(300)
+  expect(viewport.scrollTop).toBe(list.measurementsCache[index].start + 5)
+})
+
+it('does not pull a detached conversation to the bottom when leaving a streaming one', async () => {
+  const [rowsA, rowsB] = ['a', 'b'].map((prefix) => Array.from({ length: 40 }, (_, index) => ({
+    id: `${prefix}-${index}`, role: 'user' as const, content: 'Short', timestamp: index,
+  })))
+  rememberChatReadingPosition('detached-b', { following: false, rowKey: 'b-10', rowOffset: 5, scrollTop: 0, layoutKey: 'x' })
+  act(() => setCoarse({ streaming: true }))
+  const { container, rerender } = render(<MessageList conversationId="live-a" messages={rowsA} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  act(() => {
+    setCoarse({ streaming: false })
+    rerender(<MessageList conversationId="detached-b" messages={rowsB} />)
+  })
+  await act(async () => { await Promise.resolve() })
+  const index = Array.from({ length: list.options.count }, (_, value) => value)
+    .find((value) => String(list.options.getItemKey(value)).endsWith(':b-10'))!
+  expect(viewport.scrollTop).toBe((list.measurementsCache[index]?.start ?? list.getOffsetForIndex(index, 'start')?.[0])! + 5)
 })

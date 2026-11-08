@@ -10,11 +10,13 @@ import { useGitBadge } from './useGitBadge'
 type GitStatusPillProps = {
   workdir: string
   lang: Lang
+  projectId: string | null
+  onChooseProject?: () => void
   disabled?: boolean
   onOpenGitPanel: () => void
 }
 
-export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitStatusPillProps) {
+export function GitStatusPill({ workdir, lang, disabled, projectId, onChooseProject, onOpenGitPanel }: GitStatusPillProps) {
   const t = i18n[lang]
   const { state, loading, applyMutationState, refresh } = useGitBadge(workdir)
   const [open, setOpen] = useState(false)
@@ -34,15 +36,23 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
   }
 
   const handleInit = async () => {
-    if (initBusy || !workdir) return
+    if (disabled || initBusy) return
+    if (!projectId) {
+      setOpen(false)
+      onChooseProject?.()
+      return
+    }
     setInitBusy(true)
     setActionError('')
     try {
-      const result = await dockApi.gitInit(workdir)
+      // Resolve the selected project directly: the displayed workdir can still be
+      // catching up after navigation and must never initialize the shared root.
+      const projectWorkdir = await dockApi.resolveCwd(null, projectId)
+      const result = await dockApi.gitInit(projectWorkdir)
       if (!result.ok) {
         throw new Error(result.message || result.stderr || t.dockGitInitFailed)
       }
-      applyMutationState(result.state)
+      if (projectWorkdir === workdir) applyMutationState(result.state)
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -67,7 +77,7 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
         aria-haspopup="dialog"
         title="Git"
       >
-        <GitBranch strokeWidth={1.75} className="!text-emerald-600 dark:!text-emerald-400" />
+        <GitBranch strokeWidth={1.75} className="!text-neutral-800 dark:!text-neutral-200" />
         <span className="min-w-0 max-w-[140px] truncate">{label}</span>
       </button>
 
@@ -112,7 +122,7 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
                 <button
                   type="button"
                   onClick={() => void handleInit()}
-                  disabled={initBusy || !workdir}
+                  disabled={disabled || initBusy || (!projectId && !onChooseProject)}
                   className="kv-menu-row text-neutral-800 transition-colors hover:bg-neutral-100 disabled:opacity-50"
                 >
                   {initBusy ? (
@@ -120,7 +130,7 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
                   ) : (
                     <Plus size={14} strokeWidth={1.8} className="shrink-0" />
                   )}
-                  <span className="min-w-0 flex-1">{t.dockGitInitRepo}</span>
+                  <span className="min-w-0 flex-1">{projectId ? t.dockGitInitRepo : t.dockGitChooseProject}</span>
                 </button>
               </div>
             ) : (

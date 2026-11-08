@@ -10,6 +10,7 @@ pub mod folder_picker;
 mod android_keyring;
 pub mod api;
 pub mod app_data;
+mod app_mcp;
 pub mod automation;
 pub mod backup;
 pub mod capture_geometry;
@@ -28,6 +29,7 @@ pub mod external_agents;
 pub mod fonts;
 mod html_preview;
 pub mod http;
+mod html_render;
 pub mod lens;
 #[cfg(not(target_os = "android"))]
 pub mod lens_commands;
@@ -69,6 +71,8 @@ pub mod state;
 pub mod updates;
 pub mod usage;
 pub mod utils;
+mod voice_codex;
+mod voice_live;
 pub mod web_search;
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) mod window_focus;
@@ -182,6 +186,12 @@ fn disable_process_power_throttling() {
     }
 }
 
+// Generate once: on macOS this macro embeds a process-wide Info.plist symbol.
+// The identity regression test must use the same context as the application.
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 /// 应用入口函数
 /// 初始化 Tauri Builder，加载插件，配置窗口事件处理，设置全局状态、热键和托盘。
 ///
@@ -189,6 +199,18 @@ fn disable_process_power_throttling() {
 /// `main.rs` 调用。
 #[cfg_attr(target_os = "android", tauri::mobile_entry_point)]
 pub fn run() {
+    let context = app_context();
+    assert_eq!(
+        context.config().identifier,
+        app_data::APP_IDENTIFIER,
+        "Tauri and headless storage identities must match"
+    );
+
+    assert!(
+        !cfg!(debug_assertions) || app_data::is_dev(),
+        "Debug GUI builds must use the Dev identity: run npm run dev or pass --config src-tauri/tauri.dev.conf.json"
+    );
+
     // GUI launches don't always inherit the *current* user PATH, so packaged
     // builds can't find user-installed CLIs. Enrich the process PATH once,
     // before any window creation or CLI probing. macOS: login-shell PATH is not
@@ -229,7 +251,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(folder_picker::init())
-        .register_uri_scheme_protocol("kivio-preview", |_context, request| html_preview::serve(request));
+        .register_uri_scheme_protocol("kivio-preview", |context, request| html_preview::serve(context.app_handle(), request));
     // 单实例 / 全局热键 / 开机自启都是桌面概念（多实例、系统级热键、登录项），
     // Android 上不注册这三个插件，其余流程共用。
     #[cfg(not(target_os = "android"))]
@@ -246,6 +268,13 @@ pub fn run() {
     // `.setup(...)` 处截断成语句，若不接住，后面的 invoke_handler 就会
     // 「移动后再用」（桌面分支同样如此）。
     let builder = builder
+        .on_page_load(|webview, payload| {
+            if webview.label() == "chat" && payload.event() == tauri::webview::PageLoadEvent::Started {
+                if let Some(voice) = webview.app_handle().try_state::<voice_codex::VoiceCodexService>() {
+                    voice.cancel();
+                }
+            }
+        })
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "chat" {
@@ -304,7 +333,9 @@ pub fn run() {
                     flows.cancel_window(label);
                 }
                 chat::notification_viewing::clear_window(label);
+                // App 分支没有桌面弹出窗（chat::popout），只处理主聊天窗。
                 if label == "chat" {
+                    window.app_handle().state::<voice_codex::VoiceCodexService>().cancel();
                     crate::chat::protocol::unsubscribe_label(
                         &window.app_handle().state::<AppState>(),
                         "chat",
@@ -360,9 +391,13 @@ pub fn run() {
             }
 
             // 清理上次崩溃 / 强杀 / 旧版本遗留的截图 PNG（24h 之前的，避免误删并发实例的活文件）
-            #[cfg(not(target_os = "android"))]
-            cleanup_orphan_temp_files();
-            cleanup_stale_sandbox_exports();
+            // These legacy temp prefixes are shared with installed production builds.
+            // A Dev startup must not clean up another installation's files.
+            if !app_data::is_dev() {
+                #[cfg(not(target_os = "android"))]
+                cleanup_orphan_temp_files();
+                cleanup_stale_sandbox_exports();
+            }
             // 会话副产物：空/孤儿工作区目录、已删会话残留的附件目录。只碰 Kivio 自己造的
             // `conv_*` 目录，非空的孤儿工作区只报数不删（里面是用户产物）。
             chat::gc::sweep_conversation_side_artifacts(app.handle());
@@ -480,6 +515,7 @@ pub fn run() {
             )?);
             app.manage(chat::media_station::MediaStation::default());
             app.manage(connectors::OAuthFlows::default());
+            app.manage(voice_codex::VoiceCodexService::default());
 
             // 崩溃残留的中断草稿日志:按每个 message_id 的最后一行合并回会话文件后删除。
             // setup 返回前完成草稿恢复，确保 UI run 不与日志恢复/删除并发。
@@ -656,6 +692,12 @@ pub fn run() {
             chat::media_station::media_station_read,
             chat::media_station::media_station_export,
             chat::media_station::media_station_reference,
+            voice_live::voice_live_start,
+            voice_live::voice_delegate,
+            voice_codex::voice_codex_reserve,
+            voice_codex::voice_codex_start,
+            voice_codex::voice_codex_stop,
+            voice_codex::voice_codex_mute,
             commands::get_settings,
             commands::set_hotkeys_suspended,
             commands::list_gnome_system_shortcuts,
@@ -694,6 +736,7 @@ pub fn run() {
             commands::open_local_file,
             commands::open_data_url_file,
             commands::open_html_preview,
+            html_preview::open_html_render,
             lens_commands::explain_read_image,
             lens_commands::lens_read_freeze_frame,
             lens_commands::lens_read_image,
@@ -831,6 +874,7 @@ pub fn run() {
             chat::commands::mutations::chat_fork_conversation,
             external_agents::commands::chat_detect_external_agents,
             external_agents::commands::chat_detect_external_agent_models,
+            external_agents::commands::chat_external_cli_account,
             external_agents::commands::chat_list_external_cli_slash_commands,
             external_agents::commands::chat_external_cli_provider_cleanup,
             external_agents::commands::chat_external_cli_pi_agent_dir,
@@ -1260,7 +1304,7 @@ pub fn run() {
 
         handler(invoke)
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
             tauri::RunEvent::ExitRequested { api, code, .. } => {
@@ -1269,6 +1313,12 @@ pub fn run() {
                 } else {
                     // 真正退出：同步排干 MCP 连接池，杀掉所有持久子进程，避免孤儿进程。
                     let state: State<AppState> = app_handle.state();
+                    let voice: State<voice_codex::VoiceCodexService> = app_handle.state();
+                    if tauri::async_runtime::block_on(voice.shutdown()).is_err() {
+                        eprintln!("Voice cleanup has not completed; keeping the application alive.");
+                        api.prevent_exit();
+                        return;
+                    }
                     if let Ok(runtime) = chat::sub_agent::control::runtime(app_handle) {
                         let stopped = tauri::async_runtime::block_on(async {
                             tokio::time::timeout(std::time::Duration::from_secs(5), runtime.shutdown()).await

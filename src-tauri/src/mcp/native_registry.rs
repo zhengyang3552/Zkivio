@@ -41,7 +41,11 @@ use super::types::{
     native_advisor_tool, native_automation_delete_tool, native_automation_get_tool,
     native_automation_list_tool, native_automation_run_tool, native_automation_runs_tool,
     native_automation_set_enabled_tool, native_automation_upsert_tool, native_bash_output_tool,
-    native_edit_file_tool, native_glob_files_tool, native_kill_background_tool,
+    native_edit_file_tool, native_glob_files_tool, native_html_preview_tool,
+    native_html_render_tool, native_kill_background_tool, native_kivio_create_conversation_tool,
+    native_kivio_interrupt_tool, native_kivio_list_agents_tool,
+    native_kivio_list_conversations_tool, native_kivio_list_projects_tool,
+    native_kivio_read_conversation_tool, native_kivio_send_message_tool,
     native_knowledge_search_tool, native_list_dir_tool, native_memory_modify_tool,
     native_memory_read_tool, native_memory_search_tool, native_present_artifacts_tool,
     native_read_file_tool, native_run_command_tool, native_save_assistant_tool,
@@ -66,7 +70,7 @@ pub struct NativeCallCtx<'a> {
     pub settings: &'a Settings,
     pub workspace: &'a NativeToolWorkspace,
     pub arguments: &'a Value,
-    pub native_ctx: Option<&'a NativeToolContext>,
+    pub native_ctx: Option<&'a NativeToolContext<'a>>,
 }
 
 /// How `call_native_tool` dispatches a registry entry. The blocking-vs-sync
@@ -88,7 +92,12 @@ pub enum NativeToolCall {
     /// legacy `RegistryToolExecutor` special case which never resolved a
     /// workspace for todo tools.
     Conversation(
-        for<'a> fn(&'a AppHandle, &'a NativeToolContext, &'a str, Value) -> NativeToolFuture<'a>,
+        for<'a> fn(
+            &'a AppHandle,
+            &'a NativeToolContext<'a>,
+            &'a str,
+            Value,
+        ) -> NativeToolFuture<'a>,
     ),
     /// Host-mediated tool (ask_user): intercepted in
     /// `chat/agent/execute.rs::execute_ask_user_call` and must never reach
@@ -354,6 +363,76 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_save_assistant),
     },
     NativeToolEntry {
+        name: "kivio_list_agents",
+        def: native_kivio_list_agents_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_agents")),
+    },
+    NativeToolEntry {
+        name: "kivio_list_projects",
+        def: native_kivio_list_projects_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_projects")),
+    },
+    NativeToolEntry {
+        name: "kivio_list_conversations",
+        def: native_kivio_list_conversations_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_conversations")),
+    },
+    NativeToolEntry {
+        name: "kivio_read_conversation",
+        def: native_kivio_read_conversation_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_read_conversation")),
+    },
+    NativeToolEntry {
+        name: "kivio_create_conversation",
+        def: native_kivio_create_conversation_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_create_conversation")),
+    },
+    NativeToolEntry {
+        name: "kivio_send_message",
+        def: native_kivio_send_message_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_send_message")),
+    },
+    NativeToolEntry {
+        name: "kivio_interrupt",
+        def: native_kivio_interrupt_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_interrupt")),
+    },
+    NativeToolEntry {
         name: "present_artifacts",
         def: native_present_artifacts_tool,
         enabled: |_, _, _| true,
@@ -362,6 +441,26 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         read_only: true,
         requires_session_consent: false,
         call: NativeToolCall::SyncResult(call_present_artifacts),
+    },
+    NativeToolEntry {
+        name: crate::html_render::HTML_RENDER_TOOL,
+        def: native_html_render_tool,
+        enabled: |_, _, _| true,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(call_html_tool),
+    },
+    NativeToolEntry {
+        name: crate::html_render::HTML_PREVIEW_TOOL,
+        def: native_html_preview_tool,
+        enabled: |_, _, _| true,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(call_html_tool),
     },
     NativeToolEntry {
         name: "kivio_inspect",
@@ -610,6 +709,31 @@ pub fn text_tool_result(content: String) -> McpToolCallResult {
     }
 }
 
+fn call_html_tool<'a>(
+    app: &'a AppHandle,
+    ctx: &'a NativeToolContext<'a>,
+    name: &'a str,
+    arguments: Value,
+) -> NativeToolFuture<'a> {
+    Box::pin(async move {
+        let result =
+            crate::html_render::call_tool(app, &ctx.conversation_id, name, &arguments).await?;
+        Ok(html_tool_result(result))
+    })
+}
+
+fn html_tool_result(result: crate::html_render::HtmlToolResult) -> McpToolCallResult {
+    let mut content = vec![serde_json::json!({"type": "text", "text": result.text})];
+    if let Some(data) = result.image_png_base64 {
+        content.push(serde_json::json!({"type": "image", "data": data, "mimeType": "image/png"}));
+    }
+    let mut wire = serde_json::json!({"content": content});
+    if let Some(structured) = result.structured {
+        wire["structuredContent"] = structured;
+    }
+    super::result::parse_tool_result(wire)
+}
+
 fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
         let resolved_arguments = resolve_read_arguments(ctx.arguments, |id| {
@@ -696,8 +820,8 @@ fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                     )
                     .await;
                 }
-            } else if let Some(hint) = skill_backed_document_hint(&path) {
-                // PDF / Word / Excel 等二进制文档：read 不解析，引导走对应 skill。
+            } else if let Some(hint) = binary_document_read_hint(&path) {
+                // PDF / Word / Excel 等二进制文档：read 不解析，引导用主机工具提取。
                 return Ok(text_tool_result(hint));
             }
         }
@@ -766,7 +890,7 @@ fn read_non_image_paths(
                 if path.is_dir() {
                     return crate::native_tools::list_dir(workspace, &args);
                 }
-                if let Some(hint) = skill_backed_document_hint(&path) {
+                if let Some(hint) = binary_document_read_hint(&path) {
                     return Ok(hint);
                 }
             }
@@ -794,13 +918,13 @@ fn read_non_image_paths(
     Ok(content)
 }
 
-/// PDF/Word/Excel 由内置 skill + 主机命令解析；read 工具不读二进制文档；命中时返回引导提示而非 UTF-8 报错。
-fn skill_backed_document_hint(path: &std::path::Path) -> Option<String> {
+/// PDF/Word/Excel 是二进制文档；read 工具不解析它们，命中时返回引导提示而非 UTF-8 报错。
+fn binary_document_read_hint(path: &std::path::Path) -> Option<String> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    let (skill, kind) = match ext.as_str() {
-        "pdf" => ("pdf", "PDF"),
-        "doc" | "docx" => ("docx", "Word 文档"),
-        "xls" | "xlsx" | "xlsm" => ("xlsx", "Excel 表格"),
+    let kind = match ext.as_str() {
+        "pdf" => "PDF",
+        "doc" | "docx" => "Word 文档",
+        "xls" | "xlsx" | "xlsm" => "Excel 表格",
         _ => return None,
     };
     let name = path
@@ -808,7 +932,7 @@ fn skill_backed_document_hint(path: &std::path::Path) -> Option<String> {
         .and_then(|name| name.to_str())
         .unwrap_or("file");
     Some(format!(
-        "{name} 是{kind}，read 工具不解析此类文件。请改用「{skill}」skill：用 bash 在主机上提取内容（若本机有对应 CLI 或 Python）；没有可用工具时如实告诉用户。"
+        "{name} 是{kind}，read 工具不解析此类文件。需要读取正文时用 bash 或本机可用的解析工具处理该路径；没有可用工具时如实告诉用户，不要仅凭文件名臆测内容。"
     ))
 }
 
@@ -1258,6 +1382,14 @@ fn call_save_assistant(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     })
 }
 
+fn call_voice_tool<'a>(ctx: NativeCallCtx<'a>, name: &'static str) -> NativeToolFuture<'a> {
+    Box::pin(async move {
+        crate::chat::voice_orchestrator::call_tool(ctx.app, name, ctx.arguments)
+            .await
+            .map(text_tool_result)
+    })
+}
+
 fn append_skipped_read_notes(content: &mut String, skipped: &[String]) {
     if skipped.is_empty() {
         return;
@@ -1435,21 +1567,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skill_backed_document_hint_routes_by_extension() {
+    fn native_html_tools_share_mcp_schemas_and_guides() {
+        let mcp = crate::html_render::tool_definitions();
+        for native in [native_html_render_tool(), native_html_preview_tool()] {
+            let shared = mcp.iter().find(|item| item["name"] == native.name).unwrap();
+            assert_eq!(native.input_schema, shared["inputSchema"]);
+            assert_eq!(native.description, shared["description"].as_str().unwrap());
+            assert!(find_entry(&native.name).unwrap().bypasses_approval);
+        }
+    }
+
+    #[test]
+    fn html_results_preserve_reference_and_use_mcp_image_artifacts() {
+        let reference = serde_json::json!({
+            "type": "html_render", "attachmentId": "htmlrender-a", "title": "Chart", "height": 480
+        });
+        let render = html_tool_result(crate::html_render::HtmlToolResult {
+            text: "Rendered".into(),
+            structured: Some(reference.clone()),
+            image_png_base64: None,
+        });
+        assert_eq!(render.structured_content, Some(reference));
+        assert!(render.artifacts.is_empty());
+        let preview = html_tool_result(crate::html_render::HtmlToolResult {
+            text: "Preview".into(),
+            structured: None,
+            image_png_base64: Some("aGVsbG8=".into()),
+        });
+        assert_eq!(preview.artifacts.len(), 1);
+        assert_eq!(
+            preview.artifacts[0].data_url,
+            "data:image/png;base64,aGVsbG8="
+        );
+        assert_eq!(preview.artifacts[0].mime_type, "image/png");
+        assert!(preview.structured_content.is_none());
+    }
+
+    #[test]
+    fn binary_document_read_hint_routes_by_extension() {
         use std::path::Path;
-        assert!(skill_backed_document_hint(Path::new("/a/report.pdf"))
+        assert!(binary_document_read_hint(Path::new("/a/report.pdf"))
             .unwrap()
-            .contains("pdf"));
-        assert!(skill_backed_document_hint(Path::new("/a/notes.docx"))
+            .contains("PDF"));
+        assert!(binary_document_read_hint(Path::new("/a/notes.docx"))
             .unwrap()
-            .contains("docx"));
+            .contains("Word 文档"));
         // Case-insensitive on extension.
-        assert!(skill_backed_document_hint(Path::new("/a/sheet.XLSX"))
+        assert!(binary_document_read_hint(Path::new("/a/sheet.XLSX"))
             .unwrap()
-            .contains("xlsx"));
+            .contains("Excel 表格"));
         // Text and image files are NOT routed to the document-skill hint.
-        assert!(skill_backed_document_hint(Path::new("/a/readme.txt")).is_none());
-        assert!(skill_backed_document_hint(Path::new("/a/shot.png")).is_none());
+        assert!(binary_document_read_hint(Path::new("/a/readme.txt")).is_none());
+        assert!(binary_document_read_hint(Path::new("/a/shot.png")).is_none());
     }
 
     #[test]
@@ -1634,7 +1803,16 @@ mod tests {
         "bash_output",
         "kill_background",
         "save_assistant",
+        "kivio_list_agents",
+        "kivio_list_projects",
+        "kivio_list_conversations",
+        "kivio_read_conversation",
+        "kivio_create_conversation",
+        "kivio_send_message",
+        "kivio_interrupt",
         "present_artifacts",
+        "html_render",
+        "html_preview",
         "kivio_inspect",
         "kivio_configure",
         "memory_read",
@@ -1751,7 +1929,16 @@ mod tests {
             bypass,
             [
                 "advisor",
+                "kivio_list_agents",
+                "kivio_list_projects",
+                "kivio_list_conversations",
+                "kivio_read_conversation",
+                "kivio_create_conversation",
+                "kivio_send_message",
+                "kivio_interrupt",
                 "present_artifacts",
+                "html_render",
+                "html_preview",
                 "memory_read",
                 "memory_modify",
                 "memory_search",
@@ -1793,7 +1980,13 @@ mod tests {
                 "grep",
                 "glob",
                 "bash_output",
+                "kivio_list_agents",
+                "kivio_list_projects",
+                "kivio_list_conversations",
+                "kivio_read_conversation",
                 "present_artifacts",
+                "html_render",
+                "html_preview",
                 "kivio_inspect",
                 "memory_read",
                 "memory_search",
@@ -1821,18 +2014,41 @@ mod tests {
             workspace_roots: Vec::new(),
         };
         for entry in NATIVE_TOOLS {
-            if matches!(
-                entry.call,
-                NativeToolCall::Conversation(_)
-                    | NativeToolCall::HostMediated
-                    | NativeToolCall::SubAgent(_)
-            ) {
+            if !matches!(entry.name, "html_render" | "html_preview")
+                && matches!(
+                    entry.call,
+                    NativeToolCall::Conversation(_)
+                        | NativeToolCall::HostMediated
+                        | NativeToolCall::SubAgent(_)
+                )
+            {
                 assert!(
                     !(entry.enabled)(&native, true, true),
                     "{} must be appended via chat/commands.rs, not listed here",
                     entry.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn voice_orchestration_tools_are_brain_only_and_bypass_approval() {
+        let native = ChatNativeToolsConfig::default();
+        for name in [
+            "kivio_list_agents",
+            "kivio_list_projects",
+            "kivio_list_conversations",
+            "kivio_read_conversation",
+            "kivio_create_conversation",
+            "kivio_send_message",
+            "kivio_interrupt",
+        ] {
+            let entry = find_entry(name).unwrap();
+            assert!(!(entry.enabled)(&native, true, true), "{name}");
+            assert!(!(entry.enabled)(&native, false, false), "{name}");
+            assert!(entry.bypasses_approval, "{name}");
+            assert!(!entry.requires_session_consent, "{name}");
+            assert!(matches!(entry.call, NativeToolCall::Async(_)), "{name}");
         }
     }
 
@@ -1870,15 +2086,26 @@ mod tests {
             working_directory: String::new(),
             workspace_roots: Vec::new(),
         };
-        assert_eq!(names(&off, true, false), ["present_artifacts"]);
+        assert_eq!(
+            names(&off, true, false),
+            ["present_artifacts", "html_render", "html_preview"]
+        );
 
         // web_search requires both the toggle and a configured provider key.
         let mut search_only = off.clone();
         search_only.web_search = true;
-        assert_eq!(names(&search_only, false, false), ["present_artifacts"]);
+        assert_eq!(
+            names(&search_only, false, false),
+            ["present_artifacts", "html_render", "html_preview"]
+        );
         assert_eq!(
             names(&search_only, true, false),
-            ["web_search", "present_artifacts"]
+            [
+                "web_search",
+                "present_artifacts",
+                "html_render",
+                "html_preview"
+            ]
         );
 
         // read_file gate exposes the whole read-side group, in order.
@@ -1886,7 +2113,15 @@ mod tests {
         read_only.read_file = true;
         assert_eq!(
             names(&read_only, false, false),
-            ["read", "grep", "glob", "present_artifacts", "kivio_inspect"]
+            [
+                "read",
+                "grep",
+                "glob",
+                "present_artifacts",
+                "html_render",
+                "html_preview",
+                "kivio_inspect"
+            ]
         );
 
         // The write gate exposes the whole-file write tool only. File cards are
@@ -1895,7 +2130,7 @@ mod tests {
         write_only.write_file = true;
         assert_eq!(
             names(&write_only, false, false),
-            ["write", "present_artifacts"]
+            ["write", "present_artifacts", "html_render", "html_preview"]
         );
 
         let mut automation_only = off.clone();
@@ -1911,6 +2146,8 @@ mod tests {
                 "automation_runs",
                 "automation_delete",
                 "present_artifacts",
+                "html_render",
+                "html_preview",
             ]
         );
 
@@ -1919,6 +2156,8 @@ mod tests {
             names(&off, false, true),
             [
                 "present_artifacts",
+                "html_render",
+                "html_preview",
                 "memory_read",
                 "memory_modify",
                 "memory_search",
@@ -1962,6 +2201,8 @@ mod tests {
                 "bash_output",
                 "kill_background",
                 "present_artifacts",
+                "html_render",
+                "html_preview",
                 "kivio_inspect",
                 "kivio_configure",
                 "memory_read",

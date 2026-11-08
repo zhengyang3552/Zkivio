@@ -105,6 +105,8 @@ export interface SettingsShellProps {
   initialTab?: SettingsTab
   /** embedded 单页模式：隐藏左侧设置导航，只显示 initialTab 对应页（如从扩展点「知识库」进入） */
   hideNav?: boolean
+  /** embedded 左栏底部槽位（聊天窗口放账号行，与聊天侧栏一致）。 */
+  navFooter?: ReactNode
   /** Chat 宿主提供的领域视图；设置只决定它们出现的位置。 */
   renderSessionCenter?: (lang: Lang) => ReactNode
   renderReleaseNotes: (markdown: string) => ReactNode
@@ -146,7 +148,7 @@ function resolveEffectiveChatMaxOutput(settings: SettingsData, fallbackTokens: n
  * 设置面板主组件（standalone / embedded 双宿主）
  */
 export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>(function SettingsShell(
-  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, renderSessionCenter, renderReleaseNotes },
+  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, navFooter, renderSessionCenter, renderReleaseNotes },
   ref,
 ) {
   const onSettingsChangeRef = useRef(onSettingsChange)
@@ -640,6 +642,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [setSettings])
 
+  const updateVoice = useCallback((updates: Partial<NonNullable<SettingsData['voice']>>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      return { ...prev, voice: { ...prev.voice, ...updates } }
+    })
+  }, [setSettings])
+
   const updateChatMemory = useCallback((updates: Partial<ChatMemoryConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
@@ -814,6 +823,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const categoryNav =
     variant === 'embedded' ? (
       <>
+        <nav className="settings-embedded-nav-list settings-embedded-nav-list--header">
+          <SidebarNavItem
+            onClick={() => handleCloseRequest({ waitForSave: false })}
+            icon={<ArrowLeft size={18} strokeWidth={1.75} />}
+            label={lang === 'zh' ? '返回对话' : 'Back to chat'}
+          />
+        </nav>
         <nav className="settings-embedded-nav-list custom-scrollbar">
           {navItems.map((item) => {
             const Icon = item.icon
@@ -1017,6 +1033,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 skillRuntimeEnabled={skillRuntimeEnabled}
                 nativeBuiltinToolsEnabled={nativeBuiltinToolsEnabled}
                 onUpdateChat={updateChat}
+                onUpdateVoice={updateVoice}
                 onUpdateNativeTools={updateNativeTools}
                 onNavigateTab={setActiveTab}
               />
@@ -1282,6 +1299,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               {t.settings}
             </h2>
             {categoryNav}
+            {navFooter ? <div className="settings-embedded-nav-footer">{navFooter}</div> : null}
           </aside>
         )}
         {(!paneNavigation || hideNav || mobileDetail) && settingsMain}

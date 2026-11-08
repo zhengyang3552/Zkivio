@@ -1,4 +1,4 @@
-import { type ComponentType, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentType, type ReactNode, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { SubAgentToolCard } from './SubAgentToolCard'
 import {
@@ -37,11 +37,11 @@ import {
   XCircle,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ToolCallRecord, ToolCallStatus } from './types'
+import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessageSegment, ToolCallRecord, ToolCallStatus } from './types'
 import { normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { hasAskUserStructuredContent, isAskUserToolName } from './askUserTools'
-import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, imageReadCount, imageReadItems, toolCallDiffStats, toolRecordRawName } from './segments'
+import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, imageReadCount, imageReadItems, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
 import { requestDockDiffPreview, requestDockPreview } from './dock/dockPreview'
 import { DiffView } from './dock/DiffView'
 import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
@@ -55,6 +55,7 @@ import { automationHash, setHash } from './chatRoutes'
 import { loadAttachmentDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
 import type { ImageReadItem } from './segments'
+import { ReasoningPreviewContext } from './reasoningPreview'
 
 export interface ToolCallBlockProps {
   toolCall: ToolCallRecord
@@ -517,6 +518,23 @@ function CardSection({ label, children }: { label: string; children: ReactNode }
     </div>
   )
 }
+function externalPartialOutput(toolCall: ToolCallRecord): string {
+  if (toolCall.source !== 'external_cli' || normalizeToolCallStatus(toolCall.status) !== 'running') return ''
+  return toolCall.result_preview ?? toolCall.resultPreview ?? ''
+}
+
+function StreamingToolOutput({ output }: { output: string }) {
+  const ref = useRef<HTMLPreElement>(null)
+  useLayoutEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
+  }, [output])
+  return (
+    <pre ref={ref} tabIndex={0} className="custom-scrollbar max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.5] text-neutral-500 dark:text-neutral-400">
+      {output}
+    </pre>
+  )
+}
+
 
 /** Shared boxed "consult card" shell for standalone delegations/consultations
  *  (SUBAGENT / ADVISOR / KNOWLEDGE). Owns the eyebrow + uppercase mono label +
@@ -611,9 +629,10 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const error = view?.error || (toolCall.error ? compactToolError(toolCall.error) : '')
   const steps = view?.steps ?? []
   const preview = view?.preview || ''
+  const partialOutput = externalPartialOutput(toolCall)
   const usageLine = status !== 'running' ? subagentUsageLine(view?.usage) : ''
 
-  const hasBody = Boolean(prompt || steps.length || preview || result || error)
+  const hasBody = Boolean(prompt || steps.length || preview || result || partialOutput || error)
   const displayName = name && name !== agentType ? name : ''
 
   return (
@@ -661,6 +680,11 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
                 </div>
               )}
             </div>
+          )}
+          {partialOutput && (
+            <CardSection label={t.toolCardResult}>
+              <StreamingToolOutput output={partialOutput} />
+            </CardSection>
           )}
           {status !== 'running' && result && (
             <CardSection label="Result">
@@ -1115,6 +1139,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
   const provider = view?.provider || ''
   const duration = formatDuration(getDuration(toolCall))
   const resultText = getResultPreview(t, toolCall)
+  const partialOutput = externalPartialOutput(toolCall)
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
   const statusLine =
     status === 'running' ? t.toolCardWebRunning : status === 'error' ? (error || t.toolCardWebFailed) : ''
@@ -1122,6 +1147,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
   const hasBody = Boolean(
     queries.length ||
       citations.length ||
+      partialOutput ||
       (status !== 'running' && status !== 'pending' && resultText) ||
       error,
   )
@@ -1146,6 +1172,11 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
               <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
                 {compactText(queries.join(' · '), 300)}
               </div>
+            </CardSection>
+          )}
+          {partialOutput && (
+            <CardSection label={t.toolCardResult}>
+              <StreamingToolOutput output={partialOutput} />
             </CardSection>
           )}
           {citations.length > 0 ? (
@@ -1461,6 +1492,8 @@ function getToolName(t: I18n, toolCall: ToolCallRecord): string {
   const displayName = toolRecordRawName(toolCall) || 'Tool'
 
   if (raw === 'skill' || raw === 'skill_activate') return 'Activate skill'
+  if (raw === 'html_render' || raw === 'mcp__kivio__html_render' || raw === 'kivio.html_render' || raw === 'kivio/html_render') return 'Render HTML'
+  if (raw === 'html_preview' || raw === 'mcp__kivio__html_preview' || raw === 'kivio.html_preview' || raw === 'kivio/html_preview') return 'Preview HTML'
   // 全英文、原形动词（不加 -ed）：直接用工具本名的动词形式，如 Read / Run / Grep / Glob。
   // 目标（文件名 + 行号 / 命令 / pattern）由 getToolTarget 追加。
   switch (raw) {
@@ -1535,6 +1568,15 @@ function firstString(...values: unknown[]): string {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return ''
+}
+
+// 外部 CLI 把命令包成 `"C:\…\pwsh.exe" -Command "git log …"`；行内只显示真正执行的命令（同 Codex/T3 Code）。
+const SHELL_WRAPPER = /^\s*"?(?:[^"]*[\\/])?(?:pwsh|powershell|cmd|bash|zsh|sh)(?:\.exe)?"?(?:\s+-(?:NoProfile|NoLogo|NonInteractive|ExecutionPolicy\s+\S+))*\s+(?:-Command|-c|-lc|\/c)\s+([\s\S]+)$/i
+
+function unwrapShellCommand(command: string): string {
+  const inner = SHELL_WRAPPER.exec(command)?.[1].trim()
+  if (!inner) return command
+  return /^(["'])[\s\S]*\1$/.test(inner) ? inner.slice(1, -1).replace(/\\(["\\])/g, '$1') : inner
 }
 
 /** 只取路径最后一段（Cursor 行内用文件名而非全路径）：`src/a/Lens.tsx` → `Lens.tsx`。 */
@@ -1627,7 +1669,7 @@ function getToolTarget(t: I18n, toolCall: ToolCallRecord): string {
       }
       case 'bash':
       case 'run_command':
-        return compactText(firstString(args?.description, args?.command, args?.job_id, args?.jobId), 160)
+        return compactText(firstString(args?.description, unwrapShellCommand(firstString(args?.command)), args?.job_id, args?.jobId), 160)
       case 'grep':
       case 'search_files':
         return compactText(firstString(args?.query, args?.pattern), 140)
@@ -1880,6 +1922,91 @@ function ToolTypeIcon({ toolCall, status }: { toolCall: ToolCallRecord; status: 
   )
 }
 
+export function ToolCallCluster({
+  segments,
+  toolCalls,
+  toolCallById,
+  messageStreaming,
+  latestReasoning,
+  activityCount,
+  onExpand,
+  children,
+}: {
+  segments: ChatMessageSegment[]
+  toolCalls: ToolCallRecord[]
+  toolCallById: ReadonlyMap<string, ToolCallRecord>
+  messageStreaming: boolean
+  latestReasoning?: { text: string; streaming: boolean }
+  activityCount?: number
+  onExpand?: () => void
+  children: () => ReactNode
+}) {
+  const t = useT()
+  const previewEnabled = useContext(ReasoningPreviewContext)
+  const [open, setOpen] = useState(false)
+  const summary = summarizeToolGroup(segments, toolCalls, toolCallById, messageStreaming)
+  let activeTool: ToolCallRecord | undefined
+  if (messageStreaming) {
+    for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+      const status = normalizeToolCallStatus(toolCalls[index].status)
+      if (status === 'running' || status === 'pending') {
+        activeTool = toolCalls[index]
+        break
+      }
+    }
+  }
+  const reasoningOnly = toolCalls.length === 0
+  const showReasoning = reasoningOnly || (messageStreaming && !activeTool && Boolean(latestReasoning))
+  const currentTool = activeTool ?? toolCalls[toolCalls.length - 1]
+  const currentStatus = currentTool ? normalizeToolCallStatus(currentTool.status) : undefined
+  // 折叠行不报错：失败的探查命令是常态，行首仍用工具图标（展开后单行保留错误图标）。
+  const displayStatus = currentStatus === 'error'
+    || (!messageStreaming && (currentStatus === 'running' || currentStatus === 'pending'))
+    ? 'completed' : currentStatus
+  const target = currentTool ? getToolTarget(t, currentTool) : ''
+  const imageRead = currentTool && isImageReadToolCall(currentTool)
+  // Codex-style summaries title each step as **heading**; the one-line preview shows plain text.
+  const reasoningPreview = latestReasoning?.text.trimEnd().split(/[\r\n]/).pop()?.replace(/\*\*/g, '').trim()
+
+  return (
+    <div className="not-prose mb-1 min-w-0 text-[15px] leading-6 text-[var(--text-muted)]" data-tool-call-cluster>
+      <button
+        type="button"
+        aria-expanded={open}
+        title={reasoningOnly && (activityCount ?? segments.length) === 1 ? (open ? '收起完整思考' : '展开完整思考') : undefined}
+        data-chat-disclosure
+        data-tauri-drag-region="false"
+        className="flex min-h-6 w-full min-w-0 items-center gap-1.5 rounded-md text-left transition-colors hover:text-[var(--text)]"
+        onClick={() => {
+          if (!open) onExpand?.()
+          setOpen(!open)
+        }}
+      >
+        {showReasoning ? <Brain size={14} className="shrink-0 text-neutral-400 dark:text-neutral-500" /> :
+          currentTool && displayStatus ? <ToolTypeIcon toolCall={currentTool} status={displayStatus} /> : <Wrench size={14} className="shrink-0" />}
+        <span className={`max-w-full shrink-0 truncate font-medium text-[var(--text)]${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
+          {open ? `${activityCount ?? segments.length} 项活动` :
+            showReasoning ? (messageStreaming && latestReasoning?.streaming ? 'Thinking…' : 'Thought') :
+              messageStreaming && currentTool ? (imageRead
+                ? fill(activeTool ? t.chatViewingImages : t.chatViewedImages, 'n', imageReadCount(currentTool))
+                : getToolName(t, currentTool)) : summary.text}
+        </span>
+        {!open && showReasoning && messageStreaming && previewEnabled && reasoningPreview && (
+          <span className="min-w-0 truncate" data-testid="reasoning-preview">{reasoningPreview}</span>
+        )}
+        {!open && !showReasoning && !imageRead && messageStreaming && target && (
+          <span className="min-w-0 truncate">{target}</span>
+        )}
+        {(open || messageStreaming || reasoningOnly) && summary.stoppedCount > 0 && <span className="shrink-0">{summary.stoppedCount} 项已停止</span>}
+        <ChevronDown size={12} aria-hidden="true" className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      <ChatDisclosureBody open={open}>
+        {() => <div className="custom-scrollbar mt-1 max-h-80 space-y-1 overflow-y-auto">{children()}</div>}
+      </ChatDisclosureBody>
+    </div>
+  )
+}
+
 function DefaultToolCallBlock({
   toolCall,
   defaultOpen = false,
@@ -1903,7 +2030,8 @@ function DefaultToolCallBlock({
   )
   const knowledgeHits = useMemo(() => knowledgeSearchHits(toolCall), [toolCall])
   const argumentPreview = useMemo(() => getArgumentPreview(t, toolCall), [t, toolCall])
-  const resultPreview = useMemo(() => getResultPreview(t, toolCall), [t, toolCall])
+  const partialOutput = externalPartialOutput(toolCall)
+  const resultPreview = useMemo(() => partialOutput || getResultPreview(t, toolCall), [partialOutput, t, toolCall])
   // 文件类工具（Read/Write/Edit）的目标路径：折叠行文件名可点，跳到右侧 dock 查看器预览。
   const previewPath = useMemo(() => {
     const raw = toolRawName(toolCall)
@@ -1937,7 +2065,7 @@ function DefaultToolCallBlock({
         }}
         aria-expanded={hasDetails ? open : undefined}
         data-chat-disclosure={hasDetails || undefined}
-        className={`max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[11.5px] transition-colors ${
+        className={`max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[15px] leading-6 transition-colors ${
           hasDetails
             ? 'hover:text-neutral-700'
             : 'cursor-default'
@@ -2002,14 +2130,18 @@ function DefaultToolCallBlock({
                 </div>
               </div>
             )}
-            {resultPreview && !knowledgeHits && (
+            {resultPreview && (partialOutput || !knowledgeHits) && (
               <div>
                 <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
                   {t.toolCardResult}
                 </div>
-                <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-                  {resultPreview}
-                </div>
+                {partialOutput ? (
+                  <StreamingToolOutput output={partialOutput} />
+                ) : (
+                  <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                    {resultPreview}
+                  </div>
+                )}
               </div>
             )}
             {knowledgeHits && <KnowledgeHits hits={knowledgeHits} />}
@@ -2125,9 +2257,9 @@ function ImageReadThumb({ item, conversationId }: { item: ImageReadItem; convers
   )
 }
 
-export function ImageReadCluster({ toolCalls, conversationId }: { toolCalls: ToolCallRecord[]; conversationId?: string | null }) {
+export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = false }: { toolCalls: ToolCallRecord[]; conversationId?: string | null; defaultOpen?: boolean }) {
   const t = useT()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const items = useMemo(() => collectImageReadItems(toolCalls), [toolCalls])
   // Count the same deduplicated images as the thumbnails, not read operations.
   // Historical records without identities can only contribute their reported count.
@@ -2146,7 +2278,7 @@ export function ImageReadCluster({ toolCalls, conversationId }: { toolCalls: Too
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         data-chat-disclosure
-        className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[11.5px] text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400"
+        className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[15px] leading-6 text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400"
       >
         <Eye
           className="shrink-0 text-neutral-400 dark:text-neutral-500"
@@ -2187,7 +2319,7 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
     return <AskUserBlock toolCall={props.toolCall} />
   }
   if (isImageReadToolCall(props.toolCall)) {
-    return <ImageReadCluster toolCalls={[props.toolCall]} conversationId={props.conversationId} />
+    return <ImageReadCluster toolCalls={[props.toolCall]} conversationId={props.conversationId} defaultOpen={props.defaultOpen} />
   }
   if (isSubAgentRecord(props.toolCall)) {
     return <SubAgentCard {...props} />
