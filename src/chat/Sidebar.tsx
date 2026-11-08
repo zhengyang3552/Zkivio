@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
-import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, PortfolioIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
+import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
 import { ConversationList } from './ConversationList'
 import { useScheduledTasks } from './scheduledTasks/useScheduledTasks'
 import { ChatSectionMenu } from './ChatSectionMenu'
@@ -443,7 +443,7 @@ function ExtensionsNav({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectItem(item.id)}
-                className={`${item.id.startsWith('extension:') ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
+                className={`kv-nav-motion ${item.id.startsWith('extension:') ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
                   active
                     ? 'font-medium text-neutral-900'
                     : 'text-neutral-700 hover:bg-neutral-900/[0.04] hover:text-neutral-900'
@@ -1596,15 +1596,9 @@ export const Sidebar = memo(function Sidebar({
           onClick={() => onOpenExtensionsItem('tasks')}
           active={extensionsActive === 'tasks'}
         />
-        <NavRow
-          icon={<PortfolioIcon size={18} strokeWidth={1.75} />}
-          label={t.chatNavArtifacts}
-          onClick={() => onOpenExtensionsItem('artifacts')}
-          active={extensionsActive === 'artifacts'}
-        />
         <ExtensionsNav
           entries={extensionEntries}
-          activeItem={extensionsActive === 'artifacts' || extensionsActive === 'plugins' || extensionsActive === 'tasks' ? null : extensionsActive}
+          activeItem={extensionsActive === 'plugins' || extensionsActive === 'tasks' ? null : extensionsActive}
           onSelectItem={onOpenExtensionsItem}
         />
       </nav>

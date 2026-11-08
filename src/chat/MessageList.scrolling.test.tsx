@@ -220,6 +220,47 @@ it('bounds offscreen rendering by viewport height while keeping short-message ov
   expect(list.options.rangeExtractor(range)).toEqual(Array.from({ length: 13 }, (_, index) => index + 14))
 })
 
+it('corrects a short cache when content grows without a ResizeObserver entry', async () => {
+  const { container } = render(<MessageList conversationId="stale-row-height" messages={[
+    { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
+    { id: 'answer', role: 'assistant', content: '```ts\nconst table = true\n```\n| a | b |\n| --- | --- |\n| 1 | 2 |', timestamp: 2 },
+    { id: 'next', role: 'user', content: 'Next question', timestamp: 3 },
+  ]} />)
+  await act(async () => { await Promise.resolve() })
+  const row = container.querySelector<HTMLElement>('[data-chat-row-index="2"]')!
+  const index = 2
+  Object.defineProperty(row, 'offsetHeight', { configurable: true, get: () => 480 })
+  // The stale 120 must not survive its own commit: the per-commit pass reads
+  // offsetHeight before paint, without waiting for a ResizeObserver entry.
+  act(() => { list.resizeItem(index, 120) })
+  expect(list.itemSizeCache.get(list.options.getItemKey(index))).toBe(480)
+  const items = list.getVirtualItems()
+  const start = items.find((item) => item.index === index)!.start
+  expect(items.find((item) => item.index === index + 1)!.start).toBe(start + 480)
+  let measured = 0
+  act(() => {
+    measured = list.options.measureElement(row as HTMLDivElement, undefined, list)
+  })
+  expect(measured).toBe(480)
+})
+
+it('keeps a measured row when a ref read happens before layout', async () => {
+  const { container } = render(<MessageList conversationId="unlaid-row-height" messages={[
+    { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
+    { id: 'answer', role: 'assistant', content: 'Answer', timestamp: 2 },
+  ]} />)
+  await act(async () => { await Promise.resolve() })
+  const row = container.querySelector<HTMLElement>('[data-chat-row-index="1"]')!
+  Object.defineProperty(row, 'offsetHeight', { configurable: true, get: () => 0 })
+  act(() => { list.resizeItem(1, 300) })
+  let measured = 0
+  act(() => {
+    measured = list.options.measureElement(row as HTMLDivElement, undefined, list)
+  })
+  expect(measured).toBe(300)
+  expect(list.itemSizeCache.get(list.options.getItemKey(1))).toBe(300)
+})
+
 it('commits row positions in the same delivery as scroll compensation above the reader', async () => {
   const { container } = render(<MessageList conversationId="scroll-compensation" messages={[
     { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
@@ -250,10 +291,10 @@ it('commits row positions in the same delivery as scroll compensation above the 
     // end-of-delivery flush, just as a browser paint can observe the DOM.
     measure(350)
     expect(viewport.scrollTop).toBe(750)
-    expect(row.style.transform).toBe(`translateY(${start + 150}px)`)
+    expect(row.style.top).toBe(`${start + 150}px`)
     measure(180)
     expect(viewport.scrollTop).toBe(580)
-    expect(row.style.transform).toBe(`translateY(${start - 20}px)`)
+    expect(row.style.top).toBe(`${start - 20}px`)
   })
 })
 

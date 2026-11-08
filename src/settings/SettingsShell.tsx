@@ -265,6 +265,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }),
     restart: () => api.restartAfterRestore(),
     pendingRestore: () => api.backupRestorePending(),
+    cancelRestore: () => api.cancelRestore(),
   }, lang)
   const onboarding = useSettingsOnboardingController({
     flush: () => editorController.flush(),

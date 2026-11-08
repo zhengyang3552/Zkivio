@@ -368,7 +368,7 @@ pub fn run() {
                     std::env::set_var("TMPDIR", &dir);
                 }
             }
-            backup::apply_pending(&app.path().app_data_dir()?)
+            backup::recover_at_startup(&app.path().app_data_dir()?)
                 .map_err(std::io::Error::other)?;
             extensions::resume(app.handle().clone());
             let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
@@ -422,58 +422,11 @@ pub fn run() {
             }
 
             let mut settings = load_settings(&app.handle());
-            // 一次性内置专家迁移（v1）：清空旧专家索引（含用户自建——用户明确选择），
-            // 装入 4 个内置专家（写作/编程/研究/数据）。靠 settings flag 幂等，成功后立即写盘，
-            // 否则下次启动会再次覆盖。持久化失败则回滚内存 flag，下次重试（仍是覆盖为这 4 个，可接受）。
-            if !settings.builtin_assistants_seeded_v1 {
-                let now = chrono::Local::now().timestamp();
-                match chat::storage::seed_builtin_assistants_v1(&app.handle(), now) {
-                    Ok(()) => {
-                        settings.builtin_assistants_seeded_v1 = true;
-                        if let Err(err) = settings::persist_settings(&app.handle(), &settings) {
-                            eprintln!(
-                                "Failed to persist settings after seeding built-in assistants: {err}"
-                            );
-                            settings.builtin_assistants_seeded_v1 = false;
-                        }
-                    }
-                    Err(err) => eprintln!("Failed to seed built-in assistants: {err}"),
-                }
-            }
-            // 非破坏性内置专家迁移（v2）：按 id upsert 新一批内置专家（升级 4 个 + 新增前端/翻译/文档），
-            // 保留用户自建。已 seed v1 的老用户靠它拿到新专家；新装用户 v1 已装全套，此处为幂等 no-op。
-            // 靠 settings flag 幂等，成功后立即写盘；持久化失败则回滚 flag 下次重试（merge 保留用户项，重试安全）。
-            if !settings.builtin_assistants_seeded_v2 {
-                let now = chrono::Local::now().timestamp();
-                match chat::storage::merge_builtin_assistants_v2(&app.handle(), now) {
-                    Ok(()) => {
-                        settings.builtin_assistants_seeded_v2 = true;
-                        if let Err(err) = settings::persist_settings(&app.handle(), &settings) {
-                            eprintln!(
-                                "Failed to persist settings after merging built-in assistants v2: {err}"
-                            );
-                            settings.builtin_assistants_seeded_v2 = false;
-                        }
-                    }
-                    Err(err) => eprintln!("Failed to merge built-in assistants v2: {err}"),
-                }
-            }
-            // 非破坏性内置专家迁移（v3）：按 id upsert 补齐产品/法务/财务/教学/审查/求职，
-            // 保留用户自建。已 seed v2 的老用户靠它拿到新专家；新装用户 v1 已装全套，此处为幂等 no-op。
-            if !settings.builtin_assistants_seeded_v3 {
-                let now = chrono::Local::now().timestamp();
-                match chat::storage::merge_builtin_assistants_v3(&app.handle(), now) {
-                    Ok(()) => {
-                        settings.builtin_assistants_seeded_v3 = true;
-                        if let Err(err) = settings::persist_settings(&app.handle(), &settings) {
-                            eprintln!(
-                                "Failed to persist settings after merging built-in assistants v3: {err}"
-                            );
-                            settings.builtin_assistants_seeded_v3 = false;
-                        }
-                    }
-                    Err(err) => eprintln!("Failed to merge built-in assistants v3: {err}"),
-                }
+            // 旧版本随应用附带的内置专家已全部下线：启动时清理残留条目，并清空集里
+            // 指向已不存在助手的默认助手。用户自建专家不受影响；清理幂等，旧备份恢复后
+            // 再次出现的条目也会在下次启动被移除。
+            if let Err(err) = chat::storage::remove_builtin_assistants(&app.handle()) {
+                eprintln!("Failed to remove built-in assistants: {err}");
             }
             #[cfg(not(target_os = "android"))]
             if let Err(err) = initialize_launch_at_startup(&app.handle(), &mut settings) {
@@ -724,6 +677,7 @@ pub fn run() {
             backup::import_full_backup,
             backup::backup_interface,
             backup::backup_restore_pending,
+            backup::cancel_restore,
             backup::restart_after_restore,
             commands::export_settings,
             commands::import_settings,
@@ -1316,6 +1270,7 @@ pub fn run() {
                     let voice: State<voice_codex::VoiceCodexService> = app_handle.state();
                     if tauri::async_runtime::block_on(voice.shutdown()).is_err() {
                         eprintln!("Voice cleanup has not completed; keeping the application alive.");
+                        backup::RESTART_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
                         api.prevent_exit();
                         return;
                     }
@@ -1325,6 +1280,7 @@ pub fn run() {
                         });
                         if !matches!(stopped, Ok(Ok(()))) {
                             eprintln!("Child cleanup has not completed; keeping the application alive.");
+                            backup::RESTART_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
                             api.prevent_exit();
                             return;
                         }
@@ -1406,8 +1362,10 @@ pub fn run() {
                 // 的桌宠，保持同一退出流程、不额外分支。
                 #[cfg(not(target_os = "android"))]
                 desktop_pet::shutdown(app_handle);
-                #[cfg(target_os = "android")]
-                let _ = app_handle;
+                // Plugins (single-instance lock) have already handled Exit; relaunch applies the restore.
+                if backup::RESTART_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    app_handle.restart();
+                }
             }
             #[cfg(target_os = "macos")]
             // Dock 图标点击重开窗口是 macOS 特有的；其余平台（含 Android）不处理。

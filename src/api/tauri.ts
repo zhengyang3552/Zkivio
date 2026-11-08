@@ -259,23 +259,6 @@ export type ChatToolArtifact = {
   sizeBytes?: number | null
 }
 
-export type ArtifactLibraryItem = {
-  id: string
-  workId: string
-  parentId: string | null
-  conversationId: string
-  messageId: string
-  title: string
-  createdAt: number
-  sourceTool: string
-  delivered: boolean
-  artifact: ChatToolArtifact
-  available: boolean
-  sourceAvailable: boolean
-}
-
-export type ArtifactLibraryPage = { items: ArtifactLibraryItem[]; warnings: number }
-
 export type ChatToolProgressPayload = {
   conversationId: string
   runId: string
@@ -905,6 +888,7 @@ export type WebSearchProviderId =
   | 'tinyfish_mcp'
   | 'searxng'
   | 'kimi'
+  | 'keenable'
 
 export type WebSearchMcpAuth = NonNullable<ChatMcpServer['auth']>
 
@@ -941,6 +925,8 @@ export type WebSearchConfig = {
   searxngBaseUrl?: string
   kimiApiKey?: string
   kimiBaseUrl?: string
+  keenableApiKey?: string
+  keenableBaseUrl?: string
   maxResults: number
   searchDepth: 'ultra-fast' | 'fast' | 'basic' | 'advanced'
 }
@@ -1621,9 +1607,6 @@ export const api = {
   voiceCodexMute: (sessionId: string, muted: boolean) => invoke<void>('voice_codex_mute', { sessionId, muted }),
   onVoiceCodexEvent: (listener: (event: VoiceCodexEvent) => void): Promise<() => void> =>
     isTauriRuntime() ? on<VoiceCodexEvent>('voice-codex-event', listener) : Promise.resolve(() => {}),
-  chatArtifactsList: (importHistory = true) => invoke<ArtifactLibraryPage>('chat_artifacts_list', { importHistory }),
-  chatArtifactAction: (id: string, action: 'open' | 'reveal' | 'export' | 'export_unique' | 'delete' | 'rename', destination?: string, name?: string) =>
-    invoke<string | null>('chat_artifact_action', { id, action, destination, name }),
   chatSubagentControl,
   /** 一次状态扫描可选附带行数统计，供同工作目录的 Git 徽标共享。 */
   async dockGitSnapshot(workdir: string, includeDiffStat = false): Promise<GitSnapshot> {
@@ -1678,7 +1661,8 @@ export const api = {
   exportFullBackup: (path: string, interfaceState: Record<string, string>) => invoke<string[]>('export_full_backup', { path, interface: interfaceState }),
   importFullBackup: (path: string, trusted: boolean) => invoke<void>('import_full_backup', { path, trusted }),
   backupInterface: () => invoke<{ id: string; values: Record<string, string> } | null>('backup_interface'),
-  backupRestorePending: () => invoke<boolean>('backup_restore_pending'),
+  backupRestorePending: () => invoke<{ error: string | null } | null>('backup_restore_pending'),
+  cancelRestore: () => invoke<void>('cancel_restore'),
   restartAfterRestore: () => invoke<void>('restart_after_restore'),
   exportSettings: (path: string, share?: boolean) => invoke<void>('export_settings', { path, share }),
   importSettings: async (path: string, expectedVersion: SettingsVersion, trusted?: boolean) =>
